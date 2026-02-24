@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { Card } from "../components/ui/card";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
+import { FootballPitch, PitchPlayer } from "../components/FootballPitch";
 
 type TeamRef = {
   id: string;
@@ -42,6 +43,45 @@ type Payload = {
 function FixtureRow({ fixture }: { fixture: Fixture }) {
   const baseHref = `/matchup/${fixture.type}/${fixture.gameweek}/${fixture.team_1_id}/${fixture.team_2_id}`;
   const href = fixture.matchup_id ? `${baseHref}?matchupId=${encodeURIComponent(fixture.matchup_id)}` : baseHref;
+  // If fixture contains last_lineup fields (upcoming/unstarted), render pitch for each team
+  if ((fixture as any).last_lineup_1 || (fixture as any).last_lineup_2) {
+    const last1 = (fixture as any).last_lineup_1 || [];
+    const last2 = (fixture as any).last_lineup_2 || [];
+    const convert = (rows: any[]): PitchPlayer[] =>
+      rows.map((r) => ({
+        player_id: r.player_id,
+        player_name: r.player_name,
+        position: r.position || 3,
+        raw_points: r.points ?? 0,
+        effective_points: r.points ?? 0,
+        is_captain: !!r.is_captain,
+        is_vice_captain: false,
+        is_cup_captain: !!r.is_captain,
+        multiplier: !!r.is_captain ? 2 : 1,
+      }));
+
+    return (
+      <Link to={href} className="block w-full rounded-md border p-3 hover:bg-muted/40 transition-colors">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <div>
+            <div className="text-xs text-muted-foreground">{fixture.team_1?.entry_name || "—"}</div>
+            <FootballPitch players={convert(last1)} onPlayerClick={() => {}} showCaptain={true} />
+          </div>
+          <div className="text-center">
+            <div className="text-2xl font-bold">{fixture.team_1_points} - {fixture.team_2_points}</div>
+            {fixture.type === "cup" && fixture.leg ? (
+              <div className="text-xs text-muted-foreground">{fixture.round || "Cup"} • Leg {fixture.leg}</div>
+            ) : null}
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">{fixture.team_2?.entry_name || "—"}</div>
+            <FootballPitch players={convert(last2)} onPlayerClick={() => {}} showCaptain={true} />
+          </div>
+        </div>
+      </Link>
+    );
+  }
+
   return (
     <Link to={href} className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 rounded-md border p-3 hover:bg-muted/40 transition-colors">
       <div className="text-right">

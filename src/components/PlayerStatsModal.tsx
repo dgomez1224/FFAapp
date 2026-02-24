@@ -49,6 +49,7 @@ interface PlayerStatsModalProps {
   isOpen: boolean;
   onClose: () => void;
   showHistory?: boolean;
+  onSelectCaptain?: (playerId: number) => void;
 }
 
 export function PlayerStatsModal({ player, isOpen, onClose, showHistory = false }: PlayerStatsModalProps) {
@@ -163,9 +164,16 @@ export function PlayerStatsModal({ player, isOpen, onClose, showHistory = false 
           )}
 
           {/* Close button */}
-          <Button onClick={onClose} className="w-full mt-4" variant="outline">
-            Close
-          </Button>
+          <div className="grid grid-cols-1 gap-2">
+            {onSelectCaptain && (
+              <Button onClick={() => onSelectCaptain(player.player_id)} className="w-full" variant="secondary">
+                Select As Captain
+              </Button>
+            )}
+            <Button onClick={onClose} className="w-full mt-0" variant="outline">
+              Close
+            </Button>
+          </div>
         </div>
       </Card>
     </div>

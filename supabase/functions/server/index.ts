@@ -246,6 +246,38 @@ function parseDataUrlImage(dataUrl: string) {
   return { contentType, bytes, ext };
 }
 
+async function fetchLastLineupForTeam(supabase: ReturnType<typeof getSupabaseAdmin>, teamId: string, beforeGameweek: number) {
+  try {
+    // Find the most recent gameweek with selections for this team before or equal to beforeGameweek
+    const { data: recent } = await supabase
+      .from("player_selections")
+      .select("gameweek")
+      .eq("team_id", teamId)
+      .lte("gameweek", beforeGameweek)
+      .order("gameweek", { ascending: false })
+      .limit(1);
+    if (!recent || recent.length === 0) return null;
+    const gw = recent[0].gameweek;
+    const { data: rows } = await supabase
+      .from("player_selections")
+      .select("player_id, player_name, gameweek, is_captain, points_earned, player_position")
+      .eq("team_id", teamId)
+      .eq("gameweek", gw);
+    if (!rows || rows.length === 0) return null;
+    return rows.map((r: any) => ({
+      player_id: r.player_id,
+      player_name: r.player_name,
+      position: r.player_position ?? null,
+      is_captain: !!r.is_captain,
+      points: r.points_earned ?? 0,
+      gameweek: r.gameweek,
+    }));
+  } catch (err) {
+    console.error("fetchLastLineupForTeam error", err);
+    return null;
+  }
+}
+
 type CaptainSession = {
   token: string;
   manager_name: string;
@@ -2684,6 +2716,47 @@ playerInsights.get("/", async (c) => {
       };
     });
 
+    // Determine current gameweek for ownership calculation
+    let currentGw = null;
+    try {
+      const bootstrap = await fetchDraftBootstrap();
+      currentGw = extractDraftCurrentEventId(bootstrap);
+    } catch {
+      const { data: seasonState } = await supabase
+        .from("season_state")
+        .select("current_gameweek")
+        .eq("season", CURRENT_SEASON)
+        .maybeSingle();
+      currentGw = parsePositiveInt(seasonState?.current_gameweek) || null;
+    }
+
+    // Build owners map for current gameweek
+    const ownersMap: Record<number, string[]> = {};
+    if (currentGw) {
+      const { data: ownersRows } = await supabase
+        .from("player_selections")
+        .select("player_id, team_id, teams(entry_name)")
+        .eq("gameweek", currentGw);
+      if (ownersRows) {
+        ownersRows.forEach((r: any) => {
+          const id = Number(r.player_id);
+          if (!ownersMap[id]) ownersMap[id] = [];
+          const entryName = r?.teams?.entry_name || null;
+          if (entryName && !ownersMap[id].includes(entryName)) ownersMap[id].push(entryName);
+        });
+      }
+    }
+
+    // Build team id -> name map from bootstrap/team data
+    const teamMap: Record<number, string> = {};
+    if (draftBootstrap) {
+      const draftTeams = normalizeDraftList<any>(draftBootstrap?.teams || draftBootstrap?.elements?.teams || []);
+      draftTeams.forEach((t: any) => {
+        const id = parsePositiveInt(t?.id ?? t?.team);
+        if (id) teamMap[id] = t?.name || t?.short_name || String(t?.id);
+      });
+    }
+
     // Fetch player selection data from database
     // This would come from a player_selections table that tracks which players
     // are selected by which teams each gameweek
@@ -2758,6 +2831,11 @@ playerInsights.get("/", async (c) => {
       total_points_contributed: p.total_points_contributed,
       teams_using: p.teams.size,
       ...byPlayerFromBootstrap[p.player_id],
+      // attach ownership and team name if available
+      owned_by: ownersMap[p.player_id] || [],
+      team_name: teamMap[byPlayerFromBootstrap[p.player_id]?.team] || null,
+      total_minutes: byPlayerFromBootstrap[p.player_id]?.minutes_played ?? 0,
+      points: byPlayerFromBootstrap[p.player_id]?.total_points ?? 0,
     }));
 
     const filtered = insights.filter((row: any) => {
@@ -4961,7 +5039,7 @@ captainAuth.get("/session", async (c) => {
     const session = await resolveCaptainSession(supabase, token);
     if (!session) return jsonError(c, 401, "Invalid or expired session");
 
-    const [{ data: team }, { data: media }] = await Promise.all([
+    const [{ data: team }, { data: mediaProfiles }, { data: authRow }] = await Promise.all([
       supabase
       .from("teams")
       .select("entry_name, manager_name")
@@ -4970,6 +5048,11 @@ captainAuth.get("/session", async (c) => {
       supabase
       .from("manager_media_profiles")
       .select("club_crest_url, club_logo_url, manager_profile_picture_url")
+      .eq("manager_name", session.manager_name)
+      .maybeSingle(),
+      supabase
+      .from("manager_auth_emails")
+      .select("club_crest, club_logo, manager_photo")
       .eq("manager_name", session.manager_name)
       .maybeSingle(),
     ]);
@@ -4986,9 +5069,9 @@ captainAuth.get("/session", async (c) => {
       team_name: team?.entry_name || null,
       entry_id: session.entry_id,
       media: {
-        club_crest_url: media?.club_crest_url || null,
-        club_logo_url: media?.club_logo_url || null,
-        manager_profile_picture_url: media?.manager_profile_picture_url || null,
+        club_crest_url: (authRow && (authRow.club_crest || authRow.club_crest_url)) || mediaProfiles?.club_crest_url || null,
+        club_logo_url: (authRow && (authRow.club_logo || authRow.club_logo_url)) || mediaProfiles?.club_logo_url || null,
+        manager_profile_picture_url: (authRow && (authRow.manager_photo || authRow.manager_profile_picture_url)) || mediaProfiles?.manager_profile_picture_url || null,
       },
       target_gameweek: targetGameweek,
       expires_at: session.expires_at,
@@ -5007,22 +5090,31 @@ captainAuth.get("/media", async (c) => {
     const session = await resolveCaptainSession(supabase, token);
     if (!session) return jsonError(c, 401, "Invalid or expired session");
 
-    const { data, error } = await supabase
-      .from("manager_media_profiles")
-      .select("club_crest_url, club_logo_url, manager_profile_picture_url")
-      .eq("manager_name", session.manager_name)
-      .maybeSingle();
-
-    if (error && error.code !== "PGRST116") {
-      return jsonError(c, 500, "Failed to load media", error.message);
+    const [{ data: profiles, error: profilesError }, { data: authRow, error: authError }] = await Promise.all([
+      supabase
+        .from("manager_media_profiles")
+        .select("club_crest_url, club_logo_url, manager_profile_picture_url")
+        .eq("manager_name", session.manager_name)
+        .maybeSingle(),
+      supabase
+        .from("manager_auth_emails")
+        .select("club_crest, club_logo, manager_photo")
+        .eq("manager_name", session.manager_name)
+        .maybeSingle(),
+    ]);
+    if (profilesError && profilesError.code !== "PGRST116") {
+      return jsonError(c, 500, "Failed to load media profiles", profilesError.message);
+    }
+    if (authError && authError.code !== "PGRST116") {
+      return jsonError(c, 500, "Failed to load auth media", authError.message);
     }
 
     return c.json({
       manager_name: session.manager_name,
       media: {
-        club_crest_url: data?.club_crest_url || null,
-        club_logo_url: data?.club_logo_url || null,
-        manager_profile_picture_url: data?.manager_profile_picture_url || null,
+        club_crest_url: (authRow && (authRow.club_crest || null)) || profiles?.club_crest_url || null,
+        club_logo_url: (authRow && (authRow.club_logo || null)) || profiles?.club_logo_url || null,
+        manager_profile_picture_url: (authRow && (authRow.manager_photo || null)) || profiles?.manager_profile_picture_url || null,
       },
     });
   } catch (err: any) {
@@ -5432,11 +5524,42 @@ fixturesHub.get("/", async (c) => {
         }))
         .sort((a, b) => a.gameweek - b.gameweek);
 
+    // Enrich fixtures with last used lineup for unstarted games
+    const currentGw = coerceNumber(seasonStateRes.data?.current_gameweek, 1);
+    const enrichMatchups = async (groups: Record<string, any[]>) => {
+      const out: Record<string, any[]> = {};
+      for (const [gw, matchups] of Object.entries(groups)) {
+        out[gw] = [];
+        for (const m of matchups) {
+          const entry: any = { ...m };
+          try {
+            // If game hasn't started or is upcoming, fetch last lineup for each team
+            const gwNum = coerceNumber(m.gameweek);
+            if (!m.is_ongoing && gwNum >= currentGw) {
+              const last1 = await fetchLastLineupForTeam(supabase, String(m.team_1_id), currentGw - 1);
+              const last2 = await fetchLastLineupForTeam(supabase, String(m.team_2_id), currentGw - 1);
+              if (last1) entry.last_lineup_1 = last1;
+              if (last2) entry.last_lineup_2 = last2;
+            }
+          } catch (err) {
+            // ignore
+          }
+          out[gw].push(entry);
+        }
+      }
+      return out;
+    };
+
+    const [enrichedLeague, enrichedCup] = await Promise.all([
+      enrichMatchups(leagueByGw),
+      enrichMatchups(cupByGw),
+    ]);
+
     return c.json({
       season: seasonStateRes.data?.season || CURRENT_SEASON,
       current_gameweek: coerceNumber(seasonStateRes.data?.current_gameweek, 1),
-      league: groupToArray(leagueByGw),
-      cup: groupToArray(cupByGw),
+      league: groupToArray(enrichedLeague),
+      cup: groupToArray(enrichedCup),
     });
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to fetch fixtures");

@@ -176,6 +176,11 @@ export default function PickCaptain() {
     }
   };
 
+  const handleSelectCaptainFromModal = (playerId: number) => {
+    setCaptainId(playerId);
+    setSelectedPlayer(null);
+  };
+
   if (loading) {
     return (
       <Card className="p-6">
@@ -228,7 +233,7 @@ export default function PickCaptain() {
         {success && <p className="text-sm text-emerald-600 mt-3">{success}</p>}
       </Card>
 
-      <PlayerStatsModal player={selectedPlayer!} isOpen={!!selectedPlayer} onClose={() => setSelectedPlayer(null)} showHistory={true} />
+      <PlayerStatsModal player={selectedPlayer!} isOpen={!!selectedPlayer} onClose={() => setSelectedPlayer(null)} showHistory={true} onSelectCaptain={handleSelectCaptainFromModal} />
     </div>
   );
 }
