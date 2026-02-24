@@ -58,12 +58,8 @@ type Payload = {
 
 function TeamPitchDisplay({
   team,
-  matchupType,
-  showHistory,
 }: {
   team: TeamDetail;
-  matchupType: "league" | "cup";
-  showHistory: boolean;
 }) {
   const [selectedPlayer, setSelectedPlayer] = useState<PlayerStats | null>(null);
 
@@ -93,14 +89,6 @@ function TeamPitchDisplay({
     const fullPlayer = team.lineup.find((p) => p.player_id === player.player_id);
     if (!fullPlayer) return;
 
-    if (!showHistory) {
-      setSelectedPlayer({
-        ...fullPlayer,
-        position: fullPlayer.position,
-      });
-      return;
-    }
-
     try {
       const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/player-history?player_id=${encodeURIComponent(String(player.player_id))}`;
       const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
@@ -115,9 +103,14 @@ function TeamPitchDisplay({
         history: (payload.history || []).map((h: any) => ({
           gameweek: h.gameweek,
           points: h.points ?? 0,
-          goals: 0,
-          assists: 0,
-          minutes: 0,
+          goals: h.goals ?? 0,
+          assists: h.assists ?? 0,
+          minutes: h.minutes ?? 0,
+          opponent_team_name: h.opponent_team_name ?? null,
+          was_home: h.was_home,
+          fixture: h.fixture ?? null,
+          result: h.result ?? null,
+          kickoff_time: h.kickoff_time ?? null,
         })),
       });
     } catch {
@@ -137,7 +130,6 @@ function TeamPitchDisplay({
           {team.manager_name}
         </h3>
         <p className="text-sm text-muted-foreground">{team.entry_name}</p>
-        <p className="text-sm font-medium mt-2">Total Points: {team.total_points}</p>
       </div>
 
       <div className="mb-4">
@@ -148,7 +140,7 @@ function TeamPitchDisplay({
         player={selectedPlayer!}
         isOpen={!!selectedPlayer}
         onClose={() => setSelectedPlayer(null)}
-        showHistory={showHistory}
+        showHistory={true}
       />
 
       {/* Substitute/Bench info */}
@@ -183,7 +175,7 @@ function TeamPitchDisplay({
                     }
                     className="rounded border px-2 py-1 text-xs hover:bg-muted"
                   >
-                    {p.player_name} ({p.effective_points.toFixed(1)})
+                    {p.player_name} ({Math.round(p.effective_points)})
                   </button>
                 ))}
               </div>
@@ -240,7 +232,8 @@ export default function MatchupDetailPage() {
 
   const team1Points = data.matchup.team_1_points ?? data.matchup.live_team_1_points;
   const team2Points = data.matchup.team_2_points ?? data.matchup.live_team_2_points;
-  const showHistory = !data.matchup.has_started;
+  const team1Score = Math.round(team1Points);
+  const team2Score = Math.round(team2Points);
 
   return (
     <div className="space-y-6">
@@ -256,7 +249,7 @@ export default function MatchupDetailPage() {
           </div>
           <div className="text-center">
             <p className="text-4xl font-bold">
-              {team1Points.toFixed(1)} - {team2Points.toFixed(1)}
+              {team1Score} - {team2Score}
             </p>
             {data.matchup.round && <p className="text-xs text-muted-foreground mt-1">{data.matchup.round}</p>}
           </div>
@@ -268,8 +261,8 @@ export default function MatchupDetailPage() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <TeamPitchDisplay team={data.team_1} matchupType={data.type} showHistory={showHistory} />
-        <TeamPitchDisplay team={data.team_2} matchupType={data.type} showHistory={showHistory} />
+        <TeamPitchDisplay team={data.team_1} />
+        <TeamPitchDisplay team={data.team_2} />
       </div>
     </div>
   );

@@ -11,7 +11,6 @@ import { LiveDashboard } from "../components/LiveDashboard";
 import { BracketView } from "../components/BracketView";
 import DashboardPage from "./Dashboard";
 import LeagueStandings from "../components/LeagueStandings";
-import CupGroupStage from "../components/CupGroupStage";
 import GobletStandings from "../components/GobletStandings";
 import ManagersPage from "./Managers";
 import PlayerInsights from "../components/PlayerInsights";
@@ -55,9 +54,6 @@ function Shell() {
             </Link>
             <Link to="/league-standings" className="hover:underline">
               League
-            </Link>
-            <Link to="/cup-group-stage" className="hover:underline">
-              Cup
             </Link>
             <Link to="/goblet" className="hover:underline">
               Goblet
@@ -106,7 +102,6 @@ function Shell() {
             <Route path="/legacy-home" element={<LegacyHome />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/league-standings" element={<LeagueStandings />} />
-            <Route path="/cup-group-stage" element={<CupGroupStage />} />
             <Route path="/goblet" element={<GobletStandings />} />
             <Route path="/h2h" element={<H2HStandings />} />
             <Route path="/managers" element={<ManagersPage />} />

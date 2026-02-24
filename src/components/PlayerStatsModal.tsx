@@ -34,6 +34,11 @@ export interface PlayerStats {
     goals?: number;
     assists?: number;
     minutes?: number;
+    opponent_team_name?: string | null;
+    was_home?: boolean;
+    fixture?: string | null;
+    result?: string | null;
+    kickoff_time?: string | null;
   }[];
 }
 
@@ -84,10 +89,10 @@ export function PlayerStatsModal({ player, isOpen, onClose, showHistory = false,
 
           {/* Points breakdown */}
           <div className="space-y-3 mb-4">
-            <div className="flex justify-between items-center border-b pb-2">
-              <span className="text-muted-foreground">Raw Points</span>
-              <span className="font-semibold">{player.raw_points.toFixed(1)}</span>
-            </div>
+                <div className="flex justify-between items-center border-b pb-2">
+                  <span className="text-muted-foreground">Raw Points</span>
+                  <span className="font-semibold">{Math.round(player.raw_points)}</span>
+                </div>
             {player.multiplier > 1 && (
               <div className="flex justify-between items-center border-b pb-2">
                 <span className="text-muted-foreground">Multiplier</span>
@@ -96,7 +101,7 @@ export function PlayerStatsModal({ player, isOpen, onClose, showHistory = false,
             )}
             <div className="flex justify-between items-center text-lg font-bold bg-green-50 dark:bg-green-950 p-2 rounded">
               <span>Effective Points</span>
-              <span className="text-green-600 dark:text-green-400">{player.effective_points.toFixed(1)}</span>
+              <span className="text-green-600 dark:text-green-400">{Math.round(player.effective_points)}</span>
             </div>
           </div>
 
@@ -140,15 +145,22 @@ export function PlayerStatsModal({ player, isOpen, onClose, showHistory = false,
               <h3 className="font-semibold mb-3">Gameweek History</h3>
               {player.history && player.history.length > 0 ? (
                 <div className="space-y-2 max-h-80 overflow-y-auto">
-                  {player.history.map((entry) => (
-                    <div key={entry.gameweek} className="p-2 bg-muted rounded flex justify-between items-center">
-                      <div>
-                        <p className="font-medium">GW {entry.gameweek}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {entry.goals ?? 0}G {entry.assists ?? 0}A {entry.minutes ?? 0}M
-                        </p>
-                      </div>
-                      <p className="font-bold text-green-600">{entry.points.toFixed(1)}</p>
+                    {player.history.map((entry) => (
+                      <div key={entry.gameweek} className="p-2 bg-muted rounded flex justify-between items-center">
+                        <div>
+                          <p className="font-medium">GW {entry.gameweek}</p>
+                          {(entry.opponent_team_name || entry.fixture || entry.result) && (
+                            <p className="text-xs text-muted-foreground">
+                              {entry.was_home != null ? (entry.was_home ? "vs " : "@ ") : ""}
+                              {entry.opponent_team_name || entry.fixture || "Fixture"}
+                              {entry.result ? ` • ${entry.result}` : ""}
+                            </p>
+                          )}
+                          <p className="text-xs text-muted-foreground">
+                            {entry.goals ?? 0}G {entry.assists ?? 0}A {entry.minutes ?? 0}M
+                          </p>
+                        </div>
+                      <p className="font-bold text-green-600">{Math.round(entry.points)}</p>
                     </div>
                   ))}
                 </div>

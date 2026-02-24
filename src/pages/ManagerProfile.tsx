@@ -13,6 +13,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { CANONICAL_MANAGERS } from "../lib/canonicalManagers";
 import { EDGE_FUNCTIONS_BASE, HISTORICAL_STATS_CUTOFF_SEASON } from "../lib/constants";
+import leagueTrophy from "../assets/trophies/League Cup Icon.png";
+import cupTrophy from "../assets/trophies/FFA Cup Icon + Year.png";
+import gobletTrophy from "../assets/trophies/Goblet Icon.png";
 
 interface ManagerProfileData {
   manager_name: string;
@@ -317,6 +320,32 @@ export default function ManagerProfile() {
     current.key === key ? (current.dir === "asc" ? " ↑" : " ↓") : "";
 
   const latestStanding = sortedSeasonStandings[0] || null;
+  const leagueTitles = Number(data.all_time_stats?.league_titles || 0);
+  const cupWins = Number(data.all_time_stats?.cup_wins || 0);
+  const gobletWins = Number(data.all_time_stats?.goblet_wins || 0);
+  const trophyIcons = [
+    ...Array.from({ length: Math.max(0, leagueTitles) }, (_, i) => ({
+      key: `league-${i}`,
+      src: leagueTrophy,
+      alt: "League trophy",
+      title: "League Title",
+      className: "h-16 w-12",
+    })),
+    ...Array.from({ length: Math.max(0, cupWins) }, (_, i) => ({
+      key: `cup-${i}`,
+      src: cupTrophy,
+      alt: "Cup trophy",
+      title: "Cup Win",
+      className: "h-14 w-10",
+    })),
+    ...Array.from({ length: Math.max(0, gobletWins) }, (_, i) => ({
+      key: `goblet-${i}`,
+      src: gobletTrophy,
+      alt: "Goblet trophy",
+      title: "Goblet Win",
+      className: "h-12 w-8",
+    })),
+  ];
 
   return (
     <div className="space-y-6 rounded-2xl bg-zinc-300/60 p-4 md:p-6">
@@ -377,15 +406,19 @@ export default function ManagerProfile() {
 
             <Card className="rounded-3xl border-zinc-200 bg-zinc-100 p-5">
               <h3 className="text-lg font-semibold mb-4">Trophy Cabinet</h3>
-              <div className="flex items-end gap-4 text-5xl">
-                <span title="League Titles">🏆</span>
-                <span title="Cup Wins">🏅</span>
-                <span title="Goblet Wins">🥉</span>
+              <div className="flex items-end gap-2 flex-wrap min-h-14">
+                {trophyIcons.length > 0 ? (
+                  trophyIcons.map((icon) => (
+                    <img key={icon.key} src={icon.src} alt={icon.alt} title={icon.title} className={`${icon.className} object-contain`} />
+                  ))
+                ) : (
+                  <p className="text-sm text-zinc-700">No trophies yet.</p>
+                )}
               </div>
               <div className="mt-2 grid grid-cols-3 gap-2 text-center text-sm">
-                <div>{data.all_time_stats.league_titles || 0}</div>
-                <div>{data.all_time_stats.cup_wins || 0}</div>
-                <div>{data.all_time_stats.goblet_wins || 0}</div>
+                <div>{leagueTitles}</div>
+                <div>{cupWins}</div>
+                <div>{gobletWins}</div>
               </div>
               <div className="mt-4 rounded-2xl border border-zinc-300 bg-white/60 p-3">
                 <p className="text-sm text-zinc-700">Points Per Game</p>

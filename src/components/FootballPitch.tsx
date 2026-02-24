@@ -36,10 +36,10 @@ const POSITION_NAMES: Record<number, string> = {
 
 // Formation positions (4-3-3)
 const FORMATION_Y: Record<number, number> = {
-  1: 88,
-  2: 72,
-  3: 50,
-  4: 28,
+  1: 84,
+  2: 68,
+  3: 46,
+  4: 24,
 };
 
 export function FootballPitch({ players, onPlayerClick, showCaptain = true }: FootballPitchProps) {
@@ -149,11 +149,15 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
                   )}
                 </div>
 
+                <div className="absolute top-full mt-1 left-1/2 -translate-x-1/2 rounded bg-black/55 px-1.5 py-0.5 text-[10px] text-white">
+                  {Math.round(player.effective_points)} pts
+                </div>
+
                 {/* Player info tooltip */}
                 <div className="absolute -bottom-16 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white text-xs rounded px-2 py-1 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
                   <div className="font-bold">{player.player_name}</div>
                   <div>{POSITION_NAMES[player.position]}</div>
-                  <div className="text-yellow-300">{player.effective_points.toFixed(1)} pts</div>
+                  <div className="text-yellow-300">{Math.round(player.effective_points)} pts</div>
                 </div>
               </button>
             );

@@ -2762,6 +2762,27 @@ playerInsights.get("/", async (c) => {
       teamMap[id] = t?.name || t?.short_name || String(t?.id);
     });
 
+    const resolveGamesPlayedByMinutes = async (playerIds: number[]) => {
+      const out: Record<number, number> = {};
+      const ids = Array.from(new Set(playerIds.filter((id) => Number.isInteger(id) && id > 0)));
+      const batchSize = 16;
+      for (let i = 0; i < ids.length; i += batchSize) {
+        const batch = ids.slice(i, i + batchSize);
+        await Promise.all(
+          batch.map(async (playerId) => {
+            try {
+              const summary = await fetchJSON<any>(`${FPL_BASE_URL}/element-summary/${playerId}/`);
+              const history = normalizeDraftList<any>(summary?.history || summary?.history?.data || []);
+              out[playerId] = history.filter((h: any) => coerceNumber(h?.minutes, 0) > 1).length;
+            } catch {
+              // Keep fallback value when summary fetch fails.
+            }
+          }),
+        );
+      }
+      return out;
+    };
+
     // Fetch player selection data from database
     // This would come from a player_selections table that tracks which players
     // are selected by which teams each gameweek
@@ -2807,8 +2828,24 @@ playerInsights.get("/", async (c) => {
         return true;
       });
 
+      const gamesByMinutes = await resolveGamesPlayedByMinutes(
+        filtered.map((row: any) => coerceNumber(row.player_id)).filter((id: number) => id > 0),
+      );
+      const adjusted = filtered.map((row: any) => {
+        const games = gamesByMinutes[coerceNumber(row.player_id)];
+        if (!Number.isInteger(games)) return row;
+        const totalPoints = coerceNumber(row.total_points, 0);
+        const totalMinutes = coerceNumber(row.total_minutes ?? row.minutes_played, 0);
+        return {
+          ...row,
+          games_played: games,
+          points_per_game_played: games > 0 ? totalPoints / games : 0,
+          minutes_per_game_played: games > 0 ? totalMinutes / games : 0,
+        };
+      });
+
       return c.json({
-        insights: filtered,
+        insights: adjusted,
         source: "fpl_bootstrap",
       });
     }
@@ -2861,8 +2898,24 @@ playerInsights.get("/", async (c) => {
       return true;
     });
 
+    const gamesByMinutes = await resolveGamesPlayedByMinutes(
+      filtered.map((row: any) => coerceNumber(row.player_id)).filter((id: number) => id > 0),
+    );
+    const adjusted = filtered.map((row: any) => {
+      const games = gamesByMinutes[coerceNumber(row.player_id)];
+      if (!Number.isInteger(games)) return row;
+      const totalPoints = coerceNumber(row.total_points ?? row.points, 0);
+      const totalMinutes = coerceNumber(row.total_minutes ?? row.minutes_played, 0);
+      return {
+        ...row,
+        games_played: games,
+        points_per_game_played: games > 0 ? totalPoints / games : 0,
+        minutes_per_game_played: games > 0 ? totalMinutes / games : 0,
+      };
+    });
+
     return c.json({
-      insights: filtered.sort((a: any, b: any) => coerceNumber(b.selected_count) - coerceNumber(a.selected_count)),
+      insights: adjusted.sort((a: any, b: any) => coerceNumber(b.selected_count) - coerceNumber(a.selected_count)),
       source: "database",
     });
   } catch (err: any) {
@@ -2889,33 +2942,78 @@ playerHistory.get("/", async (c) => {
     const playerId = parsePositiveInt(c.req.query("player_id"));
     if (!playerId) return jsonError(c, 400, "Missing or invalid player_id");
 
-    const supabase = getSupabaseAdmin();
-    const { data: rows, error } = await supabase
-      .from("player_selections")
-      .select("gameweek, points_earned, is_captain, team_id")
-      .eq("player_id", playerId)
-      .order("gameweek", { ascending: false })
-      .limit(100);
+    // Prefer official FPL per-fixture history; fallback to local DB rows when unavailable.
+    try {
+      const [summary, bootstrap] = await Promise.all([
+        fetchJSON<any>(`${FPL_BASE_URL}/element-summary/${playerId}/`),
+        fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`),
+      ]);
+      const teams = normalizeDraftList<any>(bootstrap?.teams || []);
+      const teamNameById: Record<number, string> = {};
+      teams.forEach((t: any) => {
+        const id = parsePositiveInt(t?.id);
+        if (!id) return;
+        teamNameById[id] = String(t?.name || t?.short_name || `Team ${id}`);
+      });
 
-    if (error && !isMissingRelationError(error)) {
-      return jsonError(c, 500, "Failed to fetch player history", error.message);
+      const history = normalizeDraftList<any>(summary?.history || []).map((h: any) => {
+        const teamH = coerceNumber(h?.team_h, 0);
+        const teamA = coerceNumber(h?.team_a, 0);
+        const result =
+          h?.team_h_score == null || h?.team_a_score == null
+            ? null
+            : `${coerceNumber(h.team_h_score, 0)}-${coerceNumber(h.team_a_score, 0)}`;
+        return {
+          gameweek: coerceNumber(h?.round ?? h?.event, 0),
+          points: coerceNumber(h?.total_points, 0),
+          goals: coerceNumber(h?.goals_scored, 0),
+          assists: coerceNumber(h?.assists, 0),
+          minutes: coerceNumber(h?.minutes, 0),
+          clean_sheets: coerceNumber(h?.clean_sheets, 0),
+          goals_conceded: coerceNumber(h?.goals_conceded, 0),
+          yellow_cards: coerceNumber(h?.yellow_cards, 0),
+          red_cards: coerceNumber(h?.red_cards, 0),
+          was_home: !!h?.was_home,
+          opponent_team_name: teamNameById[coerceNumber(h?.opponent_team)] || null,
+          fixture: teamH > 0 && teamA > 0 ? `${teamNameById[teamH] || "Home"} vs ${teamNameById[teamA] || "Away"}` : null,
+          result,
+          kickoff_time: h?.kickoff_time || null,
+        };
+      });
+
+      return c.json({ player_id: playerId, history, source: "fpl_element_summary" });
+    } catch {
+      const supabase = getSupabaseAdmin();
+      const { data: rows, error } = await supabase
+        .from("player_selections")
+        .select("gameweek, points_earned, is_captain, team_id")
+        .eq("player_id", playerId)
+        .order("gameweek", { ascending: false })
+        .limit(100);
+
+      if (error && !isMissingRelationError(error)) {
+        return jsonError(c, 500, "Failed to fetch player history", error.message);
+      }
+
+      const teamIds = Array.from(new Set((rows || []).map((r: any) => String(r.team_id)))).filter(Boolean);
+      const teamsMap: Record<string, any> = {};
+      if (teamIds.length > 0) {
+        const { data: teams } = await supabase.from("teams").select("id, entry_name").in("id", teamIds as any[]);
+        (teams || []).forEach((t: any) => { teamsMap[String(t.id)] = t.entry_name || null; });
+      }
+
+      const history = (rows || []).map((r: any) => ({
+        gameweek: r.gameweek,
+        points: r.points_earned ?? 0,
+        goals: 0,
+        assists: 0,
+        minutes: 0,
+        is_captain: !!r.is_captain,
+        team_entry_name: teamsMap[String(r.team_id)] || null,
+      }));
+
+      return c.json({ player_id: playerId, history, source: "database" });
     }
-
-    const teamIds = Array.from(new Set((rows || []).map((r: any) => String(r.team_id)))).filter(Boolean);
-    const teamsMap: Record<string, any> = {};
-    if (teamIds.length > 0) {
-      const { data: teams } = await supabase.from("teams").select("id, entry_name").in("id", teamIds as any[]);
-      (teams || []).forEach((t: any) => { teamsMap[String(t.id)] = t.entry_name || null; });
-    }
-
-    const history = (rows || []).map((r: any) => ({
-      gameweek: r.gameweek,
-      points: r.points_earned ?? 0,
-      is_captain: !!r.is_captain,
-      team_entry_name: teamsMap[String(r.team_id)] || null,
-    }));
-
-    return c.json({ player_id: playerId, history });
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to fetch player history");
   }
