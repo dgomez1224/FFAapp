@@ -1,7 +1,30 @@
-node_modules
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.vite/
+
+# Environment files
 .env
-.env.local
-.env*.local
+.env.*
+!.env.example
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / editor noise
 .DS_Store
-supabase/.temp
-dist
+**/.DS_Store
+.idea/
+.vscode/
+
+# TypeScript / test artifacts
+*.tsbuildinfo
+coverage/
+
+# Supabase local artifacts
+supabase/.temp/
