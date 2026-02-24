@@ -1,5 +1,6 @@
 /**
  * This Week's Matchups - Public Read-Only
+ * Updated with centered manager names and improved formatting
  */
 
 import React, { useEffect, useState } from "react";
@@ -101,7 +102,7 @@ export function ThisWeekMatchups() {
   if (loading) {
     return (
       <Card className="p-6">
-        <h1 className="mb-4 text-xl font-semibold">This Week’s Matchups</h1>
+        <h1 className="mb-4 text-xl font-semibold">This Week's Matchups</h1>
         <p className="text-sm text-muted-foreground">Loading matchups…</p>
       </Card>
     );
@@ -110,7 +111,7 @@ export function ThisWeekMatchups() {
   if (error) {
     return (
       <Card className="p-6">
-        <h1 className="mb-4 text-xl font-semibold">This Week’s Matchups</h1>
+        <h1 className="mb-4 text-xl font-semibold">This Week's Matchups</h1>
         <p className="text-sm text-destructive">{error}</p>
       </Card>
     );
@@ -119,7 +120,7 @@ export function ThisWeekMatchups() {
   if (!data || data.matchups.length === 0) {
     return (
       <Card className="p-6">
-        <h1 className="mb-4 text-xl font-semibold">This Week’s Matchups</h1>
+        <h1 className="mb-4 text-xl font-semibold">This Week's Matchups</h1>
         <p className="text-sm text-muted-foreground">No matchups available yet.</p>
       </Card>
     );
@@ -127,11 +128,11 @@ export function ThisWeekMatchups() {
 
   return (
     <Card className="p-4">
-      <div className="mb-3">
-        <h2 className="text-lg font-semibold">This Week’s Matchups</h2>
+      <div className="mb-4">
+        <h2 className="text-lg font-semibold">This Week's Matchups</h2>
         <p className="text-sm text-muted-foreground">Gameweek {data.gameweek}</p>
       </div>
-      <div className="space-y-2">
+      <div className="space-y-3">
         {data.matchups.map((m, idx) => {
           const href = `/matchup/league/${m.gameweek || data.gameweek}/${m.team_1_id}/${m.team_2_id}`;
           const rivalry = (m as any).rivalry;
@@ -146,37 +147,42 @@ export function ThisWeekMatchups() {
             <Link
               key={`${m.team_1_id}-${m.team_2_id}-${idx}`}
               to={href}
-              className="block w-full rounded-md border p-3 text-foreground no-underline transition-colors hover:bg-muted/40 hover:no-underline visited:text-foreground"
+              className="block w-full rounded-md border p-4 text-foreground no-underline transition-colors hover:bg-muted/40 hover:no-underline visited:text-foreground"
             >
-              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-base font-medium">
-                <div className="min-w-0 truncate text-right">
-                  {m.team_1?.entry_name || "—"}
+              {/* Team names and entry names */}
+              <div className="grid grid-cols-[1fr_auto_1fr] gap-4 mb-3">
+                <div className="text-center">
+                  <div className="font-semibold text-sm mb-1">{m.team_1?.entry_name || "—"}</div>
+                  <div className="text-xs text-muted-foreground">{m.team_1?.manager_name || "—"}</div>
                 </div>
-                <div className="shrink-0 text-center text-2xl leading-none">
-                  {m.team_1_points} - {m.team_2_points}
+                <div className="flex items-center justify-center">
+                  <div className="w-20 text-center">
+                    <div className="text-3xl font-bold leading-none">
+                      <span>{m.team_1_points}</span>
+                      <span className="mx-1">-</span>
+                      <span>{m.team_2_points}</span>
+                    </div>
+                  </div>
                 </div>
-                <div className="min-w-0 truncate">
-                  {m.team_2?.entry_name || "—"}
+                <div className="text-center">
+                  <div className="font-semibold text-sm mb-1">{m.team_2?.entry_name || "—"}</div>
+                  <div className="text-xs text-muted-foreground">{m.team_2?.manager_name || "—"}</div>
                 </div>
               </div>
 
-              <div className="mt-1 grid grid-cols-[1fr_1fr] items-center gap-2 text-sm">
-                <div className="truncate text-right">{m.team_1?.manager_name || "—"}</div>
-                <div className="truncate">{m.team_2?.manager_name || "—"}</div>
-              </div>
-
-              <div className="mt-2 space-y-1 text-base leading-tight">
-                <div className="grid grid-cols-[7rem_1fr_auto_1fr] items-center gap-2">
-                  <div className="text-right">Season:</div>
-                  <div className="text-right">{season1Wins} wins</div>
-                  <div>{seasonDraws} draws</div>
-                  <div>{season2Wins} wins</div>
+              {/* Win records */}
+              <div className="space-y-1 text-xs border-t pt-2">
+                <div className="grid grid-cols-[6rem_1fr_auto_1fr] gap-2 items-center">
+                  <span className="text-muted-foreground font-medium">Season:</span>
+                  <div className="text-center font-medium">{season1Wins}W</div>
+                  <div className="text-center text-muted-foreground">{seasonDraws}D</div>
+                  <div className="text-center font-medium">{season2Wins}W</div>
                 </div>
-                <div className="grid grid-cols-[7rem_1fr_auto_1fr] items-center gap-2">
-                  <div className="text-right">All-Time:</div>
-                  <div className="text-right">{allTime1Wins} wins</div>
-                  <div>{allTimeDraws} draws</div>
-                  <div>{allTime2Wins} wins</div>
+                <div className="grid grid-cols-[6rem_1fr_auto_1fr] gap-2 items-center">
+                  <span className="text-muted-foreground font-medium">All-Time:</span>
+                  <div className="text-center font-medium">{allTime1Wins}W</div>
+                  <div className="text-center text-muted-foreground">{allTimeDraws}D</div>
+                  <div className="text-center font-medium">{allTime2Wins}W</div>
                 </div>
               </div>
             </Link>

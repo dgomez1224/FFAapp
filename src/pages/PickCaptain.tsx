@@ -8,6 +8,8 @@ import {
   clearCaptainSessionToken,
   getCaptainSessionToken,
 } from "../lib/captainSession";
+import { FootballPitch, PitchPlayer } from "../components/FootballPitch";
+import { PlayerStatsModal, PlayerStats } from "../components/PlayerStatsModal";
 
 type CaptainPlayer = {
   id: number;
@@ -33,6 +35,8 @@ export default function PickCaptain() {
   const [success, setSuccess] = useState<string | null>(null);
   const [context, setContext] = useState<CaptainContext | null>(null);
   const [captainId, setCaptainId] = useState<number | null>(null);
+  const [selectedPlayer, setSelectedPlayer] = useState<PlayerStats | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   const token = useMemo(() => getCaptainSessionToken(), []);
 
@@ -116,6 +120,62 @@ export default function PickCaptain() {
     }
   };
 
+  const pitchPlayers = (context?.players || []).map((p) => ({
+    player_id: p.id,
+    player_name: p.name,
+    position: p.position || 3,
+    raw_points: 0,
+    effective_points: 0,
+    is_captain: p.id === context?.selected_captain_id,
+    is_vice_captain: false,
+    is_cup_captain: p.id === context?.selected_captain_id,
+    multiplier: p.id === context?.selected_captain_id ? 2 : 1,
+  })) as PitchPlayer[];
+
+  const handlePlayerClick = async (player: PitchPlayer) => {
+    // Fetch history for the player and show in modal
+    setHistoryLoading(true);
+    setError(null);
+    try {
+      const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/player-history?player_id=${encodeURIComponent(
+        String(player.player_id),
+      )}`;
+      const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
+      const payload = await res.json();
+      if (!res.ok || payload?.error) {
+        throw new Error(payload?.error?.message || "Failed to fetch player history");
+      }
+
+      const stats: PlayerStats = {
+        player_id: player.player_id,
+        player_name: player.player_name,
+        position: player.position,
+        raw_points: 0,
+        effective_points: 0,
+        is_captain: player.is_captain,
+        is_vice_captain: false,
+        is_cup_captain: player.is_cup_captain,
+        multiplier: player.multiplier,
+        goals_scored: 0,
+        assists: 0,
+        minutes: 0,
+        history: (payload.history || []).map((h: any) => ({
+          gameweek: h.gameweek,
+          points: h.points,
+          goals: 0,
+          assists: 0,
+          minutes: 0,
+        })),
+      };
+
+      setSelectedPlayer(stats);
+    } catch (err: any) {
+      setError(err?.message || "Failed to fetch player history");
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
   if (loading) {
     return (
       <Card className="p-6">
@@ -153,41 +213,22 @@ export default function PickCaptain() {
 
       <Card className="p-6">
         <h2 className="text-lg font-semibold mb-4">Your Team</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-          {context.players.map((player) => (
-            <label
-              key={player.id}
-              className={`border rounded-md px-3 py-2 text-sm cursor-pointer ${
-                captainId === player.id ? "border-primary bg-muted" : ""
-              }`}
-            >
-              <input
-                type="radio"
-                name="captain"
-                value={player.id}
-                checked={captainId === player.id}
-                onChange={() => setCaptainId(player.id)}
-                className="mr-2"
-              />
-              {player.name}
-            </label>
-          ))}
-        </div>
+        <FootballPitch players={pitchPlayers} onPlayerClick={handlePlayerClick} showCaptain={true} />
 
         <div className="mt-5 flex items-center gap-2">
           <Button onClick={handleSave} disabled={saving || !captainId}>
             {saving ? "Saving..." : "Save Captain"}
           </Button>
           {context.selected_captain_name && (
-            <p className="text-sm text-muted-foreground">
-              Current selection: {context.selected_captain_name}
-            </p>
+            <p className="text-sm text-muted-foreground">Current selection: {context.selected_captain_name}</p>
           )}
         </div>
 
         {error && <p className="text-sm text-destructive mt-3">{error}</p>}
         {success && <p className="text-sm text-emerald-600 mt-3">{success}</p>}
       </Card>
+
+      <PlayerStatsModal player={selectedPlayer!} isOpen={!!selectedPlayer} onClose={() => setSelectedPlayer(null)} showHistory={true} />
     </div>
   );
 }

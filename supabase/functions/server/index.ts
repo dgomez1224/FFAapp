@@ -2785,6 +2785,49 @@ const h2hStandings = new Hono();
 const h2hMatchups = new Hono();
 const h2hRivalries = new Hono();
 
+// --------------------
+// Player History Endpoint
+// --------------------
+
+const playerHistory = new Hono();
+
+playerHistory.get("/", async (c) => {
+  try {
+    const playerId = parsePositiveInt(c.req.query("player_id"));
+    if (!playerId) return jsonError(c, 400, "Missing or invalid player_id");
+
+    const supabase = getSupabaseAdmin();
+    const { data: rows, error } = await supabase
+      .from("player_selections")
+      .select("gameweek, points_earned, is_captain, team_id")
+      .eq("player_id", playerId)
+      .order("gameweek", { ascending: false })
+      .limit(100);
+
+    if (error && !isMissingRelationError(error)) {
+      return jsonError(c, 500, "Failed to fetch player history", error.message);
+    }
+
+    const teamIds = Array.from(new Set((rows || []).map((r: any) => String(r.team_id)))).filter(Boolean);
+    const teamsMap: Record<string, any> = {};
+    if (teamIds.length > 0) {
+      const { data: teams } = await supabase.from("teams").select("id, entry_name").in("id", teamIds as any[]);
+      (teams || []).forEach((t: any) => { teamsMap[String(t.id)] = t.entry_name || null; });
+    }
+
+    const history = (rows || []).map((r: any) => ({
+      gameweek: r.gameweek,
+      points: r.points_earned ?? 0,
+      is_captain: !!r.is_captain,
+      team_entry_name: teamsMap[String(r.team_id)] || null,
+    }));
+
+    return c.json({ player_id: playerId, history });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to fetch player history");
+  }
+});
+
 h2hStandings.get("/", async (c) => {
   try {
     const supabase = getSupabaseAdmin();
@@ -5041,6 +5084,25 @@ captainAuth.post("/media", async (c) => {
       .eq("manager_name", session.manager_name)
       .maybeSingle();
 
+    // Also persist URLs into manager_auth_emails for easier access during auth flows
+    // and to satisfy the user's requirement to store uploaded images there.
+    try {
+      const authPayload: any = {};
+      if (mediaType === "club_crest") authPayload.club_crest = publicUrl;
+      if (mediaType === "club_logo") authPayload.club_logo = publicUrl;
+      if (mediaType === "manager_profile_picture") authPayload.manager_photo = publicUrl;
+
+      if (Object.keys(authPayload).length > 0) {
+        await supabase
+          .from("manager_auth_emails")
+          .update(authPayload)
+          .eq("manager_name", session.manager_name);
+      }
+    } catch (updErr) {
+      // Non-fatal: we already saved media_profiles. Log and continue.
+      console.error("Failed to update manager_auth_emails with media URLs:", updErr);
+    }
+
     return c.json({
       ok: true,
       manager_name: session.manager_name,
@@ -5726,6 +5788,7 @@ app.route("/cup-group-stage", cupGroupStage);
 app.route("/goblet-standings", gobletStandings);
 app.route("/manager-insights", managerInsights);
 app.route("/player-insights", playerInsights);
+app.route("/player-history", playerHistory);
 app.route("/h2h-standings", h2hStandings);
 app.route("/h2h-matchups", h2hMatchups);
 app.route("/h2h-rivalries", h2hRivalries);
@@ -5752,6 +5815,7 @@ app.route("/server/cup-group-stage", cupGroupStage);
 app.route("/server/goblet-standings", gobletStandings);
 app.route("/server/manager-insights", managerInsights);
 app.route("/server/player-insights", playerInsights);
+app.route("/server/player-history", playerHistory);
 app.route("/server/h2h-standings", h2hStandings);
 app.route("/server/h2h-matchups", h2hMatchups);
 app.route("/server/h2h-rivalries", h2hRivalries);
