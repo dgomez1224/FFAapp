@@ -1,0 +1,130 @@
+/**
+ * FPL-Style Table Styling
+ * 
+ * Provides table formatting that resembles the official FPL website:
+ * - Table-heavy layout
+ * - Minimalist design
+ * - Data-first approach
+ * - Familiar spacing and typography
+ */
+
+/* Table Container */
+.fpl-table-container {
+  border: 1px solid rgb(229, 231, 235);
+  border-radius: 0.375rem;
+  overflow: hidden;
+  background-color: white;
+}
+
+/* Table Header */
+.fpl-table-header {
+  background-color: rgb(249, 250, 251);
+  border-bottom: 1px solid rgb(229, 231, 235);
+}
+
+.fpl-table-header th {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: rgb(75, 85, 99);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.fpl-table-header th.text-right {
+  text-align: right;
+}
+
+.fpl-table-header th.text-center {
+  text-align: center;
+}
+
+/* Table Body */
+.fpl-table-body tr {
+  border-bottom: 1px solid rgb(243, 244, 246);
+  transition: background-color 0.15s ease-in-out;
+}
+
+.fpl-table-body tr:hover {
+  background-color: rgb(249, 250, 251);
+}
+
+.fpl-table-body tr:last-child {
+  border-bottom: none;
+}
+
+.fpl-table-body td {
+  padding: 0.75rem 1rem;
+  font-size: 0.875rem;
+}
+
+.fpl-table-body td.text-right {
+  text-align: right;
+}
+
+.fpl-table-body td.text-center {
+  text-align: center;
+}
+
+/* Rank Column */
+.fpl-rank {
+  width: 3rem;
+  text-align: center;
+  font-weight: 600;
+}
+
+.fpl-rank.champion {
+  color: rgb(37, 99, 235);
+  font-weight: 700;
+}
+
+/* Manager Name */
+.fpl-manager-name {
+  font-weight: 500;
+  color: rgb(17, 24, 39);
+}
+
+/* Points Column */
+.fpl-points {
+  text-align: right;
+  font-weight: 600;
+  color: rgb(17, 24, 39);
+}
+
+/* Numeric Columns */
+.fpl-numeric {
+  text-align: right;
+  color: rgb(55, 65, 81);
+}
+
+/* Champion Row Highlight */
+.fpl-table-body tr.champion {
+  background-color: rgb(239, 246, 255);
+  font-weight: 600;
+}
+
+/* Compact Table Variant */
+.fpl-table-compact th,
+.fpl-table-compact td {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.75rem;
+}
+
+/* Responsive Table Wrapper */
+.fpl-table-wrapper {
+  overflow-x: auto;
+  margin-left: -1rem;
+  margin-right: -1rem;
+}
+
+@media (min-width: 640px) {
+  .fpl-table-wrapper {
+    margin-left: 0;
+    margin-right: 0;
+  }
+}
+
+.fpl-table-wrapper table {
+  min-width: 100%;
+}

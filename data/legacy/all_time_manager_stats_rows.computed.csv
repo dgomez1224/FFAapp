@@ -1,0 +1,11 @@
+id,manager_name,wins,losses,draws,total_points,points_plus,points_per_game,total_transactions,league_titles,cup_wins,goblet_wins,fifty_plus_weeks,sub_twenty_weeks,highest_gameweek,lowest_gameweek,largest_margin_win,largest_margin_loss,avg_margin_win,avg_margin_loss,longest_win_streak,longest_loss_streak,longest_undefeated_streak,elo_rating,updated_at
+,BENJI,59,67,3,180,5093,1.4,0,0,0,0,0,0,,,,,,,,,,,
+,CHRIS,73,77,2,221,6299,1.45,0,0,0,0,0,0,,,,,,,,,,,
+,DAVID,70,79,3,213,5879,1.4,0,0,0,0,0,0,,,,,,,,,,,
+,HENRI,74,73,5,227,6207,1.49,0,0,0,0,0,0,,,,,,,,,,,
+,IAN,80,67,5,245,6278,1.61,0,0,0,0,0,0,,,,,,,,,,,
+,LENNART,70,77,5,215,6272,1.41,0,0,0,1,0,0,,,,,,,,,,,
+,MARCO,80,69,3,243,6537,1.6,0,1,0,0,0,0,,,,,,,,,,,
+,MATT,83,65,4,253,6696,1.66,0,1,0,1,0,0,,,,,,,,,,,
+,MAX,61,88,3,186,6095,1.22,0,0,0,0,0,0,,,,,,,,,,,
+,PATRICK,84,67,1,253,6626,1.66,0,2,0,2,0,0,,,,,,,,,,,

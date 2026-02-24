@@ -1,0 +1,13 @@
+id,season,manager_name,won_league,won_cup,won_goblet,trophy_count,double_type,imported_at
+0728c8ba-7566-4753-9a87-804f90039732,2024/25,PATRICK,true,false,true,2,league+goblet,2026-01-26 22:39:12.860924+00
+1f7239bb-9b8f-43d8-ab9f-830766bc8f5b,2023/24,PATRICK,true,false,true,2,league+goblet,2026-01-26 22:40:16.33517+00
+3db1e4e5-95a2-4b2d-9fb9-c276878349d8,2017/18,DAVID,true,false,false,1,,2026-01-26 22:36:56.474441+00
+41c0b2ae-8a32-4d8f-9edf-902394dc02b6,2021/22,HENRI,false,true,false,1,,2026-01-26 22:38:20.942995+00
+567be810-0480-43b0-af23-00f1115a7221,2018/19,IAN,true,false,false,1,,2026-01-26 22:37:26.027722+00
+5697a82a-dddc-4874-9cdd-26fda376bd9c,2020/21,MARCO,true,false,false,1,,2026-01-26 22:37:55.555353+00
+6b3bb3dd-f8e7-4842-a906-ddfc27f450d6,2021/22,LENNART,false,false,true,1,,2026-01-26 22:38:39.155702+00
+99aa316b-67ec-46b5-a19a-2296cd533530,2023/24,HENRI,false,true,false,1,,2026-01-26 22:39:25.655381+00
+a6fe7849-4ee0-4801-9680-37a349a29045,2024/25,IAN,false,true,false,1,,2026-01-26 22:40:27.244975+00
+b16cacea-e315-4b6f-9cf2-49c2e0b12c18,2021/22,MARCO,true,false,false,1,,2026-01-26 22:38:08.119125+00
+c98413a7-b18b-448b-97f9-4f750dcba5ee,2022/23,MATT,true,true,true,3,treble,2026-01-26 22:38:57.057761+00
+fa65b8c9-cbf9-4b98-bf60-52c83627221b,2019/20,LENNART,true,false,false,1,,2026-01-26 22:37:40.17106+00

@@ -1,0 +1,50 @@
+,,,,,,,,,,,,,,,,,,,,,,,
+PRE24/25,manager_name,WINS,,manager_name,LOSSES,,manager_name,DRAWS,,manager_name,POINTS,,manager_name,TRANSACTIONS,,manager_name,PPG,,manager_name,League Titles,,manager_name,ELO
+MATT,PATRICK,93,,MAX,93,,LENNART,5,,PATRICK,280,,MATT,229,,MATT,1.66,,MARCO,2,,MATT,9.66
+PATRICK,MATT,91,,BENJI,90,,HENRI,5,,MATT,278,,MARCO,177,,PATRICK,1.68,,MATT,1,,PATRICK,9.68
+IAN,MARCO,87,,DAVID,86,,IAN,5,,MARCO,265,,MAX,168,,IAN,1.54,,IAN,1,,MARCO,7.59
+MARCO,IAN,84,,LENNART,85,,MATT,5,,IAN,257,,CHRIS,136,,MARCO,1.59,,DAVID,1,,IAN,6.54
+HENRI,CHRIS,81,,CHRIS,83,,MARCO,4,,CHRIS,245,,IAN,128,,HENRI,1.49,,PATRICK,2,,HENRI,5.49
+CHRIS,DAVID,78,,IAN,78,,MAX,3,,DAVID,237,,DAVID,113,,CHRIS,1.48,,LENNART,1,,LENNART,5.41
+LENNART,LENNART,77,,MARCO,76,,DAVID,3,,LENNART,236,,PATRICK,108,,LENNART,1.41,,MAX,0,,DAVID,4.42
+DAVID,HENRI,74,,HENRI,73,,BENJI,3,,HENRI,227,,LENNART,108,,DAVID,1.42,,CHRIS,0,,CHRIS,1.48
+BENJI,BENJI,74,,PATRICK,73,,CHRIS,2,,BENJI,225,,BENJI,105,,BENJI,1.35,,BENJI,0,,BENJI,1.35
+MAX,MAX,71,,MATT,71,,PATRICK,1,,MAX,216,,HENRI,101,,MAX,1.29,,HENRI,0,,MAX,1.29
+,,,,,,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,,,,
+,manager_name,50+ PTS,,manager_name,20- PTS,,manager_name,+,,manager_name,Margin Win,,manager_name,Margin Loss,,,,,manager_name,FFA Cups,,manager_name,Goblets
+,PATRICK,51,,LENNART,10,,MATT,7289,,MAX,7.63,,DAVID,8.74,,,,,HENRI,2,,MATT,1
+,MARCO,51,,DAVID,9,,PATRICK,7285,,HENRI,9.54,,IAN,7.95,,,,,MATT,1,,PATRICK,2
+,CHRIS,46,,MAX,9,,MARCO,7185,,MARCO,7.01,,BENJI,7.03,,,,,MARCO,0,,LENNART,1
+,MATT,46,,CHRIS,7,,LENNART,6934,,CHRIS,6.47,,MATT,6.87,,,,,IAN,1,,MARCO,0
+,LENNART,45,,IAN,7,,CHRIS,6916,,MATT,6.55,,PATRICK,7.32,,,,,DAVID,0,,IAN,0
+,IAN,40,,PATRICK,7,,IAN,6875,,BENJI,6.3,,MARCO,7.11,,,,,PATRICK,0,,DAVID,0
+,HENRI,40,,BENJI,7,,HENRI,6838,,PATRICK,5.55,,CHRIS,6.18,,,,,LENNART,0,,MAX,0
+,MAX,39,,HENRI,6,,MAX,6721,,IAN,5.73,,MAX,6.3,,,,,MAX,0,,CHRIS,0
+,BENJI,36,,MARCO,5,,BENJI,6551,,DAVID,5.18,,HENRI,5.14,,,,,CHRIS,0,,BENJI,0
+,DAVID,36,,MATT,4,,DAVID,6453,,LENNART,4.75,,LENNART,2.82,,,,,BENJI,0,,HENRI,0
+,,,,,,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,,,,
+,FFA CUPS,,,,,,,,,,,,,,,,,,,,,,
+,SEASON,BRACKET,,,,,,,,,,,,,,,,,,,,,
+,2021/22,https://brackethq.com/b/i1kz/,,,,,,,,,,,,,,,,,,,,,
+,2022/23,https://brackethq.com/b/pcq4/,,,,,,,,,,,,,,,,,,,,,
+,2023/24,https://brackethq.com/b/cydwb/,,,,,,,,,,,,,,,,,,,,,
+,2024/25,https://brackethq.com/b/5ucnc/,,,,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,,,,
+,Season,League Champion,FFA Cup Winner,Goblet Winner,Treble,,,,,,,,,,,,,,,,,,
+,2017/18,DAVID,,,FALSE,,,,,,,,,,,,,,,,,,
+,2018/19,IAN,,,FALSE,,,,,,,,,,,,,,,,,,
+,2019/20,LENNART,,,FALSE,,,,,,,,,,,,,,,,,,
+,2020/21,MARCO,,,FALSE,,,,,,,,,,,,,,,,,,
+,2021/22,MARCO,HENRI,LENNART,FALSE,,,,,,,,,,,,,,,,,,
+,2022/23,MATT,MATT,MATT,TRUE,,,,,,,,,,,,,,,,,,
+,2023/24,PATRICK,HENRI,PATRICK,FALSE,,,,,,,,,,,,,,,,,,
+,2024/25,PATRICK,IAN,PATRICK,,,,,,,,,,,,,,,,,,,
+,2025/26,,,,,,,,,,,,,,,,,,,,,,
+,2026/27,,,,,,,,,,,,,,,,,,,,,,
+,2027/28,,,,,,,,,,,,,,,,,,,,,,
+,2028/29,,,,,,,,,,,,,,,,,,,,,,
+,2029/30,,,,,,,,,,,,,,,,,,,,,,

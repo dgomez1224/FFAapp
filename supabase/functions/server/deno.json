@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "lib": ["deno.window"],
+    "strict": true
+  },
+  "imports": {
+    "hono": "npm:hono@^4.0.0",
+    "hono/cors": "npm:hono@^4.0.0/cors",
+    "hono/logger": "npm:hono@^4.0.0/logger",
+    "hono/http-exception": "npm:hono@^4.0.0/http-exception"
+  }
+}
