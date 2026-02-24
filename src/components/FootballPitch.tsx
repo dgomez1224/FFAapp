@@ -35,33 +35,15 @@ const POSITION_NAMES: Record<number, string> = {
 };
 
 // Formation positions (4-3-3)
-const FORMATION_POSITIONS: Record<number, { x: number; y: number }[]> = {
-  1: [{ x: 50, y: 88 }], // GK - 1
-  2: [
-    { x: 20, y: 75 },
-    { x: 40, y: 75 },
-    { x: 60, y: 75 },
-    { x: 80, y: 75 },
-  ], // DEF - 4
-  3: [
-    { x: 25, y: 50 },
-    { x: 50, y: 50 },
-    { x: 75, y: 50 },
-  ], // MID - 3
-  4: [
-    { x: 20, y: 25 },
-    { x: 50, y: 25 },
-    { x: 80, y: 25 },
-  ], // FWD - 3
+const FORMATION_Y: Record<number, number> = {
+  1: 88,
+  2: 72,
+  3: 50,
+  4: 28,
 };
-
-interface PlayerWithImage extends PitchPlayer {
-  imageUrl: string | null;
-}
 
 export function FootballPitch({ players, onPlayerClick, showCaptain = true }: FootballPitchProps) {
   const [playerImages, setPlayerImages] = useState<Record<number, string | null>>({});
-  const [loadingImages, setLoadingImages] = useState(true);
 
   React.useEffect(() => {
     async function loadImages() {
@@ -71,7 +53,6 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
         images[player.player_id] = url;
       }
       setPlayerImages(images);
-      setLoadingImages(false);
     }
     loadImages();
   }, [players]);
@@ -87,9 +68,19 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
   );
 
   const getPlayerPosition = (position: number, playerIndex: number): { x: number; y: number } => {
-    const positions = FORMATION_POSITIONS[position] || [];
-    return positions[playerIndex] || { x: 50, y: 50 };
+    const positionPlayers = playersByPosition[position] || [];
+    const count = Math.max(1, positionPlayers.length);
+    if (position === 1) return { x: 50, y: FORMATION_Y[1] };
+    const startX = 18;
+    const endX = 82;
+    const step = count === 1 ? 0 : (endX - startX) / (count - 1);
+    return {
+      x: count === 1 ? 50 : startX + step * playerIndex,
+      y: FORMATION_Y[position] || 50,
+    };
   };
+
+  const hasActiveMultiplier = showCaptain && players.some((p) => !!p.is_cup_captain && p.multiplier > 1);
 
   return (
     <div className="relative w-full bg-gradient-to-b from-green-500 to-green-600 rounded-lg overflow-hidden">
@@ -120,13 +111,13 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
           posPlayers.map((player, playerIdx) => {
             const pos = getPlayerPosition(parseInt(position), playerIdx);
             const imageUrl = playerImages[player.player_id];
-            const isCaptain = showCaptain && player.is_cup_captain;
+            const isCaptain = showCaptain && player.is_cup_captain && player.multiplier > 1;
 
             return (
               <button
                 key={`${player.player_id}-${playerIdx}`}
                 onClick={() => onPlayerClick?.(player)}
-                className="absolute transform -translate-x-1/2 -translate-y-1/2 group cursor-pointer"
+                className={`absolute transform -translate-x-1/2 -translate-y-1/2 group ${onPlayerClick ? "cursor-pointer" : "cursor-default"}`}
                 style={{
                   left: `${pos.x}%`,
                   top: `${pos.y}%`,
@@ -171,9 +162,11 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
       </div>
 
       {/* Legend */}
-      <div className="absolute bottom-2 left-2 text-xs text-white bg-black/40 rounded px-2 py-1">
-        {showCaptain && <div>⚡ = Captain (2x multiplier)</div>}
-      </div>
+      {hasActiveMultiplier && (
+        <div className="absolute bottom-2 left-2 text-xs text-white bg-black/40 rounded px-2 py-1">
+          <div>⚡ = Captain</div>
+        </div>
+      )}
     </div>
   );
 }

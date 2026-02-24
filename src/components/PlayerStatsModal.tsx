@@ -52,7 +52,7 @@ interface PlayerStatsModalProps {
   onSelectCaptain?: (playerId: number) => void;
 }
 
-export function PlayerStatsModal({ player, isOpen, onClose, showHistory = false }: PlayerStatsModalProps) {
+export function PlayerStatsModal({ player, isOpen, onClose, showHistory = false, onSelectCaptain }: PlayerStatsModalProps) {
   if (!isOpen) return null;
 
   return (
@@ -82,85 +82,80 @@ export function PlayerStatsModal({ player, isOpen, onClose, showHistory = false 
             )}
           </div>
 
-          {!showHistory ? (
-            <>
-              {/* Points breakdown */}
-              <div className="space-y-3 mb-4">
-                <div className="flex justify-between items-center border-b pb-2">
-                  <span className="text-muted-foreground">Raw Points</span>
-                  <span className="font-semibold">{player.raw_points.toFixed(1)}</span>
-                </div>
-                {player.multiplier > 1 && (
-                  <div className="flex justify-between items-center border-b pb-2">
-                    <span className="text-muted-foreground">Multiplier</span>
-                    <span className="font-semibold text-amber-600">×{player.multiplier}</span>
-                  </div>
-                )}
-                <div className="flex justify-between items-center text-lg font-bold bg-green-50 dark:bg-green-950 p-2 rounded">
-                  <span>Effective Points</span>
-                  <span className="text-green-600 dark:text-green-400">{player.effective_points.toFixed(1)}</span>
-                </div>
+          {/* Points breakdown */}
+          <div className="space-y-3 mb-4">
+            <div className="flex justify-between items-center border-b pb-2">
+              <span className="text-muted-foreground">Raw Points</span>
+              <span className="font-semibold">{player.raw_points.toFixed(1)}</span>
+            </div>
+            {player.multiplier > 1 && (
+              <div className="flex justify-between items-center border-b pb-2">
+                <span className="text-muted-foreground">Multiplier</span>
+                <span className="font-semibold text-amber-600">×{player.multiplier}</span>
               </div>
+            )}
+            <div className="flex justify-between items-center text-lg font-bold bg-green-50 dark:bg-green-950 p-2 rounded">
+              <span>Effective Points</span>
+              <span className="text-green-600 dark:text-green-400">{player.effective_points.toFixed(1)}</span>
+            </div>
+          </div>
 
-              {/* Match stats */}
-              <div className="space-y-2 text-sm">
-                <h3 className="font-semibold mb-2">Match Statistics</h3>
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="p-2 bg-muted rounded">
-                    <p className="text-muted-foreground text-xs">Goals</p>
-                    <p className="text-lg font-bold">{player.goals_scored ?? 0}</p>
-                  </div>
-                  <div className="p-2 bg-muted rounded">
-                    <p className="text-muted-foreground text-xs">Assists</p>
-                    <p className="text-lg font-bold">{player.assists ?? 0}</p>
-                  </div>
-                  <div className="p-2 bg-muted rounded">
-                    <p className="text-muted-foreground text-xs">Minutes</p>
-                    <p className="text-lg font-bold">{player.minutes ?? 0}</p>
-                  </div>
-                  <div className="p-2 bg-muted rounded">
-                    <p className="text-muted-foreground text-xs">Def. Cont.</p>
-                    <p className="text-lg font-bold">{player.defensive_contributions ?? 0}</p>
-                  </div>
-                  {player.clean_sheets !== undefined && (
-                    <div className="p-2 bg-muted rounded">
-                      <p className="text-muted-foreground text-xs">Clean Sheets</p>
-                      <p className="text-lg font-bold">{player.clean_sheets}</p>
-                    </div>
-                  )}
-                  {player.yellow_cards !== undefined && (
-                    <div className="p-2 bg-muted rounded">
-                      <p className="text-muted-foreground text-xs">Yellow Cards</p>
-                      <p className="text-lg font-bold">{player.yellow_cards}</p>
-                    </div>
-                  )}
+          {/* Match stats */}
+          <div className="space-y-2 text-sm">
+            <h3 className="font-semibold mb-2">Gameweek Statistics</h3>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="p-2 bg-muted rounded">
+                <p className="text-muted-foreground text-xs">Goals</p>
+                <p className="text-lg font-bold">{player.goals_scored ?? 0}</p>
+              </div>
+              <div className="p-2 bg-muted rounded">
+                <p className="text-muted-foreground text-xs">Assists</p>
+                <p className="text-lg font-bold">{player.assists ?? 0}</p>
+              </div>
+              <div className="p-2 bg-muted rounded">
+                <p className="text-muted-foreground text-xs">Minutes</p>
+                <p className="text-lg font-bold">{player.minutes ?? 0}</p>
+              </div>
+              <div className="p-2 bg-muted rounded">
+                <p className="text-muted-foreground text-xs">Def. Cont.</p>
+                <p className="text-lg font-bold">{player.defensive_contributions ?? 0}</p>
+              </div>
+              {player.clean_sheets !== undefined && (
+                <div className="p-2 bg-muted rounded">
+                  <p className="text-muted-foreground text-xs">Clean Sheets</p>
+                  <p className="text-lg font-bold">{player.clean_sheets}</p>
                 </div>
-              </div>
-            </>
-          ) : (
-            <>
-              {/* History view */}
-              <div className="space-y-2 text-sm">
-                <h3 className="font-semibold mb-3">Gameweek History</h3>
-                {player.history && player.history.length > 0 ? (
-                  <div className="space-y-2 max-h-80 overflow-y-auto">
-                    {player.history.map((entry) => (
-                      <div key={entry.gameweek} className="p-2 bg-muted rounded flex justify-between items-center">
-                        <div>
-                          <p className="font-medium">GW {entry.gameweek}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {entry.goals ?? 0}G {entry.assists ?? 0}A {entry.minutes ?? 0}M
-                          </p>
-                        </div>
-                        <p className="font-bold text-green-600">{entry.points.toFixed(1)}</p>
+              )}
+              {player.yellow_cards !== undefined && (
+                <div className="p-2 bg-muted rounded">
+                  <p className="text-muted-foreground text-xs">Yellow Cards</p>
+                  <p className="text-lg font-bold">{player.yellow_cards}</p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {showHistory && (
+            <div className="space-y-2 text-sm mt-4">
+              <h3 className="font-semibold mb-3">Gameweek History</h3>
+              {player.history && player.history.length > 0 ? (
+                <div className="space-y-2 max-h-80 overflow-y-auto">
+                  {player.history.map((entry) => (
+                    <div key={entry.gameweek} className="p-2 bg-muted rounded flex justify-between items-center">
+                      <div>
+                        <p className="font-medium">GW {entry.gameweek}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {entry.goals ?? 0}G {entry.assists ?? 0}A {entry.minutes ?? 0}M
+                        </p>
                       </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-muted-foreground text-sm">No history available</p>
-                )}
-              </div>
-            </>
+                      <p className="font-bold text-green-600">{entry.points.toFixed(1)}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-muted-foreground text-sm">No history available</p>
+              )}
+            </div>
           )}
 
           {/* Close button */}

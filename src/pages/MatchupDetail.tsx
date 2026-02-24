@@ -10,6 +10,8 @@ type LineupPlayer = {
   player_id: number;
   player_name: string;
   position: number;
+  lineup_slot?: number | null;
+  is_bench?: boolean;
   is_captain: boolean;
   is_vice_captain: boolean;
   is_cup_captain: boolean;
@@ -40,6 +42,7 @@ type TeamDetail = {
 type Payload = {
   type: "league" | "cup";
   gameweek: number;
+  current_gameweek: number;
   matchup: {
     team_1_points: number | null;
     team_2_points: number | null;
@@ -47,15 +50,31 @@ type Payload = {
     live_team_2_points: number;
     round: string | null;
     matchup_id: string | null;
+    has_started?: boolean;
   };
   team_1: TeamDetail;
   team_2: TeamDetail;
 };
 
-function TeamPitchDisplay({ team, matchupType }: { team: TeamDetail; matchupType: "league" | "cup" }) {
+function TeamPitchDisplay({
+  team,
+  matchupType,
+  showHistory,
+}: {
+  team: TeamDetail;
+  matchupType: "league" | "cup";
+  showHistory: boolean;
+}) {
   const [selectedPlayer, setSelectedPlayer] = useState<PlayerStats | null>(null);
 
-  const pitchPlayers: PitchPlayer[] = team.lineup.map((p) => ({
+  const starters = team.lineup
+    .filter((p) => !p.is_bench)
+    .sort((a, b) => (a.lineup_slot ?? 99) - (b.lineup_slot ?? 99));
+  const bench = team.lineup
+    .filter((p) => !!p.is_bench)
+    .sort((a, b) => (a.lineup_slot ?? 99) - (b.lineup_slot ?? 99));
+
+  const pitchPlayers: PitchPlayer[] = starters.map((p) => ({
     player_id: p.player_id,
     player_name: p.player_name,
     position: p.position,
@@ -70,12 +89,42 @@ function TeamPitchDisplay({ team, matchupType }: { team: TeamDetail; matchupType
     minutes: p.minutes,
   }));
 
-  const handlePlayerClick = (player: PitchPlayer) => {
+  const handlePlayerClick = async (player: PitchPlayer) => {
     const fullPlayer = team.lineup.find((p) => p.player_id === player.player_id);
-    if (fullPlayer) {
+    if (!fullPlayer) return;
+
+    if (!showHistory) {
       setSelectedPlayer({
         ...fullPlayer,
         position: fullPlayer.position,
+      });
+      return;
+    }
+
+    try {
+      const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/player-history?player_id=${encodeURIComponent(String(player.player_id))}`;
+      const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
+      const payload = await res.json();
+      if (!res.ok || payload?.error) {
+        throw new Error(payload?.error?.message || "Failed to fetch player history");
+      }
+
+      setSelectedPlayer({
+        ...fullPlayer,
+        position: fullPlayer.position,
+        history: (payload.history || []).map((h: any) => ({
+          gameweek: h.gameweek,
+          points: h.points ?? 0,
+          goals: 0,
+          assists: 0,
+          minutes: 0,
+        })),
+      });
+    } catch {
+      setSelectedPlayer({
+        ...fullPlayer,
+        position: fullPlayer.position,
+        history: [],
       });
     }
   };
@@ -99,16 +148,49 @@ function TeamPitchDisplay({ team, matchupType }: { team: TeamDetail; matchupType
         player={selectedPlayer!}
         isOpen={!!selectedPlayer}
         onClose={() => setSelectedPlayer(null)}
-        showHistory={false}
+        showHistory={showHistory}
       />
 
       {/* Substitute/Bench info */}
-      {team.lineup.length > 0 && (
-        <div className="mt-4 text-sm">
+      {starters.length > 0 && (
+        <div className="mt-4 text-sm space-y-2">
           <p className="text-muted-foreground">
-            {team.lineup.filter((p) => p.position === 1).length} GK • {team.lineup.filter((p) => p.position === 2).length} DEF •{" "}
-            {team.lineup.filter((p) => p.position === 3).length} MID • {team.lineup.filter((p) => p.position === 4).length} FWD
+            {starters.filter((p) => p.position === 1).length} GK • {starters.filter((p) => p.position === 2).length} DEF •{" "}
+            {starters.filter((p) => p.position === 3).length} MID • {starters.filter((p) => p.position === 4).length} FWD
           </p>
+          <div>
+            <p className="text-xs font-medium text-muted-foreground mb-1">Bench</p>
+            {bench.length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {bench.map((p) => (
+                  <button
+                    key={`${p.player_id}-bench`}
+                    onClick={() =>
+                      handlePlayerClick({
+                        player_id: p.player_id,
+                        player_name: p.player_name,
+                        position: p.position,
+                        raw_points: p.raw_points,
+                        effective_points: p.effective_points,
+                        is_captain: p.is_captain,
+                        is_vice_captain: p.is_vice_captain,
+                        is_cup_captain: p.is_cup_captain,
+                        multiplier: p.multiplier,
+                        goals_scored: p.goals_scored,
+                        assists: p.assists,
+                        minutes: p.minutes,
+                      })
+                    }
+                    className="rounded border px-2 py-1 text-xs hover:bg-muted"
+                  >
+                    {p.player_name} ({p.effective_points.toFixed(1)})
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">No bench data</p>
+            )}
+          </div>
         </div>
       )}
     </Card>
@@ -158,6 +240,7 @@ export default function MatchupDetailPage() {
 
   const team1Points = data.matchup.team_1_points ?? data.matchup.live_team_1_points;
   const team2Points = data.matchup.team_2_points ?? data.matchup.live_team_2_points;
+  const showHistory = !data.matchup.has_started;
 
   return (
     <div className="space-y-6">
@@ -185,8 +268,8 @@ export default function MatchupDetailPage() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <TeamPitchDisplay team={data.team_1} matchupType={data.type} />
-        <TeamPitchDisplay team={data.team_2} matchupType={data.type} />
+        <TeamPitchDisplay team={data.team_1} matchupType={data.type} showHistory={showHistory} />
+        <TeamPitchDisplay team={data.team_2} matchupType={data.type} showHistory={showHistory} />
       </div>
     </div>
   );

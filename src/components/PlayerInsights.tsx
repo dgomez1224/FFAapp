@@ -13,6 +13,7 @@ interface PlayerInsight {
   player_name: string;
   position?: number | null;
   team?: number | null;
+  team_name?: string | null;
   availability?: string | null;
   goals_scored?: number;
   assists?: number;
@@ -32,6 +33,9 @@ interface PlayerInsight {
   total_points_contributed?: number;
   teams_using?: number;
   selected_by_percent?: number;
+  ownership_status?: string;
+  owned_by?: string[];
+  total_minutes?: number;
 }
 
 interface PlayerInsightsResponse {
@@ -186,7 +190,7 @@ export default function PlayerInsights() {
             <option value="">All Teams</option>
             {teamOptions.map((team) => (
               <option key={team} value={String(team)}>
-                Team {team}
+                {(players.find((p) => p.team === team)?.team_name || `Team ${team}`)}
               </option>
             ))}
           </select>
@@ -208,10 +212,12 @@ export default function PlayerInsights() {
               <TableRow>
                 <TableHead className="cursor-pointer" onClick={() => toggleSort("player_name")}>Player{sortLabel("player_name")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("position")}>Pos{sortLabel("position")}</TableHead>
+                <TableHead className="cursor-pointer" onClick={() => toggleSort("team_name")}>Team{sortLabel("team_name")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("goals_scored")}>Goals{sortLabel("goals_scored")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("assists")}>Assists{sortLabel("assists")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("total_points")}>Total Pts{sortLabel("total_points")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("games_played")}>Games{sortLabel("games_played")}</TableHead>
+                <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("total_minutes")}>Total Min{sortLabel("total_minutes")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("defensive_contribution_returns")}>Def Returns{sortLabel("defensive_contribution_returns")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("defensive_contributions")}>Def Contrib{sortLabel("defensive_contributions")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("points_per_game_played")}>Pts/Game{sortLabel("points_per_game_played")}</TableHead>
@@ -220,6 +226,7 @@ export default function PlayerInsights() {
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("points_per_90_played")}>Pts/90{sortLabel("points_per_90_played")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("average_points_home")}>Avg Home Pts{sortLabel("average_points_home")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("average_points_away")}>Avg Away Pts{sortLabel("average_points_away")}</TableHead>
+                <TableHead className="cursor-pointer" onClick={() => toggleSort("ownership_status")}>Ownership{sortLabel("ownership_status")}</TableHead>
                 <TableHead className="text-right">Avail</TableHead>
               </TableRow>
             </TableHeader>
@@ -228,10 +235,12 @@ export default function PlayerInsights() {
                 <TableRow key={p.player_id}>
                   <TableCell className="font-medium">{p.player_name}</TableCell>
                   <TableCell className="text-right">{p.position ? POSITION_NAMES[p.position] : "—"}</TableCell>
+                  <TableCell>{p.team_name || "—"}</TableCell>
                   <TableCell className="text-right">{p.goals_scored ?? 0}</TableCell>
                   <TableCell className="text-right">{p.assists ?? 0}</TableCell>
                   <TableCell className="text-right">{p.total_points ?? 0}</TableCell>
                   <TableCell className="text-right">{p.games_played ?? 0}</TableCell>
+                  <TableCell className="text-right">{p.total_minutes ?? 0}</TableCell>
                   <TableCell className="text-right">{p.defensive_contribution_returns ?? 0}</TableCell>
                   <TableCell className="text-right">{p.defensive_contributions ?? 0}</TableCell>
                   <TableCell className="text-right">{(p.points_per_game_played ?? 0).toFixed(2)}</TableCell>
@@ -240,6 +249,7 @@ export default function PlayerInsights() {
                   <TableCell className="text-right">{(p.points_per_90_played ?? 0).toFixed(2)}</TableCell>
                   <TableCell className="text-right">{p.average_points_home == null ? "—" : p.average_points_home.toFixed(2)}</TableCell>
                   <TableCell className="text-right">{p.average_points_away == null ? "—" : p.average_points_away.toFixed(2)}</TableCell>
+                  <TableCell>{p.ownership_status || (p.owned_by && p.owned_by.length > 0 ? `Owned by ${p.owned_by.join(", ")}` : "Unowned")}</TableCell>
                   <TableCell className="text-right">{AVAILABILITY_LABELS[String(p.availability || "")] || "—"}</TableCell>
                 </TableRow>
               ))}

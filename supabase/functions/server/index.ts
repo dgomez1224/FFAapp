@@ -2640,14 +2640,17 @@ playerInsights.get("/", async (c) => {
       if (!id) return;
       classicById[id] = p;
     });
-    const rawPlayers = draftPlayers.length > 0 ? draftPlayers : classicPlayers;
+    const rawPlayers = classicPlayers.length > 0 ? classicPlayers : draftPlayers;
 
     const byPlayerFromBootstrap: Record<number, any> = {};
     rawPlayers.forEach((p: any) => {
       const playerId = parsePositiveInt(p?.id ?? p?.element ?? p?.element_id);
       if (!playerId) return;
       const pClassic = classicById[playerId] || {};
-      const merged = { ...pClassic, ...p };
+      const draftRow = draftPlayers.find((d: any) =>
+        parsePositiveInt(d?.id ?? d?.element ?? d?.element_id) === playerId,
+      ) || {};
+      const merged = { ...pClassic, ...draftRow, ...p };
 
       const playerName =
         String(
@@ -2749,13 +2752,15 @@ playerInsights.get("/", async (c) => {
 
     // Build team id -> name map from bootstrap/team data
     const teamMap: Record<number, string> = {};
-    if (draftBootstrap) {
-      const draftTeams = normalizeDraftList<any>(draftBootstrap?.teams || draftBootstrap?.elements?.teams || []);
-      draftTeams.forEach((t: any) => {
-        const id = parsePositiveInt(t?.id ?? t?.team);
-        if (id) teamMap[id] = t?.name || t?.short_name || String(t?.id);
-      });
-    }
+    const sourceTeams = [
+      ...normalizeDraftList<any>(draftBootstrap?.teams || draftBootstrap?.elements?.teams || []),
+      ...normalizeDraftList<any>(classicBootstrap?.teams || classicBootstrap?.elements?.teams || []),
+    ];
+    sourceTeams.forEach((t: any) => {
+      const id = parsePositiveInt(t?.id ?? t?.team);
+      if (!id || teamMap[id]) return;
+      teamMap[id] = t?.name || t?.short_name || String(t?.id);
+    });
 
     // Fetch player selection data from database
     // This would come from a player_selections table that tracks which players
@@ -2781,6 +2786,13 @@ playerInsights.get("/", async (c) => {
 
     if (!selections || selections.length === 0) {
       const fallbackInsights = Object.values(byPlayerFromBootstrap)
+        .map((p: any) => ({
+          ...p,
+          owned_by: ownersMap[p.player_id] || [],
+          ownership_status: (ownersMap[p.player_id] || []).length > 0 ? `Owned by ${(ownersMap[p.player_id] || []).join(", ")}` : "Unowned",
+          team_name: teamMap[p.team] || null,
+          total_minutes: p.minutes_played ?? 0,
+        }))
         .sort((a: any, b: any) => {
           const bySelected = coerceNumber(b.selected_by_percent) - coerceNumber(a.selected_by_percent);
           if (bySelected !== 0) return bySelected;
@@ -2822,21 +2834,24 @@ playerInsights.get("/", async (c) => {
       playerMap[sel.player_id].teams.add(sel.team_id);
     });
 
-    const insights = Object.values(playerMap).map((p: any) => ({
-      player_id: p.player_id,
-      player_name: p.player_name,
-      selected_count: p.selected_count,
-      captain_count: p.captain_count,
-      captain_frequency: p.selected_count > 0 ? (p.captain_count / p.selected_count) * 100 : 0,
-      total_points_contributed: p.total_points_contributed,
-      teams_using: p.teams.size,
-      ...byPlayerFromBootstrap[p.player_id],
-      // attach ownership and team name if available
-      owned_by: ownersMap[p.player_id] || [],
-      team_name: teamMap[byPlayerFromBootstrap[p.player_id]?.team] || null,
-      total_minutes: byPlayerFromBootstrap[p.player_id]?.minutes_played ?? 0,
-      points: byPlayerFromBootstrap[p.player_id]?.total_points ?? 0,
-    }));
+    const insights = Object.values(playerMap).map((p: any) => {
+      const ownedBy = ownersMap[p.player_id] || [];
+      return {
+        player_id: p.player_id,
+        player_name: p.player_name,
+        selected_count: p.selected_count,
+        captain_count: p.captain_count,
+        captain_frequency: p.selected_count > 0 ? (p.captain_count / p.selected_count) * 100 : 0,
+        total_points_contributed: p.total_points_contributed,
+        teams_using: p.teams.size,
+        ...byPlayerFromBootstrap[p.player_id],
+        owned_by: ownedBy,
+        ownership_status: ownedBy.length > 0 ? `Owned by ${ownedBy.join(", ")}` : "Unowned",
+        team_name: teamMap[byPlayerFromBootstrap[p.player_id]?.team] || null,
+        total_minutes: byPlayerFromBootstrap[p.player_id]?.minutes_played ?? 0,
+        points: byPlayerFromBootstrap[p.player_id]?.total_points ?? 0,
+      };
+    });
 
     const filtered = insights.filter((row: any) => {
       if (filterPosition && coerceNumber(row.position) !== filterPosition) return false;
@@ -5134,9 +5149,14 @@ captainAuth.post("/media", async (c) => {
     }
     if (!dataUrl) return jsonError(c, 400, "Missing data_url");
 
-    const parsed = parseDataUrlImage(dataUrl);
-    if (!parsed) return jsonError(c, 400, "Invalid image payload");
-    if (parsed.bytes.length > 5 * 1024 * 1024) {
+    const normalizedDataUrl = String(dataUrl || "").trim();
+    if (!normalizedDataUrl.startsWith("data:image/")) {
+      return jsonError(c, 400, "Invalid image payload");
+    }
+    // Approximate decoded size from base64 content.
+    const base64Part = normalizedDataUrl.split(",")[1] || "";
+    const estimatedBytes = Math.floor((base64Part.length * 3) / 4);
+    if (estimatedBytes > 5 * 1024 * 1024) {
       return jsonError(c, 400, "Image must be <= 5MB");
     }
 
@@ -5144,64 +5164,38 @@ captainAuth.post("/media", async (c) => {
     const session = await resolveCaptainSession(supabase, token);
     if (!session) return jsonError(c, 401, "Invalid or expired session");
 
-    const filePath = `${session.manager_name.toLowerCase()}/${mediaType}-${Date.now()}.${parsed.ext}`;
-    const storage = supabase.storage.from("manager-media");
-    const uploadRes = await storage.upload(filePath, parsed.bytes, {
-      contentType: parsed.contentType,
-      upsert: true,
-    });
-    if (uploadRes.error) {
-      return jsonError(c, 500, "Failed to upload image", uploadRes.error.message);
-    }
-    const publicUrl = storage.getPublicUrl(filePath).data.publicUrl;
+    // Persist directly in DB-backed profile fields to avoid storage bucket failures.
+    const persistedImage = normalizedDataUrl;
 
-    const payload: any = {
-      manager_name: session.manager_name,
-      updated_at: new Date().toISOString(),
-    };
-    if (mediaType === "club_crest") payload.club_crest_url = publicUrl;
-    if (mediaType === "club_logo") payload.club_logo_url = publicUrl;
-    if (mediaType === "manager_profile_picture") payload.manager_profile_picture_url = publicUrl;
+    const authPayload: any = {};
+    if (mediaType === "club_crest") authPayload.club_crest = persistedImage;
+    if (mediaType === "club_logo") authPayload.club_logo = persistedImage;
+    if (mediaType === "manager_profile_picture") authPayload.manager_photo = persistedImage;
 
-    const { error: upsertError } = await supabase
-      .from("manager_media_profiles")
-      .upsert(payload, { onConflict: "manager_name" });
-    if (upsertError) {
-      return jsonError(c, 500, "Failed to save media metadata", upsertError.message);
+    const { error: authUpdateError } = await supabase
+      .from("manager_auth_emails")
+      .update(authPayload)
+      .eq("manager_name", session.manager_name);
+    if (authUpdateError) {
+      return jsonError(c, 500, "Failed to save media metadata", authUpdateError.message);
     }
 
-    const { data } = await supabase
-      .from("manager_media_profiles")
-      .select("club_crest_url, club_logo_url, manager_profile_picture_url")
+    const { data: authRow, error: authReadError } = await supabase
+      .from("manager_auth_emails")
+      .select("club_crest, club_logo, manager_photo")
       .eq("manager_name", session.manager_name)
       .maybeSingle();
-
-    // Also persist URLs into manager_auth_emails for easier access during auth flows
-    // and to satisfy the user's requirement to store uploaded images there.
-    try {
-      const authPayload: any = {};
-      if (mediaType === "club_crest") authPayload.club_crest = publicUrl;
-      if (mediaType === "club_logo") authPayload.club_logo = publicUrl;
-      if (mediaType === "manager_profile_picture") authPayload.manager_photo = publicUrl;
-
-      if (Object.keys(authPayload).length > 0) {
-        await supabase
-          .from("manager_auth_emails")
-          .update(authPayload)
-          .eq("manager_name", session.manager_name);
-      }
-    } catch (updErr) {
-      // Non-fatal: we already saved media_profiles. Log and continue.
-      console.error("Failed to update manager_auth_emails with media URLs:", updErr);
+    if (authReadError) {
+      return jsonError(c, 500, "Failed to read media metadata", authReadError.message);
     }
 
     return c.json({
       ok: true,
       manager_name: session.manager_name,
       media: {
-        club_crest_url: data?.club_crest_url || null,
-        club_logo_url: data?.club_logo_url || null,
-        manager_profile_picture_url: data?.manager_profile_picture_url || null,
+        club_crest_url: authRow?.club_crest || null,
+        club_logo_url: authRow?.club_logo || null,
+        manager_profile_picture_url: authRow?.manager_photo || null,
       },
     });
   } catch (err: any) {
@@ -5525,7 +5519,7 @@ fixturesHub.get("/", async (c) => {
         .sort((a, b) => a.gameweek - b.gameweek);
 
     // Enrich fixtures with last used lineup for unstarted games
-    const currentGw = coerceNumber(seasonStateRes.data?.current_gameweek, 1);
+    const currentGwForLineups = coerceNumber(seasonStateRes.data?.current_gameweek, 1);
     const enrichMatchups = async (groups: Record<string, any[]>) => {
       const out: Record<string, any[]> = {};
       for (const [gw, matchups] of Object.entries(groups)) {
@@ -5535,9 +5529,9 @@ fixturesHub.get("/", async (c) => {
           try {
             // If game hasn't started or is upcoming, fetch last lineup for each team
             const gwNum = coerceNumber(m.gameweek);
-            if (!m.is_ongoing && gwNum >= currentGw) {
-              const last1 = await fetchLastLineupForTeam(supabase, String(m.team_1_id), currentGw - 1);
-              const last2 = await fetchLastLineupForTeam(supabase, String(m.team_2_id), currentGw - 1);
+            if (!m.is_ongoing && gwNum >= currentGwForLineups) {
+              const last1 = await fetchLastLineupForTeam(supabase, String(m.team_1_id), currentGwForLineups - 1);
+              const last2 = await fetchLastLineupForTeam(supabase, String(m.team_2_id), currentGwForLineups - 1);
               if (last1) entry.last_lineup_1 = last1;
               if (last2) entry.last_lineup_2 = last2;
             }
@@ -5770,9 +5764,13 @@ fixturesHub.get("/matchup", async (c) => {
       }
     }
 
+    const hasStarted = gameweek < currentGw;
+
     const mapLineup = (rows: any[] | undefined, teamId: string) =>
       (rows || []).map((pick: any) => {
         const playerId = coerceNumber(pick.element);
+        const lineupSlot = coerceNumber(pick.position, 0);
+        const isBench = lineupSlot > 11;
         const hasLive = Object.prototype.hasOwnProperty.call(liveMap, playerId);
         const pickPoints =
           Number.isFinite(Number((pick as any).points))
@@ -5782,13 +5780,15 @@ fixturesHub.get("/matchup", async (c) => {
             : 0;
         const rawPoints = hasLive ? coerceNumber(liveMap[playerId], 0) : pickPoints;
         const cupCaptainId = cupCaptainByTeam[teamId] || 0;
-        const isCupCaptain = type === "cup" && cupCaptainId > 0 && cupCaptainId === playerId;
+        const isCupCaptain = type === "cup" && hasStarted && cupCaptainId > 0 && cupCaptainId === playerId;
         const effectivePoints = rawPoints * (isCupCaptain ? 2 : 1);
         const stats = liveStatsMap[playerId] || {};
         return {
           player_id: playerId,
           player_name: playerMap[playerId]?.name || `Player ${playerId}`,
-          position: coerceNumber(pick.position),
+          position: coerceNumber(playerMap[playerId]?.position, 3),
+          lineup_slot: lineupSlot || null,
+          is_bench: isBench,
           is_captain: !!pick.is_captain,
           is_vice_captain: !!pick.is_vice_captain,
           is_cup_captain: isCupCaptain,
@@ -5851,11 +5851,13 @@ fixturesHub.get("/matchup", async (c) => {
     return c.json({
       type,
       gameweek,
+      current_gameweek: currentGw,
       matchup: {
         ...scoreFromRows,
         live_team_1_points: total1,
         live_team_2_points: total2,
         is_ongoing: gameweek === currentGw,
+        has_started: hasStarted,
       },
       team_1: {
         id: String(team1.id),
@@ -5874,6 +5876,134 @@ fixturesHub.get("/matchup", async (c) => {
     });
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to fetch matchup detail");
+  }
+});
+
+fixturesHub.get("/lineup", async (c) => {
+  try {
+    const teamId = String(c.req.query("team") || "").trim();
+    const gameweek = coerceNumber(c.req.query("gameweek"));
+    const type = String(c.req.query("type") || "cup").toLowerCase() === "league" ? "league" : "cup";
+
+    if (!teamId || !gameweek) {
+      return jsonError(c, 400, "Missing required query params: team, gameweek");
+    }
+
+    const supabase = getSupabaseAdmin();
+    const { data: team, error: teamError } = await supabase
+      .from("teams")
+      .select("id, entry_id, entry_name, manager_name")
+      .eq("id", teamId)
+      .maybeSingle();
+    if (teamError) {
+      return jsonError(c, 500, "Failed to fetch team", teamError.message);
+    }
+    if (!team) {
+      return jsonError(c, 404, "Team not found");
+    }
+
+    let currentGw = gameweek;
+    try {
+      const bootstrap = await fetchDraftBootstrap();
+      currentGw = extractDraftCurrentEventId(bootstrap) || currentGw;
+    } catch {
+      const { data: seasonState } = await supabase
+        .from("season_state")
+        .select("current_gameweek")
+        .eq("season", CURRENT_SEASON)
+        .maybeSingle();
+      currentGw = parsePositiveInt(seasonState?.current_gameweek) || currentGw;
+    }
+
+    let captainPlayerId = 0;
+    if (type === "cup") {
+      const { data: captainRow } = await supabase
+        .from("cup_captain_selections")
+        .select("captain_player_id")
+        .eq("team_id", teamId)
+        .eq("gameweek", gameweek)
+        .maybeSingle();
+      captainPlayerId = coerceNumber(captainRow?.captain_player_id);
+    }
+
+    const picks = await fetchDraftPicksForEntries([String(team.entry_id)], gameweek, true);
+    if (!picks) {
+      return jsonError(c, 404, "No lineup found for this team and gameweek");
+    }
+
+    let bootstrap: any = null;
+    try {
+      bootstrap = await fetchDraftBootstrap();
+    } catch {
+      try {
+        bootstrap = await fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`);
+      } catch {
+        bootstrap = {};
+      }
+    }
+    const playerMap = extractDraftPlayerMap(bootstrap);
+    let liveMap: Record<number, number> = {};
+    let liveStatsMap: Record<number, any> = {};
+    try {
+      const live = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${gameweek}/live`);
+      liveMap = extractLivePointsMap(live);
+      liveStatsMap = extractLivePlayerStatsMap(live);
+    } catch {
+      try {
+        const classicLive = await fetchJSON<any>(`${FPL_BASE_URL}/event/${gameweek}/live/`);
+        liveMap = extractLivePointsMap(classicLive);
+        liveStatsMap = extractLivePlayerStatsMap(classicLive);
+      } catch {
+        liveMap = {};
+        liveStatsMap = {};
+      }
+    }
+
+    const hasStarted = gameweek < currentGw;
+    const lineup = (picks.picks || []).map((pick: any) => {
+      const playerId = coerceNumber(pick.element);
+      const lineupSlot = coerceNumber(pick.position, 0);
+      const isBench = lineupSlot > 11;
+      const hasLive = Object.prototype.hasOwnProperty.call(liveMap, playerId);
+      const rawPoints = hasLive ? coerceNumber(liveMap[playerId], 0) : coerceNumber(pick.points, 0);
+      const isCupCaptain = type === "cup" && hasStarted && captainPlayerId > 0 && playerId === captainPlayerId;
+      const effectivePoints = rawPoints * (isCupCaptain ? 2 : 1);
+      const stats = liveStatsMap[playerId] || {};
+      return {
+        player_id: playerId,
+        player_name: playerMap[playerId]?.name || `Player ${playerId}`,
+        position: coerceNumber(playerMap[playerId]?.position, 3),
+        lineup_slot: lineupSlot || null,
+        is_bench: isBench,
+        is_captain: !!pick.is_captain,
+        is_vice_captain: !!pick.is_vice_captain,
+        is_cup_captain: isCupCaptain,
+        raw_points: rawPoints,
+        multiplier: isCupCaptain ? 2 : 1,
+        effective_points: effectivePoints,
+        goals_scored: coerceNumber(stats.goals_scored, 0),
+        assists: coerceNumber(stats.assists, 0),
+        minutes: coerceNumber(stats.minutes, 0),
+      };
+    });
+
+    return c.json({
+      type,
+      gameweek,
+      current_gameweek: currentGw,
+      has_started: hasStarted,
+      captain_player_id: captainPlayerId || null,
+      total_points: lineup.reduce((sum: number, row: any) => sum + coerceNumber(row.effective_points), 0),
+      team: {
+        id: String(team.id),
+        entry_id: String(team.entry_id),
+        entry_name: team.entry_name,
+        manager_name: team.manager_name,
+      },
+      lineup,
+    });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to fetch lineup");
   }
 });
 

@@ -26,13 +26,15 @@ import PickCaptain from "./PickCaptain";
 import MyPage from "./MyPage";
 import FixturesPage from "./Fixtures";
 import MatchupDetailPage from "./MatchupDetail";
+import LineupDetailPage from "./LineupDetail";
 import { getCaptainSessionToken } from "../lib/captainSession";
 
 function RequireCaptainSignIn({ children }: { children: React.ReactElement }) {
   const location = useLocation();
   const token = getCaptainSessionToken();
   if (!token) {
-    const next = location.pathname === "/pick_captain" ? "?next=pick_captain" : "";
+    const isPickCaptainPath = location.pathname === "/pick_captain" || location.pathname === "/pick-captain";
+    const next = isPickCaptainPath ? "?next=pick_captain" : "";
     return <Navigate to={`/sign-in${next}`} replace />;
   }
   return children;
@@ -46,7 +48,7 @@ function Shell() {
     <div className="min-h-screen bg-background text-foreground flex flex-col">
       <header className="border-b">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4">
-          <span className="text-lg font-semibold">FFA Cup</span>
+          <span className="text-lg font-semibold">League of Lads</span>
           <nav className="flex gap-4 text-sm flex-wrap">
             <Link to="/dashboard" className="hover:underline">
               Dashboard
@@ -87,7 +89,7 @@ function Shell() {
             <Link to="/sign-in" className="hover:underline">
               Sign In
             </Link>
-            <Link to="/pick_captain" className="hover:underline">
+            <Link to="/pick-captain" className="hover:underline">
               Pick Captain
             </Link>
             <Link to="/my-page" className="hover:underline">
@@ -111,6 +113,7 @@ function Shell() {
             <Route path="/players" element={<PlayerInsights />} />
             <Route path="/fixtures" element={<FixturesPage />} />
             <Route path="/matchup/:type/:gameweek/:team1/:team2" element={<MatchupDetailPage />} />
+            <Route path="/lineup/:type/:gameweek/:teamId" element={<LineupDetailPage />} />
             <Route path="/legacy-gameweek-standings" element={<LegacyGameweekStandings />} />
             <Route path="/standings-by-gameweek" element={<StandingsByGameweek />} />
             <Route path="/bracket" element={<BracketView />} />
@@ -118,6 +121,14 @@ function Shell() {
             <Route path="/sign-in" element={<SignIn />} />
             <Route
               path="/pick_captain"
+              element={
+                <RequireCaptainSignIn>
+                  <PickCaptain />
+                </RequireCaptainSignIn>
+              }
+            />
+            <Route
+              path="/pick-captain"
               element={
                 <RequireCaptainSignIn>
                   <PickCaptain />

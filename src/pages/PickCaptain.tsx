@@ -126,10 +126,10 @@ export default function PickCaptain() {
     position: p.position || 3,
     raw_points: 0,
     effective_points: 0,
-    is_captain: p.id === context?.selected_captain_id,
+    is_captain: p.id === captainId,
     is_vice_captain: false,
-    is_cup_captain: p.id === context?.selected_captain_id,
-    multiplier: p.id === context?.selected_captain_id ? 2 : 1,
+    is_cup_captain: p.id === captainId,
+    multiplier: p.id === captainId ? 2 : 1,
   })) as PitchPlayer[];
 
   const handlePlayerClick = async (player: PitchPlayer) => {
@@ -233,7 +233,19 @@ export default function PickCaptain() {
         {success && <p className="text-sm text-emerald-600 mt-3">{success}</p>}
       </Card>
 
-      <PlayerStatsModal player={selectedPlayer!} isOpen={!!selectedPlayer} onClose={() => setSelectedPlayer(null)} showHistory={true} onSelectCaptain={handleSelectCaptainFromModal} />
+      {historyLoading && (
+        <Card className="p-4">
+          <p className="text-sm text-muted-foreground">Loading player history...</p>
+        </Card>
+      )}
+
+      <PlayerStatsModal
+        player={selectedPlayer!}
+        isOpen={!!selectedPlayer}
+        onClose={() => setSelectedPlayer(null)}
+        showHistory={true}
+        onSelectCaptain={handleSelectCaptainFromModal}
+      />
     </div>
   );
 }

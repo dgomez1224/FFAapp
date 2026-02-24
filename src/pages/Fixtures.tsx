@@ -4,6 +4,7 @@ import { Card } from "../components/ui/card";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { FootballPitch, PitchPlayer } from "../components/FootballPitch";
+import { PlayerStats, PlayerStatsModal } from "../components/PlayerStatsModal";
 
 type TeamRef = {
   id: string;
@@ -43,6 +44,34 @@ type Payload = {
 function FixtureRow({ fixture }: { fixture: Fixture }) {
   const baseHref = `/matchup/${fixture.type}/${fixture.gameweek}/${fixture.team_1_id}/${fixture.team_2_id}`;
   const href = fixture.matchup_id ? `${baseHref}?matchupId=${encodeURIComponent(fixture.matchup_id)}` : baseHref;
+  const [selectedPlayer, setSelectedPlayer] = useState<PlayerStats | null>(null);
+
+  const handlePlayerClick = async (player: PitchPlayer) => {
+    try {
+      const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/player-history?player_id=${encodeURIComponent(String(player.player_id))}`;
+      const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
+      const payload = await res.json();
+      if (!res.ok || payload?.error) {
+        throw new Error(payload?.error?.message || "Failed to fetch player history");
+      }
+      setSelectedPlayer({
+        ...player,
+        history: (payload.history || []).map((h: any) => ({
+          gameweek: h.gameweek,
+          points: h.points ?? 0,
+          goals: 0,
+          assists: 0,
+          minutes: 0,
+        })),
+      });
+    } catch {
+      setSelectedPlayer({
+        ...player,
+        history: [],
+      });
+    }
+  };
+
   // If fixture contains last_lineup fields (upcoming/unstarted), render pitch for each team
   if ((fixture as any).last_lineup_1 || (fixture as any).last_lineup_2) {
     const last1 = (fixture as any).last_lineup_1 || [];
@@ -54,31 +83,40 @@ function FixtureRow({ fixture }: { fixture: Fixture }) {
         position: r.position || 3,
         raw_points: r.points ?? 0,
         effective_points: r.points ?? 0,
-        is_captain: !!r.is_captain,
+        is_captain: false,
         is_vice_captain: false,
-        is_cup_captain: !!r.is_captain,
-        multiplier: !!r.is_captain ? 2 : 1,
+        is_cup_captain: false,
+        multiplier: 1,
       }));
 
     return (
-      <Link to={href} className="block w-full rounded-md border p-3 hover:bg-muted/40 transition-colors">
+      <div className="block w-full rounded-md border p-3">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <div>
             <div className="text-xs text-muted-foreground">{fixture.team_1?.entry_name || "—"}</div>
-            <FootballPitch players={convert(last1)} onPlayerClick={() => {}} showCaptain={true} />
+            <FootballPitch players={convert(last1)} onPlayerClick={handlePlayerClick} showCaptain={true} />
           </div>
           <div className="text-center">
             <div className="text-2xl font-bold">{fixture.team_1_points} - {fixture.team_2_points}</div>
             {fixture.type === "cup" && fixture.leg ? (
               <div className="text-xs text-muted-foreground">{fixture.round || "Cup"} • Leg {fixture.leg}</div>
             ) : null}
+            <Link to={href} className="inline-block mt-2 text-xs hover:underline text-muted-foreground">
+              View matchup
+            </Link>
           </div>
           <div>
             <div className="text-xs text-muted-foreground">{fixture.team_2?.entry_name || "—"}</div>
-            <FootballPitch players={convert(last2)} onPlayerClick={() => {}} showCaptain={true} />
+            <FootballPitch players={convert(last2)} onPlayerClick={handlePlayerClick} showCaptain={true} />
           </div>
         </div>
-      </Link>
+        <PlayerStatsModal
+          player={selectedPlayer!}
+          isOpen={!!selectedPlayer}
+          onClose={() => setSelectedPlayer(null)}
+          showHistory={true}
+        />
+      </div>
     );
   }
 
