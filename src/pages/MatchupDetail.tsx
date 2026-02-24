@@ -58,8 +58,10 @@ type Payload = {
 
 function TeamPitchDisplay({
   team,
+  matchupType,
 }: {
   team: TeamDetail;
+  matchupType: "league" | "cup";
 }) {
   const [selectedPlayer, setSelectedPlayer] = useState<PlayerStats | null>(null);
 
@@ -141,6 +143,7 @@ function TeamPitchDisplay({
         isOpen={!!selectedPlayer}
         onClose={() => setSelectedPlayer(null)}
         showHistory={true}
+        showEffectivePoints={matchupType === "cup"}
       />
 
       {/* Substitute/Bench info */}
@@ -261,8 +264,8 @@ export default function MatchupDetailPage() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <TeamPitchDisplay team={data.team_1} />
-        <TeamPitchDisplay team={data.team_2} />
+        <TeamPitchDisplay team={data.team_1} matchupType={data.type} />
+        <TeamPitchDisplay team={data.team_2} matchupType={data.type} />
       </div>
     </div>
   );

@@ -55,9 +55,17 @@ interface PlayerStatsModalProps {
   onClose: () => void;
   showHistory?: boolean;
   onSelectCaptain?: (playerId: number) => void;
+  showEffectivePoints?: boolean;
 }
 
-export function PlayerStatsModal({ player, isOpen, onClose, showHistory = false, onSelectCaptain }: PlayerStatsModalProps) {
+export function PlayerStatsModal({
+  player,
+  isOpen,
+  onClose,
+  showHistory = false,
+  onSelectCaptain,
+  showEffectivePoints = true,
+}: PlayerStatsModalProps) {
   if (!isOpen) return null;
 
   return (
@@ -93,16 +101,18 @@ export function PlayerStatsModal({ player, isOpen, onClose, showHistory = false,
                   <span className="text-muted-foreground">Raw Points</span>
                   <span className="font-semibold">{Math.round(player.raw_points)}</span>
                 </div>
-            {player.multiplier > 1 && (
+            {showEffectivePoints && player.multiplier > 1 && (
               <div className="flex justify-between items-center border-b pb-2">
                 <span className="text-muted-foreground">Multiplier</span>
                 <span className="font-semibold text-amber-600">×{player.multiplier}</span>
               </div>
             )}
-            <div className="flex justify-between items-center text-lg font-bold bg-green-50 dark:bg-green-950 p-2 rounded">
-              <span>Effective Points</span>
-              <span className="text-green-600 dark:text-green-400">{Math.round(player.effective_points)}</span>
-            </div>
+            {showEffectivePoints && (
+              <div className="flex justify-between items-center text-lg font-bold bg-green-50 dark:bg-green-950 p-2 rounded">
+                <span>Effective Points</span>
+                <span className="text-green-600 dark:text-green-400">{Math.round(player.effective_points)}</span>
+              </div>
+            )}
           </div>
 
           {/* Match stats */}
