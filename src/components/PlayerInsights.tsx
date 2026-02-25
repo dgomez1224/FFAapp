@@ -78,6 +78,7 @@ export default function PlayerInsights() {
   const [pendingMaxAvgMinutes, setPendingMaxAvgMinutes] = useState<number>(90);
   const [filterMinAvgMinutes, setFilterMinAvgMinutes] = useState<number>(0);
   const [filterMaxAvgMinutes, setFilterMaxAvgMinutes] = useState<number>(90);
+  const [pendingSearch, setPendingSearch] = useState<string>("");
   const [filterSearch, setFilterSearch] = useState<string>("");
 
   useEffect(() => {
@@ -87,6 +88,13 @@ export default function PlayerInsights() {
     }, 250);
     return () => clearTimeout(t);
   }, [pendingMinAvgMinutes, pendingMaxAvgMinutes]);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setFilterSearch(pendingSearch);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [pendingSearch]);
 
   useEffect(() => {
     async function fetchInsights() {
@@ -197,8 +205,8 @@ export default function PlayerInsights() {
           <input
             className="rounded-md border px-3 py-2 text-sm"
             placeholder="Search by name"
-            value={filterSearch}
-            onChange={(e) => setFilterSearch(e.target.value)}
+            value={pendingSearch}
+            onChange={(e) => setPendingSearch(e.target.value)}
           />
           <select className="rounded-md border px-3 py-2 text-sm" value={filterPosition} onChange={(e) => setFilterPosition(e.target.value)}>
             <option value="">All Positions</option>
@@ -312,7 +320,7 @@ export default function PlayerInsights() {
                   <TableCell className="text-right">{p.away_points ?? 0}</TableCell>
                   <TableCell className="text-right">{p.average_points_home == null ? "—" : p.average_points_home.toFixed(2)}</TableCell>
                   <TableCell className="text-right">{p.average_points_away == null ? "—" : p.average_points_away.toFixed(2)}</TableCell>
-                  <TableCell>{p.owner_team || p.ownership_status || "Unowned"}</TableCell>
+                  <TableCell>{p.owner_team || "Free Agent"}</TableCell>
                   <TableCell className="text-right">{AVAILABILITY_LABELS[String(p.availability || "")] || "—"}</TableCell>
                 </TableRow>
               ))}

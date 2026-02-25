@@ -20,6 +20,7 @@ import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
 const FPL_BASE_URL = "https://fantasy.premierleague.com/api";
 const DRAFT_BASE_URL = "https://draft.premierleague.com/api";
 const STATIC_ENTRY_ID = "164475"; // Single source of truth for league context
+const DEFAULT_DRAFT_LEAGUE_ID = 28469;
 const CURRENT_SEASON = "2025/26";
 const CUP_START_GAMEWEEK = 29;
 const CAPTAIN_SESSION_TTL_HOURS = 24 * 30;
@@ -220,6 +221,22 @@ function isMissingRelationError(error: any) {
 
 async function fetchDraftBootstrap() {
   return fetchJSON<any>(`${DRAFT_BASE_URL}/bootstrap-static`);
+}
+
+async function resolveConfiguredDraftLeagueId(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+) {
+  try {
+    const { data } = await supabase
+      .from("season_state")
+      .select("league_id")
+      .eq("season", CURRENT_SEASON)
+      .maybeSingle();
+    const fromDb = parsePositiveInt(data?.league_id);
+    return fromDb || DEFAULT_DRAFT_LEAGUE_ID;
+  } catch {
+    return DEFAULT_DRAFT_LEAGUE_ID;
+  }
 }
 
 function normalizeEmail(value: unknown) {
@@ -745,17 +762,28 @@ async function fetchDerivedGameweekStats(
   supabase: ReturnType<typeof getSupabaseAdmin>,
   season?: string,
 ) {
-  const query = supabase
-    .from("legacy_h2h_gameweek_results")
-    .select("season, gameweek, manager_name, points_for, result")
-    .order("season", { ascending: true })
-    .order("gameweek", { ascending: true });
-
-  const { data, error } = season ? await query.eq("season", season) : await query;
-  if (error && !isMissingRelationError(error)) {
-    throw new Error(`Failed to fetch legacy gameweek results: ${error.message}`);
+  const data: any[] = [];
+  const pageSize = 1000;
+  let from = 0;
+  while (true) {
+    let pageQuery = supabase
+      .from("legacy_h2h_gameweek_results")
+      .select("season, gameweek, manager_name, points_for, result")
+      .order("season", { ascending: true })
+      .order("gameweek", { ascending: true })
+      // Ensure pagination remains stable when multiple rows share season/gameweek.
+      .order("manager_name", { ascending: true })
+      .range(from, from + pageSize - 1);
+    if (season) pageQuery = pageQuery.eq("season", season);
+    const { data: pageRows, error } = await pageQuery;
+    if (error && !isMissingRelationError(error)) {
+      throw new Error(`Failed to fetch legacy gameweek results: ${error.message}`);
+    }
+    const rows = pageRows || [];
+    data.push(...rows);
+    if (rows.length < pageSize) break;
+    from += pageSize;
   }
-
   const byManager: Record<string, GameweekRecordRow[]> = {};
   (data || []).forEach((row: any) => {
     const manager = toCanonicalManagerName(row.manager_name);
@@ -770,7 +798,7 @@ async function fetchDerivedGameweekStats(
     });
   });
 
-  const hasCurrentSeasonRows = (data || []).some((row: any) => String(row.season || "") === CURRENT_SEASON);
+  const hasCurrentSeasonRows = data.some((row: any) => String(row.season || "") === CURRENT_SEASON);
   const shouldHydrateFromCurrentMatchups =
     (!season || season === CURRENT_SEASON) && !hasCurrentSeasonRows;
 
@@ -1764,7 +1792,7 @@ async function fetchUnifiedAllTimeH2H(
 }
 
 async function resolveDraftLeagueDetails(entryId: string, leagueIdOverride?: number | null) {
-  let leagueId = leagueIdOverride ?? null;
+  let leagueId = leagueIdOverride ?? DEFAULT_DRAFT_LEAGUE_ID;
   let entry: any = null;
 
   if (!leagueId) {
@@ -2677,6 +2705,7 @@ playerInsights.get("/", async (c) => {
     const filterMinAvgMinutes = coerceNumber(c.req.query("min_avg_minutes"), 0);
     const filterMaxAvgMinutes = coerceNumber(c.req.query("max_avg_minutes"), 90);
     const filterSearch = String(c.req.query("search") || "").trim().toLowerCase();
+    const includeDebug = String(c.req.query("include_debug") || "").trim() === "1";
     const matchesAvgMinutesBucket = (value: number, bucket: string) => {
       if (!bucket) return true;
       if (bucket === "85+") return value >= 85;
@@ -2799,33 +2828,171 @@ playerInsights.get("/", async (c) => {
       };
     });
 
-    // Build owners map from latest available gameweek in player_selections.
+    // Build owners map from Draft API (league details + entry/{team}/event/{gw}).
+    // Fallback to player_selections only if Draft API path fails.
     const ownersMap: Record<number, string[]> = {};
-    const ownerTeamMap: Record<number, string | null> = {};
+    const ownerManagerMap: Record<number, string | null> = {};
+    const ownershipDebug: Record<string, any> = {
+      selected_gameweek: null,
+      current_gameweek_context: null,
+      ownership_rows_count: 0,
+      team_keys_from_player_selections_sample: [],
+      matched_team_keys_count: 0,
+      unmatched_team_keys_count: 0,
+      unmatched_team_keys_sample: [],
+      team_lookup_sample: {},
+      player_owner_sample: {},
+      source: "draft_api",
+    };
     let ownershipGameweek: number | null = null;
     {
-      const { data: latestOwnedGwRows } = await supabase
-        .from("player_selections")
-        .select("gameweek")
-        .order("gameweek", { ascending: false })
-        .limit(1);
-      ownershipGameweek = coerceNumber(latestOwnedGwRows?.[0]?.gameweek, 0) || null;
+      let currentGameweekContext = 0;
+      try {
+        const bootstrap = await fetchDraftBootstrap();
+        currentGameweekContext = extractDraftCurrentEventId(bootstrap) || 0;
+      } catch {
+        currentGameweekContext = 0;
+      }
+      if (!currentGameweekContext) {
+        try {
+          const { data: seasonState } = await supabase
+            .from("season_state")
+            .select("current_gameweek")
+            .eq("season", CURRENT_SEASON)
+            .maybeSingle();
+          currentGameweekContext = coerceNumber(seasonState?.current_gameweek, 0);
+        } catch {
+          currentGameweekContext = 0;
+        }
+      }
+      ownershipDebug.current_gameweek_context = currentGameweekContext || null;
+      ownershipGameweek = currentGameweekContext || 1;
+      ownershipDebug.selected_gameweek = ownershipGameweek;
     }
-    if (ownershipGameweek) {
+
+    let ownershipResolvedFromDraft = false;
+    try {
+      const configuredLeagueId = await resolveConfiguredDraftLeagueId(supabase);
+      const { details, leagueId } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID, configuredLeagueId);
+      const leagueEntries = normalizeDraftList<any>(details?.league_entries || []);
+      ownershipDebug.team_keys_from_player_selections_sample = leagueEntries
+        .slice(0, 20)
+        .map((entry: any) =>
+          String(entry?.entry_id ?? entry?.entry ?? entry?.id ?? entry?.league_entry_id ?? "").trim(),
+        )
+        .filter(Boolean);
+      ownershipDebug.team_lookup_sample = { league_id: leagueId, entries_count: leagueEntries.length };
+
+      const ownershipRows = await Promise.all(
+        leagueEntries.map(async (entry: any) => {
+          const teamId = parsePositiveInt(entry?.entry_id ?? entry?.entry ?? entry?.id ?? entry?.league_entry_id);
+          if (!teamId) return null;
+          const managerName = formatDraftManagerName(entry);
+          try {
+            const picksPayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/entry/${teamId}/event/${ownershipGameweek}`);
+            const picks = normalizeDraftList<any>(picksPayload?.picks || []);
+            return { teamId, managerName, picks };
+          } catch {
+            return null;
+          }
+        }),
+      );
+
+      const validOwnershipRows = ownershipRows.filter((row): row is { teamId: number; managerName: string; picks: any[] } => !!row);
+      ownershipDebug.ownership_rows_count = validOwnershipRows.length;
+
+      validOwnershipRows.forEach((row) => {
+        row.picks.forEach((pick: any) => {
+          const playerId = parsePositiveInt(pick?.element ?? pick?.element_id ?? pick?.player_id);
+          if (!playerId) return;
+          if (!ownersMap[playerId]) ownersMap[playerId] = [];
+          if (row.managerName && !ownersMap[playerId].includes(row.managerName)) {
+            ownersMap[playerId].push(row.managerName);
+          }
+        });
+      });
+
+      Object.entries(ownersMap).forEach(([id, managers]) => {
+        ownerManagerMap[Number(id)] = managers.length > 0 ? managers[0] : null;
+      });
+      ownershipResolvedFromDraft = Object.keys(ownerManagerMap).length > 0;
+      ownershipDebug.matched_team_keys_count = validOwnershipRows.length;
+      ownershipDebug.unmatched_team_keys_count = leagueEntries.length - validOwnershipRows.length;
+      ownershipDebug.unmatched_team_keys_sample = leagueEntries
+        .filter((entry: any) => {
+          const teamId = parsePositiveInt(entry?.entry_id ?? entry?.entry ?? entry?.id ?? entry?.league_entry_id);
+          return !teamId || !validOwnershipRows.some((r) => r.teamId === teamId);
+        })
+        .slice(0, 20)
+        .map((entry: any) => String(entry?.entry_id ?? entry?.entry ?? entry?.id ?? entry?.league_entry_id ?? "").trim());
+      const playerOwnerSample: Record<string, string | null> = {};
+      Object.entries(ownerManagerMap)
+        .slice(0, 20)
+        .forEach(([playerId, managerName]) => {
+          playerOwnerSample[playerId] = managerName || null;
+        });
+      ownershipDebug.player_owner_sample = playerOwnerSample;
+    } catch {
+      ownershipResolvedFromDraft = false;
+    }
+
+    if (!ownershipResolvedFromDraft) {
+      ownershipDebug.source = "player_selections_fallback";
       const { data: ownersRows } = await supabase
         .from("player_selections")
-        .select("player_id, team_id, teams(entry_name)")
-        .eq("gameweek", ownershipGameweek);
+        .select("player_id, team_id")
+        .eq("gameweek", ownershipGameweek)
+        .not("team_id", "is", null)
+        .not("player_id", "is", null);
       if (ownersRows) {
+        ownershipDebug.ownership_rows_count = ownersRows.length;
+        const managerNameByTeamKey: Record<string, string> = {};
+        const { data: ownerTeams } = await supabase
+          .from("teams")
+          .select("id, entry_id, manager_name");
+        (ownerTeams || []).forEach((t: any) => {
+          const managerName = String(t.manager_name || "").trim();
+          if (!managerName) return;
+          const idKey = String(t.id || "").trim();
+          const entryKey = String(t.entry_id || "").trim();
+          if (idKey) managerNameByTeamKey[idKey] = managerName;
+          if (entryKey) managerNameByTeamKey[entryKey] = managerName;
+        });
+
+        const distinctKeys = Array.from(
+          new Set(
+            ownersRows
+              .map((r: any) => String(r.team_id || "").trim())
+              .filter(Boolean),
+          ),
+        );
+        const unmatched = distinctKeys.filter((k) => !managerNameByTeamKey[k]);
+        ownershipDebug.team_keys_from_player_selections_sample = distinctKeys.slice(0, 20);
+        ownershipDebug.matched_team_keys_count = distinctKeys.length - unmatched.length;
+        ownershipDebug.unmatched_team_keys_count = unmatched.length;
+        ownershipDebug.unmatched_team_keys_sample = unmatched.slice(0, 20);
+        const lookupSample: Record<string, string | null> = {};
+        distinctKeys.slice(0, 20).forEach((k) => {
+          lookupSample[k] = managerNameByTeamKey[k] || null;
+        });
+        ownershipDebug.team_lookup_sample = lookupSample;
+
         ownersRows.forEach((r: any) => {
           const id = Number(r.player_id);
           if (!ownersMap[id]) ownersMap[id] = [];
-          const entryName = r?.teams?.entry_name || null;
-          if (entryName && !ownersMap[id].includes(entryName)) ownersMap[id].push(entryName);
+          const managerName = managerNameByTeamKey[String(r.team_id || "").trim()] || null;
+          if (managerName && !ownersMap[id].includes(managerName)) ownersMap[id].push(managerName);
         });
         Object.entries(ownersMap).forEach(([id, teams]) => {
-          ownerTeamMap[Number(id)] = teams.length > 0 ? teams[0] : null;
+          ownerManagerMap[Number(id)] = teams.length > 0 ? teams[0] : null;
         });
+        const playerOwnerSample: Record<string, string | null> = {};
+        Object.entries(ownerManagerMap)
+          .slice(0, 20)
+          .forEach(([playerId, managerName]) => {
+            playerOwnerSample[playerId] = managerName || null;
+          });
+        ownershipDebug.player_owner_sample = playerOwnerSample;
       }
     }
 
@@ -2910,8 +3077,8 @@ playerInsights.get("/", async (c) => {
         .map((p: any) => ({
           ...p,
           owned_by: ownersMap[p.player_id] || [],
-          owner_team: ownerTeamMap[p.player_id] || null,
-          ownership_status: ownerTeamMap[p.player_id] || "Unowned",
+          owner_team: ownerManagerMap[p.player_id] || null,
+          ownership_status: ownerManagerMap[p.player_id] ? "owned" : "unowned",
           team_name: teamMap[p.team] || null,
           total_minutes: p.minutes_played ?? 0,
         }))
@@ -2963,11 +3130,13 @@ playerInsights.get("/", async (c) => {
       return c.json({
         insights: finalAdjusted,
         source: "fpl_bootstrap",
+        debug: includeDebug ? { ownership: ownershipDebug } : undefined,
       });
     }
 
     // Aggregate player insights
     const playerMap: Record<number, any> = {};
+    const playerGwPoints: Record<number, Record<number, number>> = {};
     (selections || []).forEach((sel: any) => {
       if (!playerMap[sel.player_id]) {
         playerMap[sel.player_id] = {
@@ -2985,10 +3154,37 @@ playerInsights.get("/", async (c) => {
       }
       playerMap[sel.player_id].total_points_contributed += sel.points_earned || 0;
       playerMap[sel.player_id].teams.add(sel.team_id);
+
+      const playerId = coerceNumber(sel.player_id, 0);
+      const gw = coerceNumber(sel.gameweek, 0);
+      if (playerId > 0 && gw > 0) {
+        if (!playerGwPoints[playerId]) playerGwPoints[playerId] = {};
+        const existing = coerceNumber(playerGwPoints[playerId][gw], Number.NEGATIVE_INFINITY);
+        playerGwPoints[playerId][gw] = Math.max(existing, coerceNumber(sel.points_earned, 0));
+      }
+    });
+
+    const fallbackTotalPointsByPlayer: Record<number, number> = {};
+    Object.entries(playerGwPoints).forEach(([playerIdRaw, gwPoints]) => {
+      const playerId = coerceNumber(playerIdRaw, 0);
+      const total = Object.values(gwPoints || {}).reduce((sum: number, value: any) => sum + coerceNumber(value, 0), 0);
+      fallbackTotalPointsByPlayer[playerId] = total;
     });
 
     const insights = Object.values(playerMap).map((p: any) => {
       const ownedBy = ownersMap[p.player_id] || [];
+      const bootstrapRow = byPlayerFromBootstrap[p.player_id] || {};
+      const bootstrapTotalPoints = coerceNumber(bootstrapRow?.total_points, 0);
+      const fallbackTotalPoints = coerceNumber(fallbackTotalPointsByPlayer[p.player_id], 0);
+      const resolvedTotalPoints = bootstrapTotalPoints > 0 ? bootstrapTotalPoints : fallbackTotalPoints;
+      const resolvedTotalMinutes = coerceNumber(bootstrapRow?.minutes_played, 0);
+      const resolvedGamesPlayed = Math.max(
+        coerceNumber(bootstrapRow?.games_played, 0),
+        Object.keys(playerGwPoints[p.player_id] || {}).length,
+      );
+      const resolvedPointsPerGame = resolvedGamesPlayed > 0 ? resolvedTotalPoints / resolvedGamesPlayed : 0;
+      const resolvedMinutesPerGame = resolvedGamesPlayed > 0 ? resolvedTotalMinutes / resolvedGamesPlayed : 0;
+      const resolvedPointsPer90 = resolvedTotalMinutes > 0 ? (resolvedTotalPoints / resolvedTotalMinutes) * 90 : 0;
       return {
         player_id: p.player_id,
         player_name: p.player_name,
@@ -2997,13 +3193,18 @@ playerInsights.get("/", async (c) => {
         captain_frequency: p.selected_count > 0 ? (p.captain_count / p.selected_count) * 100 : 0,
         total_points_contributed: p.total_points_contributed,
         teams_using: p.teams.size,
-        ...byPlayerFromBootstrap[p.player_id],
+        ...bootstrapRow,
+        total_points: resolvedTotalPoints,
+        games_played: resolvedGamesPlayed,
+        points_per_game_played: resolvedPointsPerGame,
+        minutes_per_game_played: resolvedMinutesPerGame,
+        points_per_90_played: resolvedPointsPer90,
         owned_by: ownedBy,
-        owner_team: ownerTeamMap[p.player_id] || null,
-        ownership_status: ownerTeamMap[p.player_id] || "Unowned",
-        team_name: teamMap[byPlayerFromBootstrap[p.player_id]?.team] || null,
-        total_minutes: byPlayerFromBootstrap[p.player_id]?.minutes_played ?? 0,
-        points: byPlayerFromBootstrap[p.player_id]?.total_points ?? 0,
+        owner_team: ownerManagerMap[p.player_id] || null,
+        ownership_status: ownerManagerMap[p.player_id] ? "owned" : "unowned",
+        team_name: teamMap[bootstrapRow?.team] || null,
+        total_minutes: resolvedTotalMinutes,
+        points: resolvedTotalPoints,
       };
     });
 
@@ -3049,6 +3250,7 @@ playerInsights.get("/", async (c) => {
     return c.json({
       insights: finalAdjusted.sort((a: any, b: any) => coerceNumber(b.selected_count) - coerceNumber(a.selected_count)),
       source: "database",
+      debug: includeDebug ? { ownership: ownershipDebug } : undefined,
     });
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to fetch player insights");

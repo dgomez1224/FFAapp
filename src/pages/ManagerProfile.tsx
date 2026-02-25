@@ -343,29 +343,51 @@ export default function ManagerProfile() {
   const leagueTitles = Number(data.all_time_stats?.league_titles || 0);
   const cupWins = Number(data.all_time_stats?.cup_wins || 0);
   const gobletWins = Number(data.all_time_stats?.goblet_wins || 0);
-  const trophyIcons = [
-    ...Array.from({ length: Math.max(0, leagueTitles) }, (_, i) => ({
-      key: `league-${i}`,
-      src: leagueTrophy,
-      alt: "League trophy",
-      title: "League Title",
-      className: "h-16 w-12",
-    })),
-    ...Array.from({ length: Math.max(0, cupWins) }, (_, i) => ({
-      key: `cup-${i}`,
-      src: cupTrophy,
-      alt: "Cup trophy",
-      title: "Cup Win",
-      className: "h-14 w-10",
-    })),
-    ...Array.from({ length: Math.max(0, gobletWins) }, (_, i) => ({
-      key: `goblet-${i}`,
-      src: gobletTrophy,
-      alt: "Goblet trophy",
-      title: "Goblet Win",
-      className: "h-12 w-8",
-    })),
-  ];
+  const trophyCabinetItems = (data.trophies || [])
+    .flatMap((row: any) => {
+      const season = String(row?.season || "");
+      const seasonLabel = season || "—";
+      const out: Array<{
+        key: string;
+        src: string;
+        alt: string;
+        title: string;
+        className: string;
+        seasonLabel: string;
+      }> = [];
+      if (row?.league_champion) {
+        out.push({
+          key: `league-${seasonLabel}`,
+          src: leagueTrophy,
+          alt: "League trophy",
+          title: "League Title",
+          className: "h-16 w-12",
+          seasonLabel,
+        });
+      }
+      if (row?.cup_winner) {
+        out.push({
+          key: `cup-${seasonLabel}`,
+          src: cupTrophy,
+          alt: "Cup trophy",
+          title: "Cup Win",
+          className: "h-14 w-10",
+          seasonLabel,
+        });
+      }
+      if (row?.goblet_winner) {
+        out.push({
+          key: `goblet-${seasonLabel}`,
+          src: gobletTrophy,
+          alt: "Goblet trophy",
+          title: "Goblet Win",
+          className: "h-12 w-8",
+          seasonLabel,
+        });
+      }
+      return out;
+    })
+    .sort((a, b) => String(b.seasonLabel).localeCompare(String(a.seasonLabel)));
 
   return (
     <div className="space-y-6 rounded-2xl bg-zinc-300/60 p-4 md:p-6">
@@ -431,9 +453,14 @@ export default function ManagerProfile() {
             <Card className="rounded-3xl border-zinc-200 bg-zinc-100 p-5">
               <h3 className="text-lg font-semibold mb-4">Trophy Cabinet</h3>
               <div className="flex items-end gap-2 flex-wrap min-h-14">
-                {trophyIcons.length > 0 ? (
-                  trophyIcons.map((icon) => (
-                    <img key={icon.key} src={icon.src} alt={icon.alt} title={icon.title} className={`${icon.className} object-contain`} />
+                {trophyCabinetItems.length > 0 ? (
+                  trophyCabinetItems.map((icon) => (
+                    <div key={icon.key} className="w-14 flex flex-col items-center justify-end">
+                      <img src={icon.src} alt={icon.alt} title={icon.title} className={`${icon.className} object-contain`} />
+                      <div className="mt-1 text-[10px] leading-none text-zinc-700 text-center w-full">
+                        {icon.seasonLabel}
+                      </div>
+                    </div>
                   ))
                 ) : (
                   <p className="text-sm text-zinc-700">No trophies yet.</p>
