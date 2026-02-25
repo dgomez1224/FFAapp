@@ -410,11 +410,10 @@ function extractDraftPlayerMap(bootstrap: any) {
   rawElements.forEach((p: any) => {
     const id = parsePositiveInt(p?.id ?? p?.element ?? p?.element_id);
     if (!id) return;
+    const fullName = `${p?.first_name ?? ""} ${p?.second_name ?? ""}`.trim();
     const name =
       String(
-        p?.web_name ??
-          p?.name ??
-          `${p?.first_name ?? ""} ${p?.second_name ?? ""}`.trim(),
+        fullName || (p?.name ?? p?.web_name),
       ).trim() || `Player ${id}`;
     map[id] = {
       id,
@@ -524,6 +523,10 @@ type H2HRecord = {
   games_played: number;
   avg_points: number | null;
 };
+
+function canonicalManagerKey(value: unknown) {
+  return toCanonicalManagerName(value) || normalizeManagerName(value) || "";
+}
 
 type AllTimeManagerStat = {
   manager_name: string;
@@ -2295,6 +2298,11 @@ const gobletStandings = new Hono();
 
 gobletStandings.get("/", async (c) => {
   try {
+    const gobletSort = (a: any, b: any) =>
+      coerceNumber(b.points_for, 0) - coerceNumber(a.points_for, 0) ||
+      coerceNumber(b.wins, 0) - coerceNumber(a.wins, 0) ||
+      coerceNumber(b.points_against, 0) - coerceNumber(a.points_against, 0);
+
     // DB-first
     const supabase = getSupabaseAdmin();
     try {
@@ -2322,16 +2330,20 @@ gobletStandings.get("/", async (c) => {
         )
         .forEach((m: any) => {
           if (!agg[m.team_1_id]) {
-            agg[m.team_1_id] = { team_id: m.team_1_id, points_for: 0, total_points: 0, rounds: 0 };
+            agg[m.team_1_id] = { team_id: m.team_1_id, points_for: 0, points_against: 0, wins: 0, total_points: 0, rounds: 0 };
           }
           if (!agg[m.team_2_id]) {
-            agg[m.team_2_id] = { team_id: m.team_2_id, points_for: 0, total_points: 0, rounds: 0 };
+            agg[m.team_2_id] = { team_id: m.team_2_id, points_for: 0, points_against: 0, wins: 0, total_points: 0, rounds: 0 };
           }
 
           const p1 = coerceNumber(m.team_1_points);
           const p2 = coerceNumber(m.team_2_points);
           agg[m.team_1_id].points_for += p1;
+          agg[m.team_1_id].points_against += p2;
           agg[m.team_2_id].points_for += p2;
+          agg[m.team_2_id].points_against += p1;
+          if (p1 > p2) agg[m.team_1_id].wins += 1;
+          else if (p2 > p1) agg[m.team_2_id].wins += 1;
           agg[m.team_1_id].total_points = agg[m.team_1_id].points_for;
           agg[m.team_2_id].total_points = agg[m.team_2_id].points_for;
           agg[m.team_1_id].rounds += 1;
@@ -2352,7 +2364,7 @@ gobletStandings.get("/", async (c) => {
       }
 
       const standings = Object.values(agg)
-        .sort((a: any, b: any) => b.points_for - a.points_for)
+        .sort(gobletSort)
         .map((row: any, idx: number) => ({ ...row, rank: idx + 1 }));
 
       const hasNonZeroPointsFor = standings.some((row: any) => coerceNumber(row.points_for) > 0);
@@ -2385,6 +2397,8 @@ gobletStandings.get("/", async (c) => {
             entry_name: row.teams?.entry_name,
             manager_name: row.teams?.manager_name,
             points_for: 0,
+            points_against: 0,
+            wins: 0,
             total_points: 0,
             rounds: 0,
           };
@@ -2399,7 +2413,7 @@ gobletStandings.get("/", async (c) => {
       });
 
       const standings = Object.values(agg)
-        .sort((a: any, b: any) => b.points_for - a.points_for)
+        .sort(gobletSort)
         .map((row: any, idx: number) => ({ ...row, rank: idx + 1 }));
 
       return c.json({ standings, source: "database" });
@@ -2422,6 +2436,8 @@ gobletStandings.get("/", async (c) => {
           entry_name: formatDraftTeamName(entry),
           manager_name: formatDraftManagerName(entry),
           points_for: 0,
+          points_against: 0,
+          wins: 0,
         };
       });
 
@@ -2434,11 +2450,15 @@ gobletStandings.get("/", async (c) => {
         const p1 = coerceNumber(m.league_entry_1_points ?? m.score_1 ?? m.home_score);
         const p2 = coerceNumber(m.league_entry_2_points ?? m.score_2 ?? m.away_score);
         pointsMap[String(entry1)].points_for += p1;
+        pointsMap[String(entry1)].points_against += p2;
         pointsMap[String(entry2)].points_for += p2;
+        pointsMap[String(entry2)].points_against += p1;
+        if (p1 > p2) pointsMap[String(entry1)].wins += 1;
+        else if (p2 > p1) pointsMap[String(entry2)].wins += 1;
       });
 
       const standings = Object.values(pointsMap)
-        .sort((a: any, b: any) => b.points_for - a.points_for)
+        .sort(gobletSort)
         .map((team: any, index: number) => ({
           ...team,
           total_points: team.points_for,
@@ -2454,8 +2474,10 @@ gobletStandings.get("/", async (c) => {
           entry_name: entry.entry_name ?? entry.player_name ?? "Team",
           manager_name: entry.player_name ?? "Manager",
           points_for: coerceNumber(entry.event_total),
+          points_against: 0,
+          wins: 0,
         }))
-        .sort((a: any, b: any) => b.points_for - a.points_for)
+        .sort(gobletSort)
         .map((team: any, index: number) => ({
           ...team,
           total_points: team.points_for,
@@ -2473,6 +2495,7 @@ gobletStandings.get("/", async (c) => {
 // --------------------
 
 const managerInsights = new Hono();
+const managerMedia = new Hono();
 
 managerInsights.get("/", async (c) => {
   try {
@@ -2601,6 +2624,42 @@ managerInsights.get("/:teamId", async (c) => {
   }
 });
 
+managerMedia.get("/", async (c) => {
+  try {
+    const supabase = getSupabaseAdmin();
+    const managerNameQuery = String(c.req.query("manager_name") || "").trim();
+    const canonical = managerNameQuery ? canonicalManagerKey(managerNameQuery) : "";
+
+    let query = supabase
+      .from("manager_auth_emails")
+      .select("manager_name, club_crest, club_logo, manager_photo");
+    if (canonical) {
+      const variants = getManagerNameVariants(canonical);
+      query = query.in("manager_name", variants as any[]);
+    }
+    const { data, error } = await query;
+    if (error) {
+      return jsonError(c, 500, "Failed to fetch manager media", error.message);
+    }
+
+    const rows = (data || []).map((row: any) => ({
+      manager_name: row.manager_name,
+      canonical_manager_name: canonicalManagerKey(row.manager_name),
+      club_crest_url: row.club_crest || null,
+      club_logo_url: row.club_logo || null,
+      manager_photo_url: row.manager_photo || null,
+    }));
+
+    if (canonical) {
+      const best = rows.find((r: any) => r.canonical_manager_name === canonical) || rows[0] || null;
+      return c.json({ manager_name: managerNameQuery, media: best });
+    }
+    return c.json({ media: rows });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to fetch manager media");
+  }
+});
+
 // --------------------
 // Player Insights
 // --------------------
@@ -2613,7 +2672,25 @@ playerInsights.get("/", async (c) => {
     const filterPosition = parsePositiveInt(c.req.query("position"));
     const filterTeam = parsePositiveInt(c.req.query("team"));
     const filterAvailability = String(c.req.query("availability") || "").trim().toLowerCase();
+    const filterOwnership = String(c.req.query("ownership") || "").trim().toLowerCase();
+    const filterAvgMinutesBucket = String(c.req.query("avg_minutes_bucket") || "").trim();
+    const filterMinAvgMinutes = coerceNumber(c.req.query("min_avg_minutes"), 0);
+    const filterMaxAvgMinutes = coerceNumber(c.req.query("max_avg_minutes"), 90);
     const filterSearch = String(c.req.query("search") || "").trim().toLowerCase();
+    const matchesAvgMinutesBucket = (value: number, bucket: string) => {
+      if (!bucket) return true;
+      if (bucket === "85+") return value >= 85;
+      const match = bucket.match(/^(\d+)-(\d+)$/);
+      if (!match) return true;
+      const min = Number(match[1]);
+      const max = Number(match[2]);
+      return value >= min && value <= max;
+    };
+    const matchesAvgMinutesRange = (value: number) => {
+      const min = Math.max(0, Math.min(90, filterMinAvgMinutes));
+      const max = Math.max(min, Math.min(90, filterMaxAvgMinutes));
+      return value >= min && value <= max;
+    };
 
     const [draftBootstrapRes, classicBootstrapRes] = await Promise.allSettled([
       fetchDraftBootstrap(),
@@ -2651,12 +2728,11 @@ playerInsights.get("/", async (c) => {
         parsePositiveInt(d?.id ?? d?.element ?? d?.element_id) === playerId,
       ) || {};
       const merged = { ...pClassic, ...draftRow, ...p };
+      const mergedFullName = `${merged?.first_name ?? ""} ${merged?.second_name ?? ""}`.trim();
 
       const playerName =
         String(
-          merged?.web_name ??
-            merged?.name ??
-            `${merged?.first_name ?? ""} ${merged?.second_name ?? ""}`.trim(),
+          mergedFullName || (merged?.name ?? merged?.web_name),
         ).trim() || `Player ${playerId}`;
       const position = parsePositiveInt(merged?.element_type ?? merged?.position);
       const team = parsePositiveInt(merged?.team);
@@ -2709,6 +2785,10 @@ playerInsights.get("/", async (c) => {
         defensive_contributions: defensiveContributions,
         defensive_contribution_returns: defContribReturns,
         games_played: gamesPlayed,
+        home_games: gamesHome,
+        away_games: gamesAway,
+        home_points: pointsHome,
+        away_points: pointsAway,
         minutes_played: minutes,
         points_per_game_played: gamesPlayed > 0 ? totalPoints / gamesPlayed : 0,
         minutes_per_game_played: gamesPlayed > 0 ? minutes / gamesPlayed : 0,
@@ -2719,33 +2799,32 @@ playerInsights.get("/", async (c) => {
       };
     });
 
-    // Determine current gameweek for ownership calculation
-    let currentGw = null;
-    try {
-      const bootstrap = await fetchDraftBootstrap();
-      currentGw = extractDraftCurrentEventId(bootstrap);
-    } catch {
-      const { data: seasonState } = await supabase
-        .from("season_state")
-        .select("current_gameweek")
-        .eq("season", CURRENT_SEASON)
-        .maybeSingle();
-      currentGw = parsePositiveInt(seasonState?.current_gameweek) || null;
-    }
-
-    // Build owners map for current gameweek
+    // Build owners map from latest available gameweek in player_selections.
     const ownersMap: Record<number, string[]> = {};
-    if (currentGw) {
+    const ownerTeamMap: Record<number, string | null> = {};
+    let ownershipGameweek: number | null = null;
+    {
+      const { data: latestOwnedGwRows } = await supabase
+        .from("player_selections")
+        .select("gameweek")
+        .order("gameweek", { ascending: false })
+        .limit(1);
+      ownershipGameweek = coerceNumber(latestOwnedGwRows?.[0]?.gameweek, 0) || null;
+    }
+    if (ownershipGameweek) {
       const { data: ownersRows } = await supabase
         .from("player_selections")
         .select("player_id, team_id, teams(entry_name)")
-        .eq("gameweek", currentGw);
+        .eq("gameweek", ownershipGameweek);
       if (ownersRows) {
         ownersRows.forEach((r: any) => {
           const id = Number(r.player_id);
           if (!ownersMap[id]) ownersMap[id] = [];
           const entryName = r?.teams?.entry_name || null;
           if (entryName && !ownersMap[id].includes(entryName)) ownersMap[id].push(entryName);
+        });
+        Object.entries(ownersMap).forEach(([id, teams]) => {
+          ownerTeamMap[Number(id)] = teams.length > 0 ? teams[0] : null;
         });
       }
     }
@@ -2762,8 +2841,16 @@ playerInsights.get("/", async (c) => {
       teamMap[id] = t?.name || t?.short_name || String(t?.id);
     });
 
-    const resolveGamesPlayedByMinutes = async (playerIds: number[]) => {
-      const out: Record<number, number> = {};
+    const resolveSummaryDerived = async (playerIds: number[]) => {
+      const out: Record<number, {
+        games_played: number;
+        average_points_home: number | null;
+        average_points_away: number | null;
+        home_games: number;
+        away_games: number;
+        home_points: number;
+        away_points: number;
+      }> = {};
       const ids = Array.from(new Set(playerIds.filter((id) => Number.isInteger(id) && id > 0)));
       const batchSize = 16;
       for (let i = 0; i < ids.length; i += batchSize) {
@@ -2773,7 +2860,20 @@ playerInsights.get("/", async (c) => {
             try {
               const summary = await fetchJSON<any>(`${FPL_BASE_URL}/element-summary/${playerId}/`);
               const history = normalizeDraftList<any>(summary?.history || summary?.history?.data || []);
-              out[playerId] = history.filter((h: any) => coerceNumber(h?.minutes, 0) > 1).length;
+              const gamesPlayed = history.filter((h: any) => coerceNumber(h?.minutes, 0) > 1).length;
+              const home = history.filter((h: any) => h?.was_home === true && coerceNumber(h?.minutes, 0) > 1);
+              const away = history.filter((h: any) => h?.was_home === false && coerceNumber(h?.minutes, 0) > 1);
+              const homePointsTotal = home.reduce((sum: number, h: any) => sum + coerceNumber(h?.total_points, 0), 0);
+              const awayPointsTotal = away.reduce((sum: number, h: any) => sum + coerceNumber(h?.total_points, 0), 0);
+              out[playerId] = {
+                games_played: gamesPlayed,
+                average_points_home: home.length > 0 ? homePointsTotal / home.length : null,
+                average_points_away: away.length > 0 ? awayPointsTotal / away.length : null,
+                home_games: home.length,
+                away_games: away.length,
+                home_points: homePointsTotal,
+                away_points: awayPointsTotal,
+              };
             } catch {
               // Keep fallback value when summary fetch fails.
             }
@@ -2810,7 +2910,8 @@ playerInsights.get("/", async (c) => {
         .map((p: any) => ({
           ...p,
           owned_by: ownersMap[p.player_id] || [],
-          ownership_status: (ownersMap[p.player_id] || []).length > 0 ? `Owned by ${(ownersMap[p.player_id] || []).join(", ")}` : "Unowned",
+          owner_team: ownerTeamMap[p.player_id] || null,
+          ownership_status: ownerTeamMap[p.player_id] || "Unowned",
           team_name: teamMap[p.team] || null,
           total_minutes: p.minutes_played ?? 0,
         }))
@@ -2824,28 +2925,43 @@ playerInsights.get("/", async (c) => {
         if (filterPosition && coerceNumber(row.position) !== filterPosition) return false;
         if (filterTeam && coerceNumber(row.team) !== filterTeam) return false;
         if (filterAvailability && String(row.availability || "").toLowerCase() !== filterAvailability) return false;
+        if (filterOwnership === "owned" && !(row.owned_by || []).length) return false;
+        if (filterOwnership === "unowned" && (row.owned_by || []).length) return false;
+        if (!matchesAvgMinutesBucket(coerceNumber(row.minutes_per_game_played, 0), filterAvgMinutesBucket)) return false;
+        if (!matchesAvgMinutesRange(coerceNumber(row.minutes_per_game_played, 0))) return false;
         if (filterSearch && !String(row.player_name || "").toLowerCase().includes(filterSearch)) return false;
         return true;
       });
 
-      const gamesByMinutes = await resolveGamesPlayedByMinutes(
+      const summaryDerived = await resolveSummaryDerived(
         filtered.map((row: any) => coerceNumber(row.player_id)).filter((id: number) => id > 0),
       );
       const adjusted = filtered.map((row: any) => {
-        const games = gamesByMinutes[coerceNumber(row.player_id)];
+        const derived = summaryDerived[coerceNumber(row.player_id)];
+        const games = derived?.games_played;
         if (!Number.isInteger(games)) return row;
         const totalPoints = coerceNumber(row.total_points, 0);
         const totalMinutes = coerceNumber(row.total_minutes ?? row.minutes_played, 0);
         return {
           ...row,
           games_played: games,
+          home_games: derived?.home_games ?? row.home_games ?? 0,
+          away_games: derived?.away_games ?? row.away_games ?? 0,
+          home_points: derived?.home_points ?? row.home_points ?? 0,
+          away_points: derived?.away_points ?? row.away_points ?? 0,
           points_per_game_played: games > 0 ? totalPoints / games : 0,
           minutes_per_game_played: games > 0 ? totalMinutes / games : 0,
+          average_points_home: derived?.average_points_home ?? row.average_points_home ?? null,
+          average_points_away: derived?.average_points_away ?? row.average_points_away ?? null,
         };
+      });
+      const finalAdjusted = adjusted.filter((row: any) => {
+        const mpg = coerceNumber(row.minutes_per_game_played, 0);
+        return matchesAvgMinutesBucket(mpg, filterAvgMinutesBucket) && matchesAvgMinutesRange(mpg);
       });
 
       return c.json({
-        insights: adjusted,
+        insights: finalAdjusted,
         source: "fpl_bootstrap",
       });
     }
@@ -2883,7 +2999,8 @@ playerInsights.get("/", async (c) => {
         teams_using: p.teams.size,
         ...byPlayerFromBootstrap[p.player_id],
         owned_by: ownedBy,
-        ownership_status: ownedBy.length > 0 ? `Owned by ${ownedBy.join(", ")}` : "Unowned",
+        owner_team: ownerTeamMap[p.player_id] || null,
+        ownership_status: ownerTeamMap[p.player_id] || "Unowned",
         team_name: teamMap[byPlayerFromBootstrap[p.player_id]?.team] || null,
         total_minutes: byPlayerFromBootstrap[p.player_id]?.minutes_played ?? 0,
         points: byPlayerFromBootstrap[p.player_id]?.total_points ?? 0,
@@ -2894,28 +3011,43 @@ playerInsights.get("/", async (c) => {
       if (filterPosition && coerceNumber(row.position) !== filterPosition) return false;
       if (filterTeam && coerceNumber(row.team) !== filterTeam) return false;
       if (filterAvailability && String(row.availability || "").toLowerCase() !== filterAvailability) return false;
+      if (filterOwnership === "owned" && !(row.owned_by || []).length) return false;
+      if (filterOwnership === "unowned" && (row.owned_by || []).length) return false;
+      if (!matchesAvgMinutesBucket(coerceNumber(row.minutes_per_game_played, 0), filterAvgMinutesBucket)) return false;
+      if (!matchesAvgMinutesRange(coerceNumber(row.minutes_per_game_played, 0))) return false;
       if (filterSearch && !String(row.player_name || "").toLowerCase().includes(filterSearch)) return false;
       return true;
     });
 
-    const gamesByMinutes = await resolveGamesPlayedByMinutes(
+    const summaryDerived = await resolveSummaryDerived(
       filtered.map((row: any) => coerceNumber(row.player_id)).filter((id: number) => id > 0),
     );
     const adjusted = filtered.map((row: any) => {
-      const games = gamesByMinutes[coerceNumber(row.player_id)];
+      const derived = summaryDerived[coerceNumber(row.player_id)];
+      const games = derived?.games_played;
       if (!Number.isInteger(games)) return row;
       const totalPoints = coerceNumber(row.total_points ?? row.points, 0);
       const totalMinutes = coerceNumber(row.total_minutes ?? row.minutes_played, 0);
       return {
         ...row,
         games_played: games,
+        home_games: derived?.home_games ?? row.home_games ?? 0,
+        away_games: derived?.away_games ?? row.away_games ?? 0,
+        home_points: derived?.home_points ?? row.home_points ?? 0,
+        away_points: derived?.away_points ?? row.away_points ?? 0,
         points_per_game_played: games > 0 ? totalPoints / games : 0,
         minutes_per_game_played: games > 0 ? totalMinutes / games : 0,
+        average_points_home: derived?.average_points_home ?? row.average_points_home ?? null,
+        average_points_away: derived?.average_points_away ?? row.average_points_away ?? null,
       };
+    });
+    const finalAdjusted = adjusted.filter((row: any) => {
+      const mpg = coerceNumber(row.minutes_per_game_played, 0);
+      return matchesAvgMinutesBucket(mpg, filterAvgMinutesBucket) && matchesAvgMinutesRange(mpg);
     });
 
     return c.json({
-      insights: adjusted.sort((a: any, b: any) => coerceNumber(b.selected_count) - coerceNumber(a.selected_count)),
+      insights: finalAdjusted.sort((a: any, b: any) => coerceNumber(b.selected_count) - coerceNumber(a.selected_count)),
       source: "database",
     });
   } catch (err: any) {
@@ -5488,11 +5620,24 @@ fixturesHub.get("/", async (c) => {
     (teamsRes.data || []).forEach((t: any) => {
       teamsMap[String(t.id)] = t;
     });
+    const crestByManager: Record<string, string | null> = {};
+    try {
+      const { data: mediaRows } = await supabase
+        .from("manager_auth_emails")
+        .select("manager_name, club_crest");
+      (mediaRows || []).forEach((row: any) => {
+        const key = canonicalManagerKey(row.manager_name);
+        if (!key) return;
+        crestByManager[key] = row.club_crest || null;
+      });
+    } catch {
+      // non-fatal
+    }
     let draftEntries: any[] = [];
     let draftMatches: any[] = [];
     let rankMap: Record<string, number> = {};
     let currentGw = coerceNumber(seasonStateRes.data?.current_gameweek, 1);
-    const draftEntryMap: Record<string, { id: string; entry_name: string | null; manager_name: string | null }> = {};
+    const draftEntryMap: Record<string, { id: string; entry_name: string | null; manager_name: string | null; club_crest_url?: string | null }> = {};
     try {
       const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
       draftEntries = normalizeDraftList<any>(details?.league_entries);
@@ -5511,6 +5656,7 @@ fixturesHub.get("/", async (c) => {
           id: String(id),
           entry_name: formatDraftTeamName(entry),
           manager_name: formatDraftManagerName(entry),
+          club_crest_url: crestByManager[canonicalManagerKey(formatDraftManagerName(entry))] || null,
         };
       });
     } catch {
@@ -5536,6 +5682,7 @@ fixturesHub.get("/", async (c) => {
           id,
           entry_name: team.entry_name || null,
           manager_name: team.manager_name || null,
+          club_crest_url: crestByManager[canonicalManagerKey(team.manager_name)] || null,
         };
       });
     }
@@ -5566,8 +5713,14 @@ fixturesHub.get("/", async (c) => {
 
     const cupByGw: Record<string, any[]> = {};
     (cupRes.data || []).forEach((m: any) => {
-      const team1 = teamsMap[String(m.team_1_id)] || null;
-      const team2 = teamsMap[String(m.team_2_id)] || null;
+      const team1Raw = teamsMap[String(m.team_1_id)] || null;
+      const team2Raw = teamsMap[String(m.team_2_id)] || null;
+      const team1 = team1Raw
+        ? { ...team1Raw, club_crest_url: crestByManager[canonicalManagerKey(team1Raw.manager_name)] || null }
+        : null;
+      const team2 = team2Raw
+        ? { ...team2Raw, club_crest_url: crestByManager[canonicalManagerKey(team2Raw.manager_name)] || null }
+        : null;
       const rows = [
         {
           leg: 1,
@@ -5671,6 +5824,19 @@ fixturesHub.get("/matchup", async (c) => {
     }
 
     const supabase = getSupabaseAdmin();
+    const crestByManager: Record<string, string | null> = {};
+    try {
+      const { data: mediaRows } = await supabase
+        .from("manager_auth_emails")
+        .select("manager_name, club_crest");
+      (mediaRows || []).forEach((row: any) => {
+        const key = canonicalManagerKey(row.manager_name);
+        if (!key) return;
+        crestByManager[key] = row.club_crest || null;
+      });
+    } catch {
+      // non-fatal
+    }
     let currentGw = gameweek;
     try {
       const bootstrap = await fetchDraftBootstrap();
@@ -5762,12 +5928,14 @@ fixturesHub.get("/matchup", async (c) => {
         entry_id: String(entry1.entry_id ?? entry1.entry ?? entry1.id ?? resolvedTeam1Id),
         manager_name: formatDraftManagerName(entry1),
         entry_name: formatDraftTeamName(entry1),
+        club_crest_url: crestByManager[canonicalManagerKey(formatDraftManagerName(entry1))] || null,
       };
       team2 = {
         id: resolvedTeam2Id,
         entry_id: String(entry2.entry_id ?? entry2.entry ?? entry2.id ?? resolvedTeam2Id),
         manager_name: formatDraftManagerName(entry2),
         entry_name: formatDraftTeamName(entry2),
+        club_crest_url: crestByManager[canonicalManagerKey(formatDraftManagerName(entry2))] || null,
       };
       rankMap = buildDraftRankMapFromMatches(matches, currentGw);
       leagueRow = matches.find((m: any) => {
@@ -5805,6 +5973,8 @@ fixturesHub.get("/matchup", async (c) => {
       if (!team1 || !team2) {
         return jsonError(c, 404, "Could not resolve one or both teams");
       }
+      team1.club_crest_url = crestByManager[canonicalManagerKey(team1.manager_name)] || null;
+      team2.club_crest_url = crestByManager[canonicalManagerKey(team2.manager_name)] || null;
       rankMap = await buildLeagueRankMap(supabase, currentGw);
     }
 
@@ -5961,6 +6131,7 @@ fixturesHub.get("/matchup", async (c) => {
         id: String(team1.id),
         manager_name: team1.manager_name,
         entry_name: team1.entry_name,
+        club_crest_url: team1.club_crest_url || null,
         rank: gameweek === currentGw ? rankMap[String(team1.id)] || null : null,
         lineup: lineup1,
       },
@@ -5968,6 +6139,7 @@ fixturesHub.get("/matchup", async (c) => {
         id: String(team2.id),
         manager_name: team2.manager_name,
         entry_name: team2.entry_name,
+        club_crest_url: team2.club_crest_url || null,
         rank: gameweek === currentGw ? rankMap[String(team2.id)] || null : null,
         lineup: lineup2,
       },
@@ -6138,6 +6310,7 @@ app.route("/league-standings", leagueStandings);
 app.route("/cup-group-stage", cupGroupStage);
 app.route("/goblet-standings", gobletStandings);
 app.route("/manager-insights", managerInsights);
+app.route("/manager-media", managerMedia);
 app.route("/player-insights", playerInsights);
 app.route("/player-history", playerHistory);
 app.route("/h2h-standings", h2hStandings);
@@ -6165,6 +6338,7 @@ app.route("/server/league-standings", leagueStandings);
 app.route("/server/cup-group-stage", cupGroupStage);
 app.route("/server/goblet-standings", gobletStandings);
 app.route("/server/manager-insights", managerInsights);
+app.route("/server/manager-media", managerMedia);
 app.route("/server/player-insights", playerInsights);
 app.route("/server/player-history", playerHistory);
 app.route("/server/h2h-standings", h2hStandings);

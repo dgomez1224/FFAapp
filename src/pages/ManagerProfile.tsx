@@ -47,6 +47,7 @@ export default function ManagerProfile() {
   const [h2hSeasonSort, setH2hSeasonSort] = useState<{ key: string; dir: SortDir }>({ key: "opponent_name", dir: "asc" });
   const [selectedH2HSeason, setSelectedH2HSeason] = useState<string>("");
   const [currentRank, setCurrentRank] = useState<number | null>(null);
+  const [managerPhotoUrl, setManagerPhotoUrl] = useState<string | null>(null);
   const [currentSeasonFixtures, setCurrentSeasonFixtures] = useState<Array<{
     key: string;
     gameweek: number;
@@ -225,6 +226,25 @@ export default function ManagerProfile() {
     loadCurrentSeasonExtras();
   }, [data?.manager_name]);
 
+  useEffect(() => {
+    async function loadManagerPhoto() {
+      if (!data?.manager_name) return;
+      try {
+        const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/manager-media?manager_name=${encodeURIComponent(data.manager_name)}`;
+        const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
+        const payload = await res.json();
+        if (!res.ok || payload?.error) {
+          setManagerPhotoUrl(null);
+          return;
+        }
+        setManagerPhotoUrl(payload?.media?.manager_photo_url || null);
+      } catch {
+        setManagerPhotoUrl(null);
+      }
+    }
+    loadManagerPhoto();
+  }, [data?.manager_name]);
+
   if (loading) {
     return (
       <Card className="p-6">
@@ -365,7 +385,11 @@ export default function ManagerProfile() {
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-[260px_1fr_1fr]">
             <Card className="rounded-3xl border-zinc-200 bg-zinc-100 p-6">
               <div className="h-44 w-full rounded-2xl border-2 border-zinc-900/70 bg-white/70 flex items-center justify-center text-zinc-700">
-                <div className="h-28 w-28 rounded-full border-4 border-zinc-900/70 flex items-center justify-center text-4xl">👤</div>
+                {managerPhotoUrl ? (
+                  <img src={managerPhotoUrl} alt={`${data.manager_name} profile`} className="h-32 w-32 rounded-full border-4 border-zinc-900/70 object-cover" />
+                ) : (
+                  <div className="h-28 w-28 rounded-full border-4 border-zinc-900/70 flex items-center justify-center text-4xl">👤</div>
+                )}
               </div>
             </Card>
 

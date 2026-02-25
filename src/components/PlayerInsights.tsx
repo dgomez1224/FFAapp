@@ -25,6 +25,10 @@ interface PlayerInsight {
   points_per_90_played?: number;
   average_points_home?: number | null;
   average_points_away?: number | null;
+  home_games?: number;
+  away_games?: number;
+  home_points?: number;
+  away_points?: number;
   total_points?: number;
   games_played?: number;
   selected_count?: number;
@@ -34,6 +38,7 @@ interface PlayerInsight {
   teams_using?: number;
   selected_by_percent?: number;
   ownership_status?: string;
+  owner_team?: string | null;
   owned_by?: string[];
   total_minutes?: number;
 }
@@ -68,7 +73,20 @@ export default function PlayerInsights() {
   const [filterPosition, setFilterPosition] = useState<string>("");
   const [filterTeam, setFilterTeam] = useState<string>("");
   const [filterAvailability, setFilterAvailability] = useState<string>("");
+  const [filterOwnership, setFilterOwnership] = useState<string>("");
+  const [pendingMinAvgMinutes, setPendingMinAvgMinutes] = useState<number>(0);
+  const [pendingMaxAvgMinutes, setPendingMaxAvgMinutes] = useState<number>(90);
+  const [filterMinAvgMinutes, setFilterMinAvgMinutes] = useState<number>(0);
+  const [filterMaxAvgMinutes, setFilterMaxAvgMinutes] = useState<number>(90);
   const [filterSearch, setFilterSearch] = useState<string>("");
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setFilterMinAvgMinutes(pendingMinAvgMinutes);
+      setFilterMaxAvgMinutes(pendingMaxAvgMinutes);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [pendingMinAvgMinutes, pendingMaxAvgMinutes]);
 
   useEffect(() => {
     async function fetchInsights() {
@@ -80,6 +98,9 @@ export default function PlayerInsights() {
         if (filterPosition) params.set("position", filterPosition);
         if (filterTeam) params.set("team", filterTeam);
         if (filterAvailability) params.set("availability", filterAvailability);
+        if (filterOwnership) params.set("ownership", filterOwnership);
+        params.set("min_avg_minutes", String(filterMinAvgMinutes));
+        params.set("max_avg_minutes", String(filterMaxAvgMinutes));
         if (filterSearch) params.set("search", filterSearch);
 
         const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/player-insights${params.toString() ? `?${params.toString()}` : ""}`;
@@ -99,7 +120,7 @@ export default function PlayerInsights() {
     }
 
     fetchInsights();
-  }, [filterPosition, filterTeam, filterAvailability, filterSearch]);
+  }, [filterPosition, filterTeam, filterAvailability, filterOwnership, filterMinAvgMinutes, filterMaxAvgMinutes, filterSearch]);
 
   const players = data?.insights || [];
 
@@ -172,7 +193,7 @@ export default function PlayerInsights() {
       </div>
 
       <Card className="p-4">
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-6">
           <input
             className="rounded-md border px-3 py-2 text-sm"
             placeholder="Search by name"
@@ -202,6 +223,42 @@ export default function PlayerInsights() {
             <option value="s">Suspended</option>
             <option value="u">Unavailable</option>
           </select>
+          <select className="rounded-md border px-3 py-2 text-sm" value={filterOwnership} onChange={(e) => setFilterOwnership(e.target.value)}>
+            <option value="">All Ownership</option>
+            <option value="owned">Owned</option>
+            <option value="unowned">Unowned</option>
+          </select>
+          <div className="rounded-md border px-3 py-2 text-sm">
+            <div className="mb-1 text-xs text-muted-foreground">
+              Min/Game: {pendingMinAvgMinutes} - {pendingMaxAvgMinutes}
+            </div>
+            <div className="flex flex-col gap-1">
+              <input
+                type="range"
+                min={0}
+                max={90}
+                step={1}
+                value={pendingMinAvgMinutes}
+                onChange={(e) => {
+                  const next = Number(e.target.value);
+                  // Filters directly against minutes_per_game_played (Min/Game column).
+                  setPendingMinAvgMinutes(Math.min(next, pendingMaxAvgMinutes));
+                }}
+              />
+              <input
+                type="range"
+                min={0}
+                max={90}
+                step={1}
+                value={pendingMaxAvgMinutes}
+                onChange={(e) => {
+                  const next = Number(e.target.value);
+                  // Filters directly against minutes_per_game_played (Min/Game column).
+                  setPendingMaxAvgMinutes(Math.max(next, pendingMinAvgMinutes));
+                }}
+              />
+            </div>
+          </div>
         </div>
       </Card>
 
@@ -222,12 +279,15 @@ export default function PlayerInsights() {
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("defensive_contributions")}>Def Contrib{sortLabel("defensive_contributions")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("points_per_game_played")}>Pts/Game{sortLabel("points_per_game_played")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("minutes_per_game_played")}>Min/Game{sortLabel("minutes_per_game_played")}</TableHead>
-                <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("points_per_minute_played")}>Pts/Min{sortLabel("points_per_minute_played")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("points_per_90_played")}>Pts/90{sortLabel("points_per_90_played")}</TableHead>
+                <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("home_games")}>Home GP{sortLabel("home_games")}</TableHead>
+                <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("away_games")}>Away GP{sortLabel("away_games")}</TableHead>
+                <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("home_points")}>Home Pts{sortLabel("home_points")}</TableHead>
+                <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("away_points")}>Away Pts{sortLabel("away_points")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("average_points_home")}>Avg Home Pts{sortLabel("average_points_home")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("average_points_away")}>Avg Away Pts{sortLabel("average_points_away")}</TableHead>
                 <TableHead className="cursor-pointer" onClick={() => toggleSort("ownership_status")}>Ownership{sortLabel("ownership_status")}</TableHead>
-                <TableHead className="text-right">Avail</TableHead>
+                <TableHead className="text-right">Injury status</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -245,11 +305,14 @@ export default function PlayerInsights() {
                   <TableCell className="text-right">{p.defensive_contributions ?? 0}</TableCell>
                   <TableCell className="text-right">{(p.points_per_game_played ?? 0).toFixed(2)}</TableCell>
                   <TableCell className="text-right">{(p.minutes_per_game_played ?? 0).toFixed(1)}</TableCell>
-                  <TableCell className="text-right">{(p.points_per_minute_played ?? 0).toFixed(3)}</TableCell>
                   <TableCell className="text-right">{(p.points_per_90_played ?? 0).toFixed(2)}</TableCell>
+                  <TableCell className="text-right">{p.home_games ?? 0}</TableCell>
+                  <TableCell className="text-right">{p.away_games ?? 0}</TableCell>
+                  <TableCell className="text-right">{p.home_points ?? 0}</TableCell>
+                  <TableCell className="text-right">{p.away_points ?? 0}</TableCell>
                   <TableCell className="text-right">{p.average_points_home == null ? "—" : p.average_points_home.toFixed(2)}</TableCell>
                   <TableCell className="text-right">{p.average_points_away == null ? "—" : p.average_points_away.toFixed(2)}</TableCell>
-                  <TableCell>{p.ownership_status || (p.owned_by && p.owned_by.length > 0 ? `Owned by ${p.owned_by.join(", ")}` : "Unowned")}</TableCell>
+                  <TableCell>{p.owner_team || p.ownership_status || "Unowned"}</TableCell>
                   <TableCell className="text-right">{AVAILABILITY_LABELS[String(p.availability || "")] || "—"}</TableCell>
                 </TableRow>
               ))}

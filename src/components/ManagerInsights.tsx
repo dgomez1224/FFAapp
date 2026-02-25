@@ -16,6 +16,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import { ManagerRatingTicker } from "./ManagerRatingTicker";
+import { useManagerCrestMap } from "../lib/useManagerCrestMap";
 
 interface ManagerInsight {
   team_id: string;
@@ -55,6 +56,7 @@ export default function ManagerInsights() {
   const [error, setError] = useState<string | null>(null);
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   const [ratingHistory, setRatingHistory] = useState<RatingHistoryResponse | null>(null);
+  const { getCrest } = useManagerCrestMap();
 
   useEffect(() => {
     async function fetchInsights() {
@@ -169,7 +171,18 @@ export default function ManagerInsights() {
                     onClick={() => handleTeamSelect(insight.team_id)}
                   >
                     <TableCell className="font-medium">{insight.manager_name}</TableCell>
-                    <TableCell>{insight.entry_name}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        {getCrest(insight.manager_name) ? (
+                          <img
+                            src={getCrest(insight.manager_name)!}
+                            alt=""
+                            className="h-4 w-4 rounded object-cover border"
+                          />
+                        ) : null}
+                        <span>{insight.entry_name}</span>
+                      </div>
+                    </TableCell>
                     <TableCell className="text-right">{insight.gameweeks_played}</TableCell>
                     <TableCell className="text-right font-medium">{insight.total_points}</TableCell>
                     <TableCell className="text-right">{insight.average_points_per_gameweek.toFixed(1)}</TableCell>

@@ -10,6 +10,7 @@ import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { Card } from "./ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
+import { useManagerCrestMap } from "../lib/useManagerCrestMap";
 
 interface GobletStanding {
   team_id: string;
@@ -29,6 +30,7 @@ export default function GobletStandings() {
   const [data, setData] = useState<GobletStandingsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { getCrest } = useManagerCrestMap();
 
   useEffect(() => {
     async function fetchStandings() {
@@ -106,7 +108,18 @@ export default function GobletStandings() {
               {data.standings.map((standing) => (
                 <TableRow key={standing.team_id}>
                   <TableCell className="fpl-rank text-center">{standing.rank}</TableCell>
-                  <TableCell className="fpl-manager-name">{standing.entry_name || standing.team_id}</TableCell>
+                  <TableCell className="fpl-manager-name">
+                    <div className="flex items-center gap-2">
+                      {getCrest(standing.manager_name) ? (
+                        <img
+                          src={getCrest(standing.manager_name)!}
+                          alt=""
+                          className="h-4 w-4 rounded object-cover border"
+                        />
+                      ) : null}
+                      <span>{standing.entry_name || standing.team_id}</span>
+                    </div>
+                  </TableCell>
                   <TableCell className="fpl-manager-name">{standing.manager_name || "–"}</TableCell>
                   <TableCell className="fpl-points">{standing.points_for ?? standing.total_points}</TableCell>
                 </TableRow>

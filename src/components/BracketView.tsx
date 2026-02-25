@@ -12,6 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { useTournamentContext } from "../lib/tournamentContext";
 import { EDGE_FUNCTIONS_BASE, CURRENT_SEASON } from "../lib/constants";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
+import { useManagerCrestMap } from "../lib/useManagerCrestMap";
 
 interface MatchupTeam {
   id: string;
@@ -103,6 +104,7 @@ const LEGACY_BRACKETS: Array<{ season: string; src: string }> = [
 
 export function BracketView({ showLegacySelector = true }: BracketViewProps) {
   const { loading: contextLoading } = useTournamentContext();
+  const { getCrest } = useManagerCrestMap();
   const [group, setGroup] = useState<BracketResponse["group"] | null>({
     registeredCount: 0,
     standings: [],
@@ -364,7 +366,18 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
                         className={advancing ? "bg-green-50 dark:bg-green-950/40 font-semibold" : ""}
                       >
                         <TableCell>{team.rank}</TableCell>
-                        <TableCell>{team.entry_name}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            {getCrest(team.manager_name) ? (
+                              <img
+                                src={getCrest(team.manager_name)!}
+                                alt=""
+                                className="h-4 w-4 rounded object-cover border"
+                              />
+                            ) : null}
+                            <span>{team.entry_name}</span>
+                          </div>
+                        </TableCell>
                         <TableCell>{team.manager_name}</TableCell>
                         <TableCell className="text-right font-medium">
                           {team.total_points}

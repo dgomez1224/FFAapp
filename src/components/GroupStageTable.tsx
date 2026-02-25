@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
+import { useManagerCrestMap } from "../lib/useManagerCrestMap";
 
 interface Standing {
   team_id: string;
@@ -30,6 +31,7 @@ export default function GroupStageTable({ tournamentId }: Props) {
   const [standings, setStandings] = useState<Standing[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { getCrest } = useManagerCrestMap();
 
   const fetchStandings = async () => {
     try {
@@ -82,7 +84,18 @@ export default function GroupStageTable({ tournamentId }: Props) {
                 className={advancing ? "bg-green-50 font-semibold" : ""}
               >
                 <td className="px-4 py-2">{team.rank}</td>
-                <td className="px-4 py-2">{team.entry_name}</td>
+                <td className="px-4 py-2">
+                  <div className="flex items-center gap-2">
+                    {getCrest(team.manager_name) ? (
+                      <img
+                        src={getCrest(team.manager_name)!}
+                        alt=""
+                        className="h-4 w-4 rounded object-cover border"
+                      />
+                    ) : null}
+                    <span>{team.entry_name}</span>
+                  </div>
+                </td>
                 <td className="px-4 py-2">{team.manager_name}</td>
                 <td className="px-4 py-2 text-right">{team.total_points}</td>
                 <td className="px-4 py-2 text-right">{team.captain_points}</td>

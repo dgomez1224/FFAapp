@@ -10,6 +10,7 @@ import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { Card } from "./ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
+import { useManagerCrestMap } from "../lib/useManagerCrestMap";
 
 interface Standing {
   team_id: string;
@@ -34,6 +35,7 @@ export default function LeagueStandings() {
   const [data, setData] = useState<LeagueStandingsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { getCrest } = useManagerCrestMap();
 
   useEffect(() => {
     async function fetchStandings() {
@@ -111,7 +113,18 @@ export default function LeagueStandings() {
                 <TableRow key={standing.team_id}>
                   <TableCell className="fpl-rank text-center">{standing.rank}</TableCell>
                   <TableCell className="fpl-manager-name">{standing.manager_name || "—"}</TableCell>
-                  <TableCell className="fpl-manager-name">{standing.entry_name || "—"}</TableCell>
+                  <TableCell className="fpl-manager-name">
+                    <div className="flex items-center gap-2">
+                      {getCrest(standing.manager_name) ? (
+                        <img
+                          src={getCrest(standing.manager_name)!}
+                          alt=""
+                          className="h-4 w-4 rounded object-cover border"
+                        />
+                      ) : null}
+                      <span>{standing.entry_name || "—"}</span>
+                    </div>
+                  </TableCell>
                   <TableCell className="fpl-numeric">{standing.played}</TableCell>
                   <TableCell className="fpl-numeric">{standing.wins}</TableCell>
                   <TableCell className="fpl-numeric">{standing.draws}</TableCell>

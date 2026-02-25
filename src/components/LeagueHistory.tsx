@@ -13,6 +13,7 @@ import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { Card } from "./ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { EDGE_FUNCTIONS_BASE, HISTORICAL_STATS_CUTOFF_SEASON } from "../lib/constants";
+import { useManagerCrestMap } from "../lib/useManagerCrestMap";
 
 interface HistoryEntry {
   season: string;
@@ -40,6 +41,7 @@ export default function LeagueHistory() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedSeason, setSelectedSeason] = useState<string | null>(null);
+  const { getCrest } = useManagerCrestMap();
 
   useEffect(() => {
     async function fetchHistory() {
@@ -161,7 +163,16 @@ export default function LeagueHistory() {
                     </TableCell>
                     <TableCell>{entry.manager_name || "–"}</TableCell>
                     <TableCell>
-                      {entry.entry_name || (entry.entry_id ? `Entry ${entry.entry_id}` : "–")}
+                      <div className="flex items-center gap-2">
+                        {getCrest(entry.manager_name) ? (
+                          <img
+                            src={getCrest(entry.manager_name)!}
+                            alt=""
+                            className="h-4 w-4 rounded object-cover border"
+                          />
+                        ) : null}
+                        <span>{entry.entry_name || (entry.entry_id ? `Entry ${entry.entry_id}` : "–")}</span>
+                      </div>
                       {isLegacy && (
                         <span className="ml-2 text-xs text-muted-foreground">(Legacy)</span>
                       )}

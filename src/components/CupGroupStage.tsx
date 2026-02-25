@@ -10,6 +10,7 @@ import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { Card } from "./ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
+import { useManagerCrestMap } from "../lib/useManagerCrestMap";
 
 interface CupStanding {
   team_id: string;
@@ -38,6 +39,7 @@ export default function CupGroupStage() {
   const [data, setData] = useState<CupGroupStageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { getCrest } = useManagerCrestMap();
 
   const fetchStandings = async () => {
     try {
@@ -122,7 +124,18 @@ export default function CupGroupStage() {
                       className={advancing ? "bg-green-50 dark:bg-green-950/40 font-semibold" : ""}
                     >
                       <TableCell>{team.rank}</TableCell>
-                      <TableCell>{team.entry_name || "-"}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          {getCrest(team.manager_name) ? (
+                            <img
+                              src={getCrest(team.manager_name)!}
+                              alt=""
+                              className="h-4 w-4 rounded object-cover border"
+                            />
+                          ) : null}
+                          <span>{team.entry_name || "-"}</span>
+                        </div>
+                      </TableCell>
                       <TableCell>{team.manager_name}</TableCell>
                       <TableCell className="text-right">{team.wins ?? 0}</TableCell>
                       <TableCell className="text-right">{team.draws ?? 0}</TableCell>

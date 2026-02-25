@@ -8,6 +8,7 @@ import { Link } from "react-router-dom";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import { Card } from "./ui/card";
+import { useManagerCrestMap } from "../lib/useManagerCrestMap";
 
 interface MatchupRow {
   fixture_id?: string;
@@ -50,6 +51,7 @@ export function ThisWeekMatchups() {
   const [data, setData] = useState<MatchupsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { getCrest } = useManagerCrestMap();
 
   useEffect(() => {
     async function loadMatchups() {
@@ -152,7 +154,16 @@ export function ThisWeekMatchups() {
               {/* Team names and entry names */}
               <div className="grid grid-cols-[1fr_auto_1fr] gap-4 mb-3">
                 <div className="text-center">
-                  <div className="font-semibold text-sm mb-1">{m.team_1?.entry_name || "—"}</div>
+                  <div className="font-semibold text-sm mb-1 inline-flex items-center justify-center gap-1">
+                    {getCrest(m.team_1?.manager_name) ? (
+                      <img
+                        src={getCrest(m.team_1?.manager_name)!}
+                        alt=""
+                        className="h-4 w-4 rounded object-cover border"
+                      />
+                    ) : null}
+                    <span>{m.team_1?.entry_name || "—"}</span>
+                  </div>
                   <div className="text-xs text-muted-foreground">{m.team_1?.manager_name || "—"}</div>
                 </div>
                 <div className="flex items-center justify-center">
@@ -165,7 +176,16 @@ export function ThisWeekMatchups() {
                   </div>
                 </div>
                 <div className="text-center">
-                  <div className="font-semibold text-sm mb-1">{m.team_2?.entry_name || "—"}</div>
+                  <div className="font-semibold text-sm mb-1 inline-flex items-center justify-center gap-1">
+                    {getCrest(m.team_2?.manager_name) ? (
+                      <img
+                        src={getCrest(m.team_2?.manager_name)!}
+                        alt=""
+                        className="h-4 w-4 rounded object-cover border"
+                      />
+                    ) : null}
+                    <span>{m.team_2?.entry_name || "—"}</span>
+                  </div>
                   <div className="text-xs text-muted-foreground">{m.team_2?.manager_name || "—"}</div>
                 </div>
               </div>

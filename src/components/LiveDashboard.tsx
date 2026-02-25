@@ -11,6 +11,7 @@ import { useTournamentContext } from "../lib/tournamentContext";
 import { Card } from "./ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
+import { useManagerCrestMap } from "../lib/useManagerCrestMap";
 
 interface LiveScoreRow {
   id: string;
@@ -32,6 +33,7 @@ export function LiveDashboard() {
   const [rows, setRows] = useState<LiveScoreRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { getCrest } = useManagerCrestMap();
 
   useEffect(() => {
     if (contextLoading || !currentGameweek) return;
@@ -145,7 +147,18 @@ export function LiveDashboard() {
                     <TableCell>
                       {row.teams?.manager_name ?? row.teams?.manager_short_name ?? "Unknown"}
                     </TableCell>
-                    <TableCell>{row.teams?.entry_name ?? row.team_id}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        {getCrest(row.teams?.manager_name) ? (
+                          <img
+                            src={getCrest(row.teams?.manager_name)!}
+                            alt=""
+                            className="h-4 w-4 rounded object-cover border"
+                          />
+                        ) : null}
+                        <span>{row.teams?.entry_name ?? row.team_id}</span>
+                      </div>
+                    </TableCell>
                     <TableCell className="text-right font-medium">
                       {row.total_points}
                     </TableCell>

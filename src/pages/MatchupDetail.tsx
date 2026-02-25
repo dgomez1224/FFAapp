@@ -34,6 +34,7 @@ type TeamDetail = {
   id: string;
   manager_name: string;
   entry_name: string;
+  club_crest_url?: string | null;
   rank: number | null;
   total_points: number;
   lineup: LineupPlayer[];
@@ -129,7 +130,10 @@ function TeamPitchDisplay({
       <div className="mb-4">
         <h3 className="text-lg font-semibold">
           {team.rank != null ? `#${team.rank} ` : ""}
-          {team.manager_name}
+          <span className="inline-flex items-center gap-2">
+            {team.club_crest_url ? <img src={team.club_crest_url} alt="" className="h-5 w-5 rounded object-cover border" /> : null}
+            {team.manager_name}
+          </span>
         </h3>
         <p className="text-sm text-muted-foreground">{team.entry_name}</p>
       </div>
@@ -247,7 +251,10 @@ export default function MatchupDetailPage() {
         <h1 className="text-3xl font-bold mt-2">{data.type === "cup" ? "Cup Matchup" : "League Matchup"} • GW {data.gameweek}</h1>
         <div className="mt-3 grid grid-cols-[1fr_auto_1fr] gap-4 items-center">
           <div className="text-right">
-            <p className="font-semibold">{data.team_1.manager_name}</p>
+            <p className="font-semibold inline-flex items-center gap-2 justify-end">
+              {data.team_1.club_crest_url ? <img src={data.team_1.club_crest_url} alt="" className="h-5 w-5 rounded object-cover border" /> : null}
+              {data.team_1.manager_name}
+            </p>
             <p className="text-sm text-muted-foreground">{data.team_1.entry_name}</p>
           </div>
           <div className="text-center">
@@ -257,7 +264,10 @@ export default function MatchupDetailPage() {
             {data.matchup.round && <p className="text-xs text-muted-foreground mt-1">{data.matchup.round}</p>}
           </div>
           <div>
-            <p className="font-semibold">{data.team_2.manager_name}</p>
+            <p className="font-semibold inline-flex items-center gap-2">
+              {data.team_2.club_crest_url ? <img src={data.team_2.club_crest_url} alt="" className="h-5 w-5 rounded object-cover border" /> : null}
+              {data.team_2.manager_name}
+            </p>
             <p className="text-sm text-muted-foreground">{data.team_2.entry_name}</p>
           </div>
         </div>

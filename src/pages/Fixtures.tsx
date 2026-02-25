@@ -10,6 +10,7 @@ type TeamRef = {
   id: string;
   entry_name: string | null;
   manager_name: string | null;
+  club_crest_url?: string | null;
 };
 
 type Fixture = {
@@ -93,7 +94,10 @@ function FixtureRow({ fixture }: { fixture: Fixture }) {
       <div className="block w-full rounded-md border p-3">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <div>
-            <div className="text-xs text-muted-foreground">{fixture.team_1?.entry_name || "—"}</div>
+            <div className="text-xs text-muted-foreground inline-flex items-center gap-1">
+              {fixture.team_1?.club_crest_url ? <img src={fixture.team_1.club_crest_url} alt="" className="h-4 w-4 rounded object-cover border" /> : null}
+              {fixture.team_1?.entry_name || "—"}
+            </div>
             <FootballPitch players={convert(last1)} onPlayerClick={handlePlayerClick} showCaptain={true} />
           </div>
           <div className="text-center">
@@ -106,7 +110,10 @@ function FixtureRow({ fixture }: { fixture: Fixture }) {
             </Link>
           </div>
           <div>
-            <div className="text-xs text-muted-foreground">{fixture.team_2?.entry_name || "—"}</div>
+            <div className="text-xs text-muted-foreground inline-flex items-center gap-1">
+              {fixture.team_2?.club_crest_url ? <img src={fixture.team_2.club_crest_url} alt="" className="h-4 w-4 rounded object-cover border" /> : null}
+              {fixture.team_2?.entry_name || "—"}
+            </div>
             <FootballPitch players={convert(last2)} onPlayerClick={handlePlayerClick} showCaptain={true} />
           </div>
         </div>
@@ -127,7 +134,10 @@ function FixtureRow({ fixture }: { fixture: Fixture }) {
           <div className="text-xs text-muted-foreground">#{fixture.team_1_rank}</div>
         ) : null}
         <div className="font-medium">{fixture.team_1?.manager_name || "—"}</div>
-        <div className="text-xs text-muted-foreground">{fixture.team_1?.entry_name || "—"}</div>
+        <div className="text-xs text-muted-foreground inline-flex items-center gap-1">
+          {fixture.team_1?.club_crest_url ? <img src={fixture.team_1.club_crest_url} alt="" className="h-4 w-4 rounded object-cover border" /> : null}
+          {fixture.team_1?.entry_name || "—"}
+        </div>
       </div>
       <div className="text-center font-semibold">
         {fixture.team_1_points} - {fixture.team_2_points}
@@ -140,7 +150,10 @@ function FixtureRow({ fixture }: { fixture: Fixture }) {
           <div className="text-xs text-muted-foreground">#{fixture.team_2_rank}</div>
         ) : null}
         <div className="font-medium">{fixture.team_2?.manager_name || "—"}</div>
-        <div className="text-xs text-muted-foreground">{fixture.team_2?.entry_name || "—"}</div>
+        <div className="text-xs text-muted-foreground inline-flex items-center gap-1">
+          {fixture.team_2?.club_crest_url ? <img src={fixture.team_2.club_crest_url} alt="" className="h-4 w-4 rounded object-cover border" /> : null}
+          {fixture.team_2?.entry_name || "—"}
+        </div>
       </div>
     </Link>
   );
