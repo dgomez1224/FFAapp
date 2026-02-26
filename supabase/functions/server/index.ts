@@ -3652,6 +3652,8 @@ h2hMatchups.get("/", async (c) => {
     try {
       const { details } = await resolveDraftLeagueDetails(entryId, leagueIdValue);
       const entries = details?.league_entries || [];
+      const allMatches = normalizeDraftList<any>(details?.matches);
+      const draftRankMap = buildDraftRankMapFromMatches(allMatches, latestCompletedForRanks);
       const matches = (details?.matches || []).filter((m: any) => m.event === gameweek);
 
       const entryMap: Record<string, any> = {};
@@ -3684,8 +3686,8 @@ h2hMatchups.get("/", async (c) => {
                 manager_name: formatDraftManagerName(entryMap[String(entry2Id)]),
               }
             : null,
-          team_1_rank: rankMap[String(entry1Id)] || null,
-          team_2_rank: rankMap[String(entry2Id)] || null,
+          team_1_rank: rankMap[String(entry1Id)] || draftRankMap[String(entry1Id)] || null,
+          team_2_rank: rankMap[String(entry2Id)] || draftRankMap[String(entry2Id)] || null,
         };
       });
 

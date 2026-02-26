@@ -242,6 +242,9 @@ export default function FixturesPage() {
                   <div key={`gw-${gw}`} className="space-y-2">
                     <h3 className="text-sm font-semibold text-muted-foreground">GW {gw}</h3>
 
+                    {section.league.length > 0 ? (
+                      <div className="text-xs font-semibold uppercase text-muted-foreground">GW {gw} - League</div>
+                    ) : null}
                     {section.league.map((fixture) => (
                       <FixtureRow key={fixture.fixture_id} fixture={fixture} />
                     ))}
@@ -283,6 +286,9 @@ export default function FixturesPage() {
                       </div>
                     ) : null}
 
+                    {section.cup.length > 0 ? (
+                      <div className="text-xs font-semibold uppercase text-muted-foreground">GW {gw} - FFA Cup</div>
+                    ) : null}
                     {section.cup.map((fixture) => (
                       <FixtureRow key={fixture.fixture_id} fixture={fixture} />
                     ))}
