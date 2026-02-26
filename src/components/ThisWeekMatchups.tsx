@@ -29,6 +29,8 @@ interface MatchupsResponse {
   matchups: MatchupRow[];
 }
 
+type FormResult = "W" | "D" | "L";
+
 interface RecordRow {
   wins: number;
   draws: number;
@@ -138,6 +140,8 @@ export function ThisWeekMatchups() {
         {data.matchups.map((m, idx) => {
           const href = `/matchup/league/${m.gameweek || data.gameweek}/${m.team_1_id}/${m.team_2_id}`;
           const rivalry = (m as any).rivalry;
+          const team1Form = ((rivalry?.recent_form_1 || []) as FormResult[]).slice(-5);
+          const team2Form = ((rivalry?.recent_form_2 || []) as FormResult[]).slice(-5);
           const season1Wins = rivalry?.current_season_record_1?.wins ?? "—";
           const seasonDraws = rivalry?.current_season_record_1?.draws ?? "—";
           const season2Wins = rivalry?.current_season_record_2?.wins ?? "—";
@@ -163,8 +167,22 @@ export function ThisWeekMatchups() {
                       />
                     ) : null}
                     <span>{m.team_1?.entry_name || "—"}</span>
+                    {m.team_1_rank != null ? <span className="text-[10px] text-muted-foreground">#{m.team_1_rank}</span> : null}
                   </div>
                   <div className="text-xs text-muted-foreground">{m.team_1?.manager_name || "—"}</div>
+                  <div className="mt-1 flex items-center justify-center gap-1">
+                    {team1Form.map((result, formIdx) => (
+                      <span
+                        key={`${m.team_1_id}-${formIdx}-${result}`}
+                        className={`inline-flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-bold text-white ${
+                          result === "W" ? "bg-emerald-500" : result === "D" ? "bg-zinc-400" : "bg-rose-500"
+                        }`}
+                        title={result === "W" ? "Win" : result === "D" ? "Draw" : "Loss"}
+                      >
+                        {result}
+                      </span>
+                    ))}
+                  </div>
                 </div>
                 <div className="flex items-center justify-center">
                   <div className="w-20 text-center">
@@ -185,8 +203,22 @@ export function ThisWeekMatchups() {
                       />
                     ) : null}
                     <span>{m.team_2?.entry_name || "—"}</span>
+                    {m.team_2_rank != null ? <span className="text-[10px] text-muted-foreground">#{m.team_2_rank}</span> : null}
                   </div>
                   <div className="text-xs text-muted-foreground">{m.team_2?.manager_name || "—"}</div>
+                  <div className="mt-1 flex items-center justify-center gap-1">
+                    {team2Form.map((result, formIdx) => (
+                      <span
+                        key={`${m.team_2_id}-${formIdx}-${result}`}
+                        className={`inline-flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-bold text-white ${
+                          result === "W" ? "bg-emerald-500" : result === "D" ? "bg-zinc-400" : "bg-rose-500"
+                        }`}
+                        title={result === "W" ? "Win" : result === "D" ? "Draw" : "Loss"}
+                      >
+                        {result}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               </div>
 

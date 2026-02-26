@@ -52,9 +52,12 @@ export default function ManagerProfile() {
     key: string;
     gameweek: number;
     competition: "League" | "Cup";
+    round?: string | null;
     opponent: string;
     manager_points: number | null;
     opponent_points: number | null;
+    result: "W" | "D" | "L" | null;
+    is_completed: boolean;
     href: string | null;
   }>>([]);
   const [, setManagerTeamId] = useState<string | null>(null);
@@ -119,23 +122,30 @@ export default function ManagerProfile() {
     if (!data?.manager_name) return;
     async function loadCurrentSeasonExtras() {
       try {
-        const [fixturesRes, standingsRes] = await Promise.all([
+        const [fixturesRes, standingsRes, matchupsRes] = await Promise.all([
           fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/fixtures`, {
             headers: getSupabaseFunctionHeaders(),
           }),
           fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-standings`, {
             headers: getSupabaseFunctionHeaders(),
           }),
+          fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-matchups`, {
+            headers: getSupabaseFunctionHeaders(),
+          }),
         ]);
         const fixturesPayload = await fixturesRes.json();
         const standingsPayload = await standingsRes.json();
+        const matchupsPayload = await matchupsRes.json();
         const rows: Array<{
           key: string;
           gameweek: number;
           competition: "League" | "Cup";
+          round?: string | null;
           opponent: string;
           manager_points: number | null;
           opponent_points: number | null;
+          result: "W" | "D" | "L" | null;
+          is_completed: boolean;
           href: string | null;
         }> = [];
 
@@ -153,9 +163,12 @@ export default function ManagerProfile() {
                   key: `${competition}-${group.gameweek}-${m.team_1_id}-${m.team_2_id}`,
                   gameweek: Number(group.gameweek || m.gameweek || 0),
                   competition,
+                  round: m.round || null,
                   opponent: isT1 ? (m.team_2?.manager_name || "—") : (m.team_1?.manager_name || "—"),
                   manager_points: isT1 ? Number(m.team_1_points ?? 0) : Number(m.team_2_points ?? 0),
                   opponent_points: isT1 ? Number(m.team_2_points ?? 0) : Number(m.team_1_points ?? 0),
+                  result: null,
+                  is_completed: false,
                   href: m.matchup_id
                     ? `/matchup/${competition.toLowerCase()}/${group.gameweek}/${m.team_1_id}/${m.team_2_id}?matchupId=${encodeURIComponent(String(m.matchup_id))}`
                     : `/matchup/${competition.toLowerCase()}/${group.gameweek}/${m.team_1_id}/${m.team_2_id}`,
@@ -165,7 +178,16 @@ export default function ManagerProfile() {
           };
           consume(fixturesPayload?.league || [], "League");
           consume(fixturesPayload?.cup || [], "Cup");
-          const currentGw = Number(fixturesPayload?.current_gameweek || 1);
+          const currentGw = Number(matchupsPayload?.gameweek || fixturesPayload?.current_gameweek || 1);
+          rows.forEach((row) => {
+            const complete = Number(row.gameweek || 0) < currentGw && row.opponent_points !== null;
+            row.is_completed = complete;
+            if (!complete || row.manager_points === null || row.opponent_points === null) {
+              row.result = null;
+              return;
+            }
+            row.result = row.manager_points > row.opponent_points ? "W" : row.manager_points < row.opponent_points ? "L" : "D";
+          });
           const next = rows.find((r) => r.gameweek >= currentGw);
           setNextFixtureName(next ? `${next.opponent} (${next.competition})` : "—");
         }
@@ -195,9 +217,12 @@ export default function ManagerProfile() {
                 key: `Cup-${gw}-${teamId}`,
                 gameweek: gw,
                 competition: "Cup",
+                round: "group_stage",
                 opponent: "Cup Week",
                 manager_points: lineupRes.ok && !lineupPayload?.error ? Number(lineupPayload.total_points ?? 0) : null,
                 opponent_points: null,
+                result: null,
+                is_completed: false,
                 href: `/lineup/cup/${gw}/${teamId}`,
               });
             } catch {
@@ -205,9 +230,12 @@ export default function ManagerProfile() {
                 key: `Cup-${gw}-${teamId}`,
                 gameweek: gw,
                 competition: "Cup",
+                round: "group_stage",
                 opponent: "Cup Week",
                 manager_points: null,
                 opponent_points: null,
+                result: null,
+                is_completed: false,
                 href: `/lineup/cup/${gw}/${teamId}`,
               });
             }
@@ -466,11 +494,6 @@ export default function ManagerProfile() {
                   <p className="text-sm text-zinc-700">No trophies yet.</p>
                 )}
               </div>
-              <div className="mt-2 grid grid-cols-3 gap-2 text-center text-sm">
-                <div>{leagueTitles}</div>
-                <div>{cupWins}</div>
-                <div>{gobletWins}</div>
-              </div>
               <div className="mt-4 rounded-2xl border border-zinc-300 bg-white/60 p-3">
                 <p className="text-sm text-zinc-700">Points Per Game</p>
                 <p className="text-3xl font-bold">{data.all_time_stats.points_per_game?.toFixed(2) || "0.00"}</p>
@@ -487,12 +510,23 @@ export default function ManagerProfile() {
                 ) : (
                   <div className="divide-y divide-zinc-300">
                     {currentSeasonFixtures.map((fixture, index) => (
+                      (() => {
+                        const isCupGroupStage = fixture.competition === "Cup" && String(fixture.round || "").toLowerCase().includes("group");
+                        const shouldHighlightResult = fixture.is_completed && !isCupGroupStage && fixture.result !== null;
+                        const rowTone = shouldHighlightResult
+                          ? fixture.result === "W"
+                            ? "bg-emerald-300/70 border-l-4 border-l-emerald-600"
+                            : fixture.result === "L"
+                            ? "bg-rose-300/70 border-l-4 border-l-rose-600"
+                            : "bg-zinc-300/80 border-l-4 border-l-zinc-500"
+                          : index % 2 === 0
+                          ? "bg-zinc-200/70"
+                          : "bg-white/80";
+                        return (
                       <Link
                         to={fixture.href || "#"}
                         key={fixture.key}
-                        className={`grid grid-cols-[100px_1fr_100px] items-center ${fixture.href ? "hover:bg-zinc-300/70 transition-colors" : ""} ${
-                          index % 2 === 0 ? "bg-zinc-200/70" : "bg-white/80"
-                        }`}
+                        className={`grid grid-cols-[100px_1fr_100px] items-center ${fixture.href ? "hover:bg-zinc-300/70 transition-colors" : ""} ${rowTone}`}
                       >
                         <div className={`px-3 py-3 font-bold text-3xl text-center ${index % 2 ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-900"}`}>
                           GW {fixture.gameweek}
@@ -503,10 +537,12 @@ export default function ManagerProfile() {
                         </div>
                         <div className="px-3 py-3 text-sm font-semibold text-right">
                           {fixture.opponent_points == null
-                            ? (fixture.manager_points == null ? "—" : fixture.manager_points.toFixed(1))
+                            ? (fixture.manager_points == null ? "—" : `${Math.round(fixture.manager_points)}`)
                             : `${fixture.manager_points ?? 0} - ${fixture.opponent_points ?? 0}`}
                         </div>
                       </Link>
+                        );
+                      })()
                     ))}
                   </div>
                 )}
@@ -685,7 +721,7 @@ export default function ManagerProfile() {
                   <TableRow>
                     <TableHead>Season</TableHead>
                     <TableHead>League</TableHead>
-                    <TableHead>League of Lads Cup</TableHead>
+                    <TableHead>FFA Cup</TableHead>
                     <TableHead>Goblet</TableHead>
                     <TableHead>Treble</TableHead>
                   </TableRow>

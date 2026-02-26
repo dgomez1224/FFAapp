@@ -40,6 +40,20 @@ type Payload = {
   current_gameweek: number;
   league: FixtureGroup[];
   cup: FixtureGroup[];
+  cup_group?: Array<{
+    gameweek: number;
+    rows: Array<{
+      fixture_id: string;
+      gameweek: number;
+      type: "cup_group";
+      team_id: string;
+      team: TeamRef | null;
+      week_points: number | null;
+      cumulative_points: number;
+      rank: number | null;
+      rank_change: number;
+    }>;
+  }>;
 };
 
 function FixtureRow({ fixture }: { fixture: Fixture }) {
@@ -196,35 +210,88 @@ export default function FixturesPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold">Season Fixtures</h1>
-        <p className="text-sm text-muted-foreground mt-2">League and cup fixtures by gameweek. Click any matchup for lineups.</p>
+        <p className="text-sm text-muted-foreground mt-2">League and FFA Cup fixtures ordered by gameweek. Click matchups for lineups.</p>
       </div>
 
       <Card className="p-4">
-        <h2 className="text-xl font-semibold mb-3">League Fixtures</h2>
-        <div className="space-y-4">
-          {data.league.map((group) => (
-            <div key={`league-${group.gameweek}`} className="space-y-2">
-              <h3 className="text-sm font-semibold text-muted-foreground">GW {group.gameweek}</h3>
-              {group.matchups.map((fixture) => (
-                <FixtureRow key={fixture.fixture_id} fixture={fixture} />
-              ))}
-            </div>
-          ))}
-        </div>
-      </Card>
+        <h2 className="text-xl font-semibold mb-3">All Fixtures</h2>
+        {(() => {
+          const gwMap: Record<number, { league: Fixture[]; cup: Fixture[]; cupGroup: NonNullable<Payload["cup_group"]>[number]["rows"] }> = {};
+          (data.league || []).forEach((group) => {
+            const gw = Number(group.gameweek || 0);
+            if (!gwMap[gw]) gwMap[gw] = { league: [], cup: [], cupGroup: [] };
+            gwMap[gw].league.push(...(group.matchups || []));
+          });
+          (data.cup || []).forEach((group) => {
+            const gw = Number(group.gameweek || 0);
+            if (!gwMap[gw]) gwMap[gw] = { league: [], cup: [], cupGroup: [] };
+            gwMap[gw].cup.push(...(group.matchups || []));
+          });
+          (data.cup_group || []).forEach((group) => {
+            const gw = Number(group.gameweek || 0);
+            if (!gwMap[gw]) gwMap[gw] = { league: [], cup: [], cupGroup: [] };
+            gwMap[gw].cupGroup.push(...(group.rows || []));
+          });
+          const gameweeks = Object.keys(gwMap).map(Number).sort((a, b) => a - b);
 
-      <Card className="p-4">
-        <h2 className="text-xl font-semibold mb-3">Cup Fixtures</h2>
-        <div className="space-y-4">
-          {data.cup.map((group) => (
-            <div key={`cup-${group.gameweek}`} className="space-y-2">
-              <h3 className="text-sm font-semibold text-muted-foreground">GW {group.gameweek}</h3>
-              {group.matchups.map((fixture) => (
-                <FixtureRow key={fixture.fixture_id} fixture={fixture} />
-              ))}
+          return (
+            <div className="space-y-5">
+              {gameweeks.map((gw) => {
+                const section = gwMap[gw];
+                return (
+                  <div key={`gw-${gw}`} className="space-y-2">
+                    <h3 className="text-sm font-semibold text-muted-foreground">GW {gw}</h3>
+
+                    {section.league.map((fixture) => (
+                      <FixtureRow key={fixture.fixture_id} fixture={fixture} />
+                    ))}
+
+                    {section.cupGroup.length > 0 ? (
+                      <div className="rounded-md border p-3">
+                        <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">FFA Cup Group Stage</div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="border-b text-left">
+                                <th className="px-2 py-2">Rank</th>
+                                <th className="px-2 py-2">Team</th>
+                                <th className="px-2 py-2">Manager</th>
+                                <th className="px-2 py-2 text-right">GW Pts</th>
+                                <th className="px-2 py-2 text-right">Group Δ</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {section.cupGroup.map((row) => (
+                                <tr key={row.fixture_id} className="border-b last:border-b-0">
+                                  <td className="px-2 py-2">{row.rank ?? "—"}</td>
+                                  <td className="px-2 py-2 inline-flex items-center gap-1">
+                                    {row.team?.club_crest_url ? (
+                                      <img src={row.team.club_crest_url} alt="" className="h-4 w-4 rounded object-cover border" />
+                                    ) : null}
+                                    <span>{row.team?.entry_name || "—"}</span>
+                                  </td>
+                                  <td className="px-2 py-2">{row.team?.manager_name || "—"}</td>
+                                  <td className="px-2 py-2 text-right">{row.week_points == null ? "—" : row.week_points}</td>
+                                  <td className="px-2 py-2 text-right">
+                                    {row.rank_change > 0 ? `+${row.rank_change}` : `${row.rank_change}`}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {section.cup.map((fixture) => (
+                      <FixtureRow key={fixture.fixture_id} fixture={fixture} />
+                    ))}
+                  </div>
+                );
+              })}
             </div>
-          ))}
-        </div>
+          );
+        })()}
       </Card>
     </div>
   );

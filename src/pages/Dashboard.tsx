@@ -10,6 +10,7 @@ import LeagueStandings from "../components/LeagueStandings";
 import GobletStandings from "../components/GobletStandings";
 import { ThisWeekMatchups } from "../components/ThisWeekMatchups";
 import SeasonStatLeaders from "../components/SeasonStatLeaders";
+import { ThisWeeksWaivers } from "../components/ThisWeeksWaivers";
 
 export default function DashboardPage() {
   return (
@@ -28,6 +29,7 @@ export default function DashboardPage() {
       </div>
 
       <ThisWeekMatchups />
+      <ThisWeeksWaivers />
     </div>
   );
 }

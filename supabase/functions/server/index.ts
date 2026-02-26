@@ -349,6 +349,37 @@ async function fetchDraftSquadForEntries(entryIds: string[], preferredEvent: num
     new Set(entryIds.map((id) => String(id || "").trim()).filter(Boolean)),
   );
 
+  const tryFetchFromCurrentOwnership = async () => {
+    if (!normalizedEntryIds.length) return null;
+    try {
+      const leagueId = DEFAULT_DRAFT_LEAGUE_ID;
+      const elementStatusPayload = await fetchJSON<any>(
+        `${DRAFT_BASE_URL}/league/${leagueId}/element-status`,
+      );
+      const statuses = normalizeDraftList<any>(
+        elementStatusPayload?.element_status ?? elementStatusPayload?.elements ?? [],
+      );
+      if (!statuses.length) return null;
+
+      for (const entryId of normalizedEntryIds) {
+        const ownerId = parsePositiveInt(entryId);
+        if (!ownerId) continue;
+        const picks = statuses
+          .filter((row: any) => parsePositiveInt(row?.owner) === ownerId)
+          .map((row: any) => ({
+            element: parsePositiveInt(row?.element),
+          }))
+          .filter((row: any) => row.element !== null);
+        if (picks.length > 0) {
+          return { event: preferredEvent, entryId, picks };
+        }
+      }
+    } catch {
+      // Fall back to event picks.
+    }
+    return null;
+  };
+
   const tryFetch = async (event: number) => {
     if (triedEvents.includes(event)) return null;
     triedEvents.push(event);
@@ -366,6 +397,9 @@ async function fetchDraftSquadForEntries(entryIds: string[], preferredEvent: num
     }
     return null;
   };
+
+  const ownershipSnapshot = await tryFetchFromCurrentOwnership();
+  if (ownershipSnapshot) return ownershipSnapshot;
 
   const primary = await tryFetch(preferredEvent);
   if (primary) return primary;
@@ -544,6 +578,8 @@ type H2HRecord = {
 function canonicalManagerKey(value: unknown) {
   return toCanonicalManagerName(value) || normalizeManagerName(value) || "";
 }
+
+type FormResult = "W" | "D" | "L";
 
 type AllTimeManagerStat = {
   manager_name: string;
@@ -3811,6 +3847,23 @@ h2hRivalries.get("/", async (c) => {
       };
     }
 
+    function buildRecentFormForTeam(teamId: string): FormResult[] {
+      const results: FormResult[] = [];
+      seasonRows.forEach((m: any) => {
+        const left = String(m.team_1_id);
+        const right = String(m.team_2_id);
+        if (left !== teamId && right !== teamId) return;
+        const p1 = coerceNumber(m.team_1_points);
+        const p2 = coerceNumber(m.team_2_points);
+        if (left === teamId) {
+          results.push(p1 > p2 ? "W" : p1 < p2 ? "L" : "D");
+        } else {
+          results.push(p2 > p1 ? "W" : p2 < p1 ? "L" : "D");
+        }
+      });
+      return results.slice(-5);
+    }
+
     const dbMatchups = (thisWeekMatchups || []).map((m: any) => {
       const team1 = teamMap[String(m.team_1_id)] || { entry_name: null, manager_name: null };
       const team2 = teamMap[String(m.team_2_id)] || { entry_name: null, manager_name: null };
@@ -3826,6 +3879,8 @@ h2hRivalries.get("/", async (c) => {
         team_2_id: m.team_2_id,
         team_1: team1,
         team_2: team2,
+        recent_form_1: buildRecentFormForTeam(String(m.team_1_id)),
+        recent_form_2: buildRecentFormForTeam(String(m.team_2_id)),
         current_season_record_1: season1,
         current_season_record_2: season2,
         all_time_record_1: allTime1,
@@ -3887,6 +3942,24 @@ h2hRivalries.get("/", async (c) => {
       return { wins, draws, losses };
     }
 
+    function buildRecentFormForTeamDraft(teamId: string): FormResult[] {
+      const results: FormResult[] = [];
+      seasonDraftRows.forEach((m: any) => {
+        const e1 = String(m.league_entry_1 ?? m.entry_1 ?? m.home ?? "");
+        const e2 = String(m.league_entry_2 ?? m.entry_2 ?? m.away ?? "");
+        if (!e1 || !e2) return;
+        if (e1 !== teamId && e2 !== teamId) return;
+        const p1 = coerceNumber(m.league_entry_1_points ?? m.score_1 ?? m.home_score);
+        const p2 = coerceNumber(m.league_entry_2_points ?? m.score_2 ?? m.away_score);
+        if (e1 === teamId) {
+          results.push(p1 > p2 ? "W" : p1 < p2 ? "L" : "D");
+        } else {
+          results.push(p2 > p1 ? "W" : p2 < p1 ? "L" : "D");
+        }
+      });
+      return results.slice(-5);
+    }
+
     const currentDraftMatchups = matches
       .filter((m: any) => coerceNumber(m.event) === displayEvent)
       .map((m: any) => {
@@ -3914,6 +3987,8 @@ h2hRivalries.get("/", async (c) => {
           team_2_id: team2Id,
           team_1: team1,
           team_2: team2,
+          recent_form_1: buildRecentFormForTeamDraft(team1Id),
+          recent_form_2: buildRecentFormForTeamDraft(team2Id),
           current_season_record_1: season1,
           current_season_record_2: season2,
           all_time_record_1: allTime1,
@@ -5787,6 +5862,7 @@ captainPicks.post("/select", async (c) => {
 // --------------------
 
 const fixturesHub = new Hono();
+const leagueActivity = new Hono();
 
 fixturesHub.get("/", async (c) => {
   try {
@@ -5971,6 +6047,99 @@ fixturesHub.get("/", async (c) => {
         }))
         .sort((a, b) => a.gameweek - b.gameweek);
 
+    const cupGroupByGw: Record<string, any[]> = {};
+    try {
+      const groupStartGw = CUP_START_GAMEWEEK;
+      const groupEndGw = CUP_START_GAMEWEEK + 3;
+      const teamRows = teamsRes.data || [];
+      const teamIds = teamRows.map((t: any) => String(t.id));
+      const teamById: Record<string, any> = {};
+      teamRows.forEach((t: any) => {
+        teamById[String(t.id)] = t;
+      });
+
+      const { data: groupScores, error: groupScoresError } = await supabase
+        .from("gameweek_scores")
+        .select("team_id, gameweek, total_points")
+        .in("team_id", teamIds)
+        .gte("gameweek", groupStartGw)
+        .lte("gameweek", groupEndGw);
+      if (groupScoresError && !isMissingRelationError(groupScoresError)) {
+        throw groupScoresError;
+      }
+
+      const pointsByTeamGw: Record<string, Record<number, number>> = {};
+      (groupScores || []).forEach((row: any) => {
+        const teamId = String(row.team_id || "");
+        const gw = coerceNumber(row.gameweek);
+        if (!teamId || !gw) return;
+        if (!pointsByTeamGw[teamId]) pointsByTeamGw[teamId] = {};
+        pointsByTeamGw[teamId][gw] = coerceNumber(row.total_points, 0);
+      });
+
+      const buildRankMap = (gw: number) => {
+        const rows = teamIds.map((teamId) => {
+          let cumulative = 0;
+          for (let g = groupStartGw; g <= gw; g += 1) {
+            cumulative += pointsByTeamGw[teamId]?.[g] ?? 0;
+          }
+          return {
+            team_id: teamId,
+            cumulative_points: cumulative,
+            manager_name: teamById[teamId]?.manager_name || null,
+          };
+        }).sort((a, b) =>
+          b.cumulative_points - a.cumulative_points ||
+          String(a.manager_name || "").localeCompare(String(b.manager_name || "")),
+        );
+        const out: Record<string, number> = {};
+        rows.forEach((row, idx) => {
+          out[row.team_id] = idx + 1;
+        });
+        return out;
+      };
+
+      for (let gw = groupStartGw; gw <= groupEndGw; gw += 1) {
+        const prevRankMap = gw > groupStartGw ? buildRankMap(gw - 1) : {};
+        const currentRankMap = buildRankMap(gw);
+        const rows = teamIds.map((teamId) => {
+          const weekPoints =
+            pointsByTeamGw[teamId] && Object.prototype.hasOwnProperty.call(pointsByTeamGw[teamId], gw)
+              ? pointsByTeamGw[teamId][gw]
+              : null;
+          let cumulative = 0;
+          for (let g = groupStartGw; g <= gw; g += 1) {
+            cumulative += pointsByTeamGw[teamId]?.[g] ?? 0;
+          }
+          const rank = currentRankMap[teamId] || null;
+          const prevRank = prevRankMap[teamId] || null;
+          return {
+            fixture_id: `cup-group-${gw}-${teamId}`,
+            gameweek: gw,
+            type: "cup_group",
+            team_id: teamId,
+            team: {
+              id: teamId,
+              entry_name: teamById[teamId]?.entry_name || null,
+              manager_name: teamById[teamId]?.manager_name || null,
+              club_crest_url: crestByManager[canonicalManagerKey(teamById[teamId]?.manager_name)] || null,
+            },
+            week_points: weekPoints,
+            cumulative_points: cumulative,
+            rank,
+            rank_change: prevRank && rank ? prevRank - rank : 0,
+          };
+        })
+          .sort((a, b) =>
+            coerceNumber(a.rank, 999) - coerceNumber(b.rank, 999) ||
+            String(a.team?.manager_name || "").localeCompare(String(b.team?.manager_name || "")),
+          );
+        cupGroupByGw[String(gw)] = rows;
+      }
+    } catch {
+      // Non-fatal; cup group rows are optional in fixtures response.
+    }
+
     // Enrich fixtures with last used lineup for unstarted games
     const currentGwForLineups = coerceNumber(seasonStateRes.data?.current_gameweek, 1);
     const enrichMatchups = async (groups: Record<string, any[]>) => {
@@ -6007,9 +6176,168 @@ fixturesHub.get("/", async (c) => {
       current_gameweek: coerceNumber(seasonStateRes.data?.current_gameweek, 1),
       league: groupToArray(enrichedLeague),
       cup: groupToArray(enrichedCup),
+      cup_group: Object.entries(cupGroupByGw)
+        .map(([gw, rows]) => ({ gameweek: coerceNumber(gw), rows }))
+        .sort((a, b) => a.gameweek - b.gameweek),
     });
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to fetch fixtures");
+  }
+});
+
+leagueActivity.get("/waivers", async (c) => {
+  try {
+    const supabase = getSupabaseAdmin();
+    const leagueId = await resolveConfiguredDraftLeagueId(supabase);
+    const [{ details }, bootstrap] = await Promise.all([
+      resolveDraftLeagueDetails(STATIC_ENTRY_ID, leagueId),
+      fetchDraftBootstrap(),
+    ]);
+    const currentGameweek = extractDraftCurrentEventId(bootstrap) || 1;
+    const latestCompletedGameweek =
+      extractLatestCompletedDraftEventId(bootstrap) || (currentGameweek > 1 ? currentGameweek - 1 : null);
+    const targetEvent = resolveDisplayGameweek(currentGameweek, latestCompletedGameweek);
+    const playersById = extractDraftPlayerMap(bootstrap);
+    const entries = normalizeDraftList<any>(details?.league_entries);
+    const entryMap: Record<string, { manager_name: string; team_name: string }> = {};
+    entries.forEach((entry: any) => {
+      const entryId = parsePositiveInt(entry?.entry_id) ?? parsePositiveInt(entry?.entry);
+      if (!entryId) return;
+      entryMap[String(entryId)] = {
+        manager_name: toCanonicalManagerName(formatDraftManagerName(entry)) || formatDraftManagerName(entry),
+        team_name: formatDraftTeamName(entry),
+      };
+    });
+
+    const transactionMoves: Array<{
+      gameweek: number;
+      manager_name: string;
+      team_name: string;
+      team_id: number;
+      transaction_type: string;
+      player_in_id: number | null;
+      player_in_name: string | null;
+      player_out_id: number | null;
+      player_out_name: string | null;
+    }> = [];
+
+    try {
+      const txPayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/draft/league/${leagueId}/transactions`);
+      const transactions = normalizeDraftList<any>(txPayload?.transactions);
+      transactions
+        .filter((tx: any) => {
+          const event = coerceNumber(tx?.event);
+          const kind = String(tx?.kind || "").toLowerCase();
+          const result = String(tx?.result || "").toLowerCase();
+          if (event !== targetEvent) return false;
+          if (kind !== "w" && kind !== "f") return false;
+          // Keep completed/accepted outcomes only.
+          if (result && result !== "a") return false;
+          return true;
+        })
+        .forEach((tx: any) => {
+          const entryId = parsePositiveInt(tx?.entry);
+          if (!entryId) return;
+          const mapped = entryMap[String(entryId)];
+          if (!mapped) return;
+          const inId = parsePositiveInt(tx?.element_in);
+          const outId = parsePositiveInt(tx?.element_out);
+          transactionMoves.push({
+            gameweek: targetEvent,
+            manager_name: mapped.manager_name,
+            team_name: mapped.team_name,
+            team_id: entryId,
+            transaction_type: String(tx?.kind || "").toLowerCase() === "w" ? "Waiver" : "Free Agent",
+            player_in_id: inId,
+            player_in_name: inId ? (playersById[inId]?.name || `Player ${inId}`) : null,
+            player_out_id: outId,
+            player_out_name: outId ? (playersById[outId]?.name || `Player ${outId}`) : null,
+          });
+        });
+    } catch {
+      // Fall through to event-delta fallback below.
+    }
+
+    if (transactionMoves.length > 0) {
+      transactionMoves.sort((a, b) =>
+        String(a.manager_name).localeCompare(String(b.manager_name)) ||
+        String(a.player_in_name || "").localeCompare(String(b.player_in_name || "")),
+      );
+      return c.json({
+        gameweek: targetEvent,
+        completed_since_gameweek: latestCompletedGameweek,
+        moves: transactionMoves,
+        source: "draft_latest_transactions",
+      });
+    }
+
+    const fallbackMoves: typeof transactionMoves = [];
+    const referenceGameweek = Math.max(1, targetEvent - 1);
+    await Promise.all(entries.map(async (entry: any) => {
+      const teamId =
+        parsePositiveInt(entry?.id) ??
+        parsePositiveInt(entry?.league_entry_id) ??
+        parsePositiveInt(entry?.entry) ??
+        parsePositiveInt(entry?.entry_id);
+      if (!teamId) return;
+
+      const toSet = (payload: any) =>
+        new Set<number>(
+          normalizeDraftList<any>(payload?.picks)
+            .map((pick: any) => parsePositiveInt(pick?.element ?? pick?.element_id ?? pick?.player_id))
+            .filter((id: number | null): id is number => id !== null),
+        );
+
+      const [currentRes, previousRes] = await Promise.all([
+        fetchJSON<any>(`${DRAFT_BASE_URL}/entry/${teamId}/event/${targetEvent}`).catch(() => null),
+        fetchJSON<any>(`${DRAFT_BASE_URL}/entry/${teamId}/event/${referenceGameweek}`).catch(() => null),
+      ]);
+      const eventCurrentSet = toSet(currentRes);
+      const previousSet = toSet(previousRes);
+      const buildDiff = (curr: Set<number>, prev: Set<number>) => {
+        if (!curr.size || !prev.size) {
+          return { inIds: [] as number[], outIds: [] as number[], pairCount: 0 };
+        }
+        const inIds = Array.from(curr).filter((id) => !prev.has(id)).sort((a, b) => a - b);
+        const outIds = Array.from(prev).filter((id) => !curr.has(id)).sort((a, b) => a - b);
+        return { inIds, outIds, pairCount: Math.max(inIds.length, outIds.length) };
+      };
+
+      const selectedDiff = buildDiff(eventCurrentSet, previousSet);
+      if (selectedDiff.pairCount === 0) return;
+
+      const managerName = toCanonicalManagerName(formatDraftManagerName(entry)) || formatDraftManagerName(entry);
+      const teamName = formatDraftTeamName(entry);
+      for (let i = 0; i < selectedDiff.pairCount; i += 1) {
+        const inId = selectedDiff.inIds[i] ?? null;
+        const outId = selectedDiff.outIds[i] ?? null;
+        fallbackMoves.push({
+          gameweek: targetEvent,
+          manager_name: managerName,
+          team_name: teamName,
+          team_id: teamId,
+          transaction_type: "Completed Waiver/Free Agent",
+          player_in_id: inId,
+          player_in_name: inId ? (playersById[inId]?.name || `Player ${inId}`) : null,
+          player_out_id: outId,
+          player_out_name: outId ? (playersById[outId]?.name || `Player ${outId}`) : null,
+        });
+      }
+    }));
+
+    fallbackMoves.sort((a, b) =>
+      String(a.manager_name).localeCompare(String(b.manager_name)) ||
+      String(a.player_in_name || "").localeCompare(String(b.player_in_name || "")),
+    );
+
+    return c.json({
+      gameweek: targetEvent,
+      completed_since_gameweek: referenceGameweek,
+      moves: fallbackMoves,
+      source: "draft_event_delta",
+    });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to fetch waiver activity");
   }
 });
 
@@ -6561,6 +6889,7 @@ app.route("/server/api/h2h", liveH2H);
 app.route("/server/captain-auth", captainAuth);
 app.route("/server/captain", captainPicks);
 app.route("/server/fixtures", fixturesHub);
+app.route("/server/league-activity", leagueActivity);
 
 // --------------------
 // Legacy Statistics Endpoints

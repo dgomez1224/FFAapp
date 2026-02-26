@@ -14,7 +14,6 @@ import LeagueStandings from "../components/LeagueStandings";
 import GobletStandings from "../components/GobletStandings";
 import ManagersPage from "./Managers";
 import PlayerInsights from "../components/PlayerInsights";
-import H2HStandings from "../components/H2HStandings";
 import StandingsByGameweek from "../components/StandingsByGameweek";
 import Home from "./Home";
 import LegacyHome from "./LegacyHome";
@@ -26,10 +25,15 @@ import MyPage from "./MyPage";
 import FixturesPage from "./Fixtures";
 import MatchupDetailPage from "./MatchupDetail";
 import LineupDetailPage from "./LineupDetail";
-import { clearCaptainSessionToken, getCaptainSessionToken } from "../lib/captainSession";
+import {
+  CAPTAIN_SESSION_CHANGE_EVENT,
+  clearCaptainSessionToken,
+  getCaptainSessionToken,
+} from "../lib/captainSession";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { contrastText, ensureReadableText, extractPaletteFromImage, mix, rgbCss } from "../lib/colorPalette";
+import leagueTrophy from "../assets/trophies/League Cup Icon.png";
 
 function RequireCaptainSignIn({ children }: { children: React.ReactElement }) {
   const location = useLocation();
@@ -47,7 +51,19 @@ function Shell() {
   const location = useLocation();
   const isFullBleedRoute = location.pathname === "/standings-by-gameweek";
   const [token, setToken] = useState<string | null>(() => getCaptainSessionToken());
-  const [headerCrestUrl, setHeaderCrestUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    const syncSessionToken = () => {
+      setToken(getCaptainSessionToken());
+    };
+    syncSessionToken();
+    window.addEventListener(CAPTAIN_SESSION_CHANGE_EVENT, syncSessionToken);
+    window.addEventListener("storage", syncSessionToken);
+    return () => {
+      window.removeEventListener(CAPTAIN_SESSION_CHANGE_EVENT, syncSessionToken);
+      window.removeEventListener("storage", syncSessionToken);
+    };
+  }, []);
 
   const handleHeaderSignOut = async () => {
     try {
@@ -65,7 +81,6 @@ function Shell() {
     } finally {
       clearCaptainSessionToken();
       setToken(null);
-      setHeaderCrestUrl(null);
       navigate("/dashboard");
     }
   };
@@ -145,7 +160,6 @@ function Shell() {
 
     async function loadSessionMedia() {
       if (!token) {
-        setHeaderCrestUrl(null);
         await applyLogoTheme(null);
         return;
       }
@@ -154,12 +168,9 @@ function Shell() {
         const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
         const payload = await res.json();
         if (!res.ok || payload?.error) throw new Error("session media unavailable");
-        const crest = payload?.media?.club_crest_url || null;
         const logo = payload?.media?.club_logo_url || null;
-        setHeaderCrestUrl(crest);
         await applyLogoTheme(logo);
       } catch {
-        setHeaderCrestUrl(null);
         await applyLogoTheme(null);
       }
     }
@@ -172,7 +183,7 @@ function Shell() {
       <header className="border-b">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4">
           <span className="text-lg font-semibold inline-flex items-center gap-2">
-            {headerCrestUrl ? <img src={headerCrestUrl} alt="Club crest" className="h-7 w-7 rounded-sm object-cover border" /> : null}
+            <img src={leagueTrophy} alt="League trophy" className="h-7 w-5 object-contain" />
             League of Lads
           </span>
           <nav className="flex gap-4 text-sm flex-wrap">
@@ -184,9 +195,6 @@ function Shell() {
             </Link>
             <Link to="/goblet" className="hover:underline">
               Goblet
-            </Link>
-            <Link to="/h2h" className="hover:underline">
-              H2H
             </Link>
             <Link to="/managers" className="hover:underline">
               Managers
@@ -236,7 +244,6 @@ function Shell() {
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/league-standings" element={<LeagueStandings />} />
             <Route path="/goblet" element={<GobletStandings />} />
-            <Route path="/h2h" element={<H2HStandings />} />
             <Route path="/managers" element={<ManagersPage />} />
             <Route path="/players" element={<PlayerInsights />} />
             <Route path="/fixtures" element={<FixturesPage />} />
