@@ -3,6 +3,9 @@
  * Uses official Premier League bootstrap data and avoids third-party scraping.
  */
 
+import { EDGE_FUNCTIONS_BASE } from "./constants";
+import { getSupabaseFunctionHeaders, supabaseUrl } from "./supabaseClient";
+
 interface ImageCache {
   [playerName: string]: string | null;
 }
@@ -10,6 +13,8 @@ interface ImageCache {
 const imageCache: ImageCache = {};
 let officialPhotoByPlayerId: Record<number, string> | null = null;
 let officialPhotoByName: Record<string, string> | null = null;
+let fullInsightsPhotoByName: Record<string, string> | null = null;
+let fullInsightsLoaded = false;
 
 function normalizeName(value: string) {
   return String(value || "")
@@ -34,10 +39,17 @@ function buildOfficialPhotoUrl(photoValue: unknown, codeValue?: unknown) {
   return `https://resources.premierleague.com/premierleague/photos/players/250x250/p${code}.png`;
 }
 
-function applyBootstrapMap(payload: any, byId: Record<number, string>, byName: Record<string, string>) {
-  if (!Array.isArray(payload?.elements)) return;
+function normalizeList<T = any>(value: unknown): T[] {
+  if (Array.isArray(value)) return value as T[];
+  if (value && typeof value === "object") return Object.values(value as Record<string, T>);
+  return [];
+}
 
-  payload.elements.forEach((player: any) => {
+function applyBootstrapMap(payload: any, byId: Record<number, string>, byName: Record<string, string>) {
+  const players = normalizeList<any>(payload?.elements?.data ?? payload?.elements ?? payload?.players);
+  if (players.length === 0) return;
+
+  players.forEach((player: any) => {
     const id = Number(player?.id);
     const imageUrl = buildOfficialPhotoUrl(player?.photo || player?.image_url || player?.photo_url, player?.code);
     if (!id || !imageUrl) return;
@@ -56,6 +68,38 @@ function applyBootstrapMap(payload: any, byId: Record<number, string>, byName: R
       if (!byName[name]) byName[name] = imageUrl;
     });
   });
+}
+
+async function loadFullInsightsPhotoMap() {
+  if (fullInsightsLoaded) return fullInsightsPhotoByName || {};
+  fullInsightsLoaded = true;
+  const byName: Record<string, string> = {};
+
+  try {
+    if (!supabaseUrl) {
+      fullInsightsPhotoByName = byName;
+      return byName;
+    }
+    const res = await fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/player-insights`, {
+      headers: getSupabaseFunctionHeaders(),
+    });
+    if (!res.ok) {
+      fullInsightsPhotoByName = byName;
+      return byName;
+    }
+    const payload = await res.json();
+    const insights = Array.isArray(payload?.insights) ? payload.insights : [];
+    insights.forEach((row: any) => {
+      const key = normalizeName(row?.player_name);
+      const image = buildOfficialPhotoUrl(row?.image_url || row?.photo || row?.photo_url, row?.code);
+      if (key && image && !byName[key]) byName[key] = image;
+    });
+  } catch {
+    // Non-fatal fallback path.
+  }
+
+  fullInsightsPhotoByName = byName;
+  return byName;
 }
 
 async function loadOfficialPhotoMap() {
@@ -108,6 +152,22 @@ export async function fetchPlayerImage(playerName: string): Promise<string | nul
         official = fuzzyMatch?.[1] || null;
       }
     }
+
+    if (!official) {
+      const insightsMap = await loadFullInsightsPhotoMap();
+      official = insightsMap[lookupKey] || null;
+      if (!official) {
+        const surname = lookupKey.split(" ").filter(Boolean).pop() || "";
+        if (surname) {
+          const fuzzyMatch = Object.entries(insightsMap).find(([name]) => {
+            const parts = name.split(" ").filter(Boolean);
+            return parts[parts.length - 1] === surname;
+          });
+          official = fuzzyMatch?.[1] || null;
+        }
+      }
+    }
+
     imageCache[playerName] = official;
     return official;
   } catch {

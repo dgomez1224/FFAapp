@@ -2885,6 +2885,7 @@ playerInsights.get("/", async (c) => {
       byPlayerFromBootstrap[playerId] = {
         player_id: playerId,
         player_name: playerName,
+        image_url: resolvePlayerImageUrl(merged),
         position: position || null,
         team: team || null,
         availability: status,
