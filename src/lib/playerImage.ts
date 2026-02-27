@@ -15,6 +15,29 @@ interface ImageCache {
 }
 
 const imageCache: ImageCache = {};
+let officialPhotoByPlayerId: Record<number, string> | null = null;
+
+async function loadOfficialPhotoMap() {
+  if (officialPhotoByPlayerId) return officialPhotoByPlayerId;
+  try {
+    const res = await fetch("https://fantasy.premierleague.com/api/bootstrap-static/");
+    if (!res.ok) throw new Error("Failed bootstrap");
+    const payload = await res.json();
+    const map: Record<number, string> = {};
+    (payload?.elements || []).forEach((p: any) => {
+      const id = Number(p?.id);
+      const photo = String(p?.photo || "");
+      const code = photo.replace(".jpg", "").trim();
+      if (!id || !code) return;
+      map[id] = `https://resources.premierleague.com/premierleague/photos/players/250x250/p${code}.png`;
+    });
+    officialPhotoByPlayerId = map;
+    return map;
+  } catch {
+    officialPhotoByPlayerId = {};
+    return officialPhotoByPlayerId;
+  }
+}
 
 /**
  * Fetch a player image by searching the web
@@ -103,6 +126,17 @@ export async function getPlayerImage(playerName: string): Promise<string | null>
     return imageCache[playerName];
   }
   return fetchPlayerImage(playerName);
+}
+
+export async function getPlayerImageByIdOrName(playerId: number, playerName: string): Promise<string | null> {
+  try {
+    const map = await loadOfficialPhotoMap();
+    const official = map[playerId] || null;
+    if (official) return official;
+  } catch {
+    // Fall through to name-based lookup.
+  }
+  return getPlayerImage(playerName);
 }
 
 /**

@@ -121,16 +121,18 @@ function Shell() {
           resetTheme();
           return;
         }
-        const primary = palette[0];
-        const accent = palette[1] || mix(primary, { r: 255, g: 255, b: 255 }, 0.2);
-        const mutedBase = palette[2] || mix(primary, { r: 255, g: 255, b: 255 }, 0.78);
-        const background = mix(primary, { r: 255, g: 255, b: 255 }, 0.955);
-        const card = mix(primary, { r: 255, g: 255, b: 255 }, 0.975);
-        const secondary = mix(accent, { r: 255, g: 255, b: 255 }, 0.88);
-        const muted = mix(mutedBase, { r: 255, g: 255, b: 255 }, 0.72);
-        const border = mix(primary, { r: 32, g: 32, b: 32 }, 0.6);
+        const base = palette[0];
+        const accent = palette[1] || mix(base, { r: 255, g: 255, b: 255 }, 0.2);
+        const mutedSeed = palette[2] || mix(base, { r: 255, g: 255, b: 255 }, 0.76);
+        const muted = mix(mutedSeed, { r: 255, g: 255, b: 255 }, 0.58);
+        const primary = mix(accent, muted, 0.34);
+        const background = mix(primary, { r: 255, g: 255, b: 255 }, 0.9);
+        const card = mix(muted, { r: 255, g: 255, b: 255 }, 0.2);
+        const secondary = mix(muted, accent, 0.18);
+        const border = mix(muted, accent, 0.48);
         const foreground = ensureReadableText(background) === "rgb(10 10 10)" ? "rgb(15 23 42)" : "rgb(248 250 252)";
         const cardForeground = ensureReadableText(card) === "rgb(10 10 10)" ? "rgb(17 24 39)" : "rgb(248 250 252)";
+        const secondaryForeground = ensureReadableText(secondary) === "rgb(10 10 10)" ? "rgb(20 20 20)" : "rgb(248 250 252)";
         const mutedForeground = foreground === "rgb(15 23 42)" ? "rgb(71 85 105)" : "rgb(203 213 225)";
 
         root.style.setProperty("--primary", rgbCss(primary));
@@ -140,19 +142,19 @@ function Shell() {
         root.style.setProperty("--accent-foreground", contrastText(accent));
         root.style.setProperty("--muted", rgbCss(muted));
         root.style.setProperty("--secondary", rgbCss(secondary));
-        root.style.setProperty("--secondary-foreground", "rgb(20 20 20)");
-        root.style.setProperty("--ring", rgbCss(primary));
+        root.style.setProperty("--secondary-foreground", secondaryForeground);
+        root.style.setProperty("--ring", rgbCss(accent));
         root.style.setProperty("--background", rgbCss(background));
         root.style.setProperty("--card", rgbCss(card));
         root.style.setProperty("--foreground", foreground);
         root.style.setProperty("--card-foreground", cardForeground);
         root.style.setProperty("--muted-foreground", mutedForeground);
         root.style.setProperty("--border", rgbCss(border, 0.38));
-        root.style.setProperty("--input-background", rgbCss(mix(background, { r: 255, g: 255, b: 255 }, 0.45)));
+        root.style.setProperty("--input-background", rgbCss(mix(card, { r: 255, g: 255, b: 255 }, 0.28)));
         root.style.setProperty("--sidebar", rgbCss(card));
         root.style.setProperty("--sidebar-foreground", cardForeground);
         root.style.setProperty("--sidebar-accent", rgbCss(secondary));
-        root.style.setProperty("--sidebar-accent-foreground", "rgb(20 20 20)");
+        root.style.setProperty("--sidebar-accent-foreground", secondaryForeground);
       } catch {
         resetTheme();
       }
@@ -182,14 +184,15 @@ function Shell() {
     <div className="min-h-screen bg-background text-foreground flex flex-col">
       <header className="border-b">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4">
-          <span className="text-lg font-semibold inline-flex items-center gap-2">
-            <img src={leagueTrophy} alt="League trophy" className="h-7 w-5 object-contain" />
+          <Link to="/dashboard" className="group text-lg font-semibold inline-flex items-center gap-2 hover:opacity-90">
+            <img
+              src={leagueTrophy}
+              alt="League trophy"
+              className="h-7 w-5 object-contain transition-all duration-200 group-hover:scale-110 group-hover:brightness-110 group-hover:sepia group-hover:saturate-[8] group-hover:hue-rotate-[340deg]"
+            />
             League of Lads
-          </span>
+          </Link>
           <nav className="flex gap-4 text-sm flex-wrap">
-            <Link to="/dashboard" className="hover:underline">
-              Dashboard
-            </Link>
             <Link to="/league-standings" className="hover:underline">
               League
             </Link>

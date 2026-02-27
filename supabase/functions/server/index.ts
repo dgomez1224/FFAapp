@@ -450,6 +450,22 @@ async function resolveDraftEntryCandidatesForManager(
   return Array.from(candidates);
 }
 
+function toCanonicalPlayerName(value: unknown): string {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function toCanonicalPlayerSurname(value: unknown): string {
+  const canonical = toCanonicalPlayerName(value);
+  if (!canonical) return "";
+  const tokens = canonical.split(" ").filter(Boolean);
+  return tokens.length > 0 ? tokens[tokens.length - 1] : "";
+}
+
 function extractDraftPlayerMap(bootstrap: any) {
   const rawElements = normalizeDraftList<any>(
     bootstrap?.elements?.data ??
@@ -457,7 +473,7 @@ function extractDraftPlayerMap(bootstrap: any) {
       bootstrap?.players ??
       [],
   );
-  const map: Record<number, { id: number; name: string; team: number | null; position: number | null }> = {};
+  const map: Record<number, { id: number; name: string; team: number | null; position: number | null; image_url: string | null }> = {};
   rawElements.forEach((p: any) => {
     const id = parsePositiveInt(p?.id ?? p?.element ?? p?.element_id);
     if (!id) return;
@@ -466,11 +482,17 @@ function extractDraftPlayerMap(bootstrap: any) {
       String(
         fullName || (p?.name ?? p?.web_name),
       ).trim() || `Player ${id}`;
+    const photoRaw = String(p?.photo || "").trim();
+    const photoCode = photoRaw ? photoRaw.replace(/\.(jpg|jpeg|png)$/i, "") : String(p?.code || "").trim();
+    const imageUrl = photoCode
+      ? `https://resources.premierleague.com/premierleague/photos/players/250x250/p${photoCode}.png`
+      : null;
     map[id] = {
       id,
       name,
       team: parsePositiveInt(p?.team),
       position: parsePositiveInt(p?.element_type ?? p?.position),
+      image_url: imageUrl,
     };
   });
   return map;
@@ -2883,11 +2905,14 @@ playerInsights.get("/", async (c) => {
     let ownershipGameweek: number | null = null;
     {
       let currentGameweekContext = 0;
+      let latestCompletedGameweek = 0;
       try {
         const bootstrap = await fetchDraftBootstrap();
         currentGameweekContext = extractDraftCurrentEventId(bootstrap) || 0;
+        latestCompletedGameweek = extractLatestCompletedDraftEventId(bootstrap) || 0;
       } catch {
         currentGameweekContext = 0;
+        latestCompletedGameweek = 0;
       }
       if (!currentGameweekContext) {
         try {
@@ -2902,65 +2927,66 @@ playerInsights.get("/", async (c) => {
         }
       }
       ownershipDebug.current_gameweek_context = currentGameweekContext || null;
-      ownershipGameweek = currentGameweekContext || 1;
+      ownershipGameweek = latestCompletedGameweek || currentGameweekContext || 1;
       ownershipDebug.selected_gameweek = ownershipGameweek;
     }
 
     let ownershipResolvedFromDraft = false;
     try {
-      const configuredLeagueId = await resolveConfiguredDraftLeagueId(supabase);
-      const { details, leagueId } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID, configuredLeagueId);
+      const leagueId = DEFAULT_DRAFT_LEAGUE_ID;
+      const details = await fetchJSON<any>(`${DRAFT_BASE_URL}/league/${leagueId}/details`);
       const leagueEntries = normalizeDraftList<any>(details?.league_entries || []);
       ownershipDebug.team_keys_from_player_selections_sample = leagueEntries
         .slice(0, 20)
-        .map((entry: any) =>
-          String(entry?.entry_id ?? entry?.entry ?? entry?.id ?? entry?.league_entry_id ?? "").trim(),
-        )
+        .map((entry: any) => String(entry?.entry_id ?? "").trim())
         .filter(Boolean);
-      ownershipDebug.team_lookup_sample = { league_id: leagueId, entries_count: leagueEntries.length };
+      const ownerLabelByOwnerId: Record<number, string> = {};
+      leagueEntries.forEach((entry: any) => {
+        const managerName = formatDraftManagerName(entry);
+        const ownerLabel = String(managerName || "").trim();
+        if (!ownerLabel) return;
+        const ownerId = parsePositiveInt(entry?.entry_id);
+        if (ownerId) ownerLabelByOwnerId[ownerId] = ownerLabel;
+      });
+      ownershipDebug.team_lookup_sample = {
+        league_id: leagueId,
+        entries_count: leagueEntries.length,
+        owner_key_count: Object.keys(ownerLabelByOwnerId).length,
+      };
 
-      const ownershipRows = await Promise.all(
-        leagueEntries.map(async (entry: any) => {
-          const teamId = parsePositiveInt(entry?.entry_id ?? entry?.entry ?? entry?.id ?? entry?.league_entry_id);
-          if (!teamId) return null;
-          const managerName = formatDraftManagerName(entry);
-          try {
-            const picksPayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/entry/${teamId}/event/${ownershipGameweek}`);
-            const picks = normalizeDraftList<any>(picksPayload?.picks || []);
-            return { teamId, managerName, picks };
-          } catch {
-            return null;
-          }
-        }),
+      // Primary ownership source: current league element status.
+      // This reflects current roster ownership including post-waiver states.
+      const elementStatusPayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/league/${leagueId}/element-status`);
+      const elementStatusRows = normalizeDraftList<any>(
+        elementStatusPayload?.element_status ?? elementStatusPayload?.elements ?? [],
       );
+      ownershipDebug.source = "draft_element_status";
+      ownershipDebug.ownership_rows_count = elementStatusRows.length;
 
-      const validOwnershipRows = ownershipRows.filter((row): row is { teamId: number; managerName: string; picks: any[] } => !!row);
-      ownershipDebug.ownership_rows_count = validOwnershipRows.length;
-
-      validOwnershipRows.forEach((row) => {
-        row.picks.forEach((pick: any) => {
-          const playerId = parsePositiveInt(pick?.element ?? pick?.element_id ?? pick?.player_id);
-          if (!playerId) return;
-          if (!ownersMap[playerId]) ownersMap[playerId] = [];
-          if (row.managerName && !ownersMap[playerId].includes(row.managerName)) {
-            ownersMap[playerId].push(row.managerName);
-          }
-        });
+      const ownerIdsSeen = new Set<number>();
+      const unmatchedOwnerIds = new Set<number>();
+      elementStatusRows.forEach((row: any) => {
+        const playerId = parsePositiveInt(row?.element ?? row?.element_id ?? row?.player_id);
+        if (!playerId) return;
+        const ownerId = parsePositiveInt(row?.owner);
+        if (!ownerId) return;
+        ownerIdsSeen.add(ownerId);
+        const ownerLabel = ownerLabelByOwnerId[ownerId] || null;
+        if (!ownerLabel) {
+          unmatchedOwnerIds.add(ownerId);
+          return;
+        }
+        if (!ownersMap[playerId]) ownersMap[playerId] = [];
+        if (!ownersMap[playerId].includes(ownerLabel)) ownersMap[playerId].push(ownerLabel);
       });
 
       Object.entries(ownersMap).forEach(([id, managers]) => {
         ownerManagerMap[Number(id)] = managers.length > 0 ? managers[0] : null;
       });
       ownershipResolvedFromDraft = Object.keys(ownerManagerMap).length > 0;
-      ownershipDebug.matched_team_keys_count = validOwnershipRows.length;
-      ownershipDebug.unmatched_team_keys_count = leagueEntries.length - validOwnershipRows.length;
-      ownershipDebug.unmatched_team_keys_sample = leagueEntries
-        .filter((entry: any) => {
-          const teamId = parsePositiveInt(entry?.entry_id ?? entry?.entry ?? entry?.id ?? entry?.league_entry_id);
-          return !teamId || !validOwnershipRows.some((r) => r.teamId === teamId);
-        })
-        .slice(0, 20)
-        .map((entry: any) => String(entry?.entry_id ?? entry?.entry ?? entry?.id ?? entry?.league_entry_id ?? "").trim());
+      ownershipDebug.matched_team_keys_count = ownerIdsSeen.size - unmatchedOwnerIds.size;
+      ownershipDebug.unmatched_team_keys_count = unmatchedOwnerIds.size;
+      ownershipDebug.unmatched_team_keys_sample = Array.from(unmatchedOwnerIds).slice(0, 20);
       const playerOwnerSample: Record<string, string | null> = {};
       Object.entries(ownerManagerMap)
         .slice(0, 20)
@@ -2968,6 +2994,62 @@ playerInsights.get("/", async (c) => {
           playerOwnerSample[playerId] = managerName || null;
         });
       ownershipDebug.player_owner_sample = playerOwnerSample;
+
+      // Fallback: event picks if element-status did not map any owners.
+      if (!ownershipResolvedFromDraft) {
+        const ownershipRows = await Promise.all(
+          leagueEntries.map(async (entry: any) => {
+            const teamId = parsePositiveInt(entry?.entry_id);
+            if (!teamId) return null;
+            const managerName = String(formatDraftManagerName(entry) || "").trim();
+            try {
+              const picksPayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/entry/${teamId}/event/${ownershipGameweek}`);
+              const picks = normalizeDraftList<any>(picksPayload?.picks || []);
+              return { teamId, managerName, picks };
+            } catch {
+              return null;
+            }
+          }),
+        );
+
+        const validOwnershipRows = ownershipRows.filter(
+          (row): row is { teamId: number; managerName: string; picks: any[] } => !!row,
+        );
+        ownershipDebug.source = "draft_entry_event_fallback";
+        ownershipDebug.ownership_rows_count = validOwnershipRows.length;
+
+        validOwnershipRows.forEach((row) => {
+          row.picks.forEach((pick: any) => {
+            const playerId = parsePositiveInt(pick?.element ?? pick?.element_id ?? pick?.player_id);
+            if (!playerId) return;
+            if (!ownersMap[playerId]) ownersMap[playerId] = [];
+            if (row.managerName && !ownersMap[playerId].includes(row.managerName)) {
+              ownersMap[playerId].push(row.managerName);
+            }
+          });
+        });
+
+        Object.entries(ownersMap).forEach(([id, managers]) => {
+          ownerManagerMap[Number(id)] = managers.length > 0 ? managers[0] : null;
+        });
+        ownershipResolvedFromDraft = Object.keys(ownerManagerMap).length > 0;
+        ownershipDebug.matched_team_keys_count = validOwnershipRows.length;
+        ownershipDebug.unmatched_team_keys_count = leagueEntries.length - validOwnershipRows.length;
+        ownershipDebug.unmatched_team_keys_sample = leagueEntries
+          .filter((entry: any) => {
+            const teamId = parsePositiveInt(entry?.entry_id);
+            return !teamId || !validOwnershipRows.some((r) => r.teamId === teamId);
+          })
+          .slice(0, 20)
+          .map((entry: any) => String(entry?.entry_id ?? "").trim());
+        const fallbackPlayerOwnerSample: Record<string, string | null> = {};
+        Object.entries(ownerManagerMap)
+          .slice(0, 20)
+          .forEach(([playerId, managerName]) => {
+            fallbackPlayerOwnerSample[playerId] = managerName || null;
+          });
+        ownershipDebug.player_owner_sample = fallbackPlayerOwnerSample;
+      }
     } catch {
       ownershipResolvedFromDraft = false;
     }
@@ -3031,6 +3113,40 @@ playerInsights.get("/", async (c) => {
         ownershipDebug.player_owner_sample = playerOwnerSample;
       }
     }
+
+    const ownerByPlayerName: Record<string, string | null> = {};
+    const ownerByPlayerSurname: Record<string, string | null> = {};
+    const surnameCollision = new Set<string>();
+    const draftPlayerMap = extractDraftPlayerMap(draftBootstrap || {});
+    Object.entries(ownerManagerMap).forEach(([playerIdRaw, owner]) => {
+      const playerId = coerceNumber(playerIdRaw, 0);
+      if (!playerId || !owner) return;
+      const draftPlayer = draftPlayerMap[playerId];
+      const bootstrapPlayer = byPlayerFromBootstrap[playerId];
+      const playerName = String(draftPlayer?.name || bootstrapPlayer?.player_name || "").trim();
+      const key = toCanonicalPlayerName(playerName);
+      if (key && !ownerByPlayerName[key]) ownerByPlayerName[key] = owner;
+
+      const surname = toCanonicalPlayerSurname(playerName);
+      if (!surname) return;
+      if (!Object.prototype.hasOwnProperty.call(ownerByPlayerSurname, surname)) {
+        ownerByPlayerSurname[surname] = owner;
+      } else if (ownerByPlayerSurname[surname] !== owner) {
+        surnameCollision.add(surname);
+      }
+    });
+    surnameCollision.forEach((surname) => {
+      delete ownerByPlayerSurname[surname];
+    });
+
+    const resolveOwnerLabel = (playerId: number, playerName: string) => {
+      const direct = ownerManagerMap[playerId];
+      if (direct) return direct;
+      const byName = ownerByPlayerName[toCanonicalPlayerName(playerName)];
+      if (byName) return byName;
+      const bySurname = ownerByPlayerSurname[toCanonicalPlayerSurname(playerName)];
+      return bySurname || null;
+    };
 
     // Build team id -> name map from bootstrap/team data
     const teamMap: Record<number, string> = {};
@@ -3110,14 +3226,17 @@ playerInsights.get("/", async (c) => {
 
     if (!selections || selections.length === 0) {
       const fallbackInsights = Object.values(byPlayerFromBootstrap)
-        .map((p: any) => ({
-          ...p,
-          owned_by: ownersMap[p.player_id] || [],
-          owner_team: ownerManagerMap[p.player_id] || null,
-          ownership_status: ownerManagerMap[p.player_id] ? "owned" : "unowned",
-          team_name: teamMap[p.team] || null,
-          total_minutes: p.minutes_played ?? 0,
-        }))
+        .map((p: any) => {
+          const ownerLabel = resolveOwnerLabel(coerceNumber(p.player_id, 0), String(p.player_name || ""));
+          return {
+            ...p,
+            owned_by: ownerLabel ? [ownerLabel] : [],
+            owner_team: ownerLabel,
+            ownership_status: ownerLabel ? "owned" : "unowned",
+            team_name: teamMap[p.team] || null,
+            total_minutes: p.minutes_played ?? 0,
+          };
+        })
         .sort((a: any, b: any) => {
           const bySelected = coerceNumber(b.selected_by_percent) - coerceNumber(a.selected_by_percent);
           if (bySelected !== 0) return bySelected;
@@ -3208,7 +3327,8 @@ playerInsights.get("/", async (c) => {
     });
 
     const insights = Object.values(playerMap).map((p: any) => {
-      const ownedBy = ownersMap[p.player_id] || [];
+      const ownerLabel = resolveOwnerLabel(coerceNumber(p.player_id, 0), String(p.player_name || ""));
+      const ownedBy = ownerLabel ? [ownerLabel] : [];
       const bootstrapRow = byPlayerFromBootstrap[p.player_id] || {};
       const bootstrapTotalPoints = coerceNumber(bootstrapRow?.total_points, 0);
       const fallbackTotalPoints = coerceNumber(fallbackTotalPointsByPlayer[p.player_id], 0);
@@ -3236,8 +3356,8 @@ playerInsights.get("/", async (c) => {
         minutes_per_game_played: resolvedMinutesPerGame,
         points_per_90_played: resolvedPointsPer90,
         owned_by: ownedBy,
-        owner_team: ownerManagerMap[p.player_id] || null,
-        ownership_status: ownerManagerMap[p.player_id] ? "owned" : "unowned",
+        owner_team: ownerLabel,
+        ownership_status: ownerLabel ? "owned" : "unowned",
         team_name: teamMap[bootstrapRow?.team] || null,
         total_minutes: resolvedTotalMinutes,
         points: resolvedTotalPoints,
@@ -5757,6 +5877,7 @@ captainPicks.get("/context", async (c) => {
         return {
           id: playerId,
           name: player?.name || `Player ${playerId}`,
+          image_url: player?.image_url || null,
           team: player?.team || null,
           position: player?.position || null,
         };
@@ -5918,6 +6039,8 @@ fixturesHub.get("/", async (c) => {
     let rankMap: Record<string, number> = {};
     let currentGw = coerceNumber(seasonStateRes.data?.current_gameweek, 1);
     const draftEntryMap: Record<string, { id: string; entry_name: string | null; manager_name: string | null; club_crest_url?: string | null }> = {};
+    const draftEntryByEntryId: Record<string, { entry_name: string | null; manager_name: string | null; club_crest_url?: string | null }> = {};
+    const draftNameByDbTeamId: Record<string, { entry_name: string | null; manager_name: string | null; club_crest_url?: string | null }> = {};
     try {
       const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
       draftEntries = normalizeDraftList<any>(details?.league_entries);
@@ -5931,13 +6054,26 @@ fixturesHub.get("/", async (c) => {
       rankMap = buildDraftRankMapFromMatches(draftMatches, currentGw);
       draftEntries.forEach((entry: any) => {
         const id = entry.id ?? entry.league_entry_id ?? entry.entry_id ?? entry.entry;
+        const entryId = entry.entry_id ?? entry.entry;
         if (id === null || id === undefined) return;
-        draftEntryMap[String(id)] = {
+        const mapped = {
           id: String(id),
           entry_name: formatDraftTeamName(entry),
           manager_name: formatDraftManagerName(entry),
           club_crest_url: crestByManager[canonicalManagerKey(formatDraftManagerName(entry))] || null,
         };
+        draftEntryMap[String(id)] = mapped;
+        if (entryId !== null && entryId !== undefined) {
+          draftEntryByEntryId[String(entryId)] = mapped;
+        }
+      });
+      (teamsRes.data || []).forEach((team: any) => {
+        const teamId = String(team.id || "");
+        const entryId = String(team.entry_id || "");
+        if (!teamId || !entryId) return;
+        const mapped = draftEntryByEntryId[entryId];
+        if (!mapped) return;
+        draftNameByDbTeamId[teamId] = mapped;
       });
     } catch {
       // Fallback to DB fixtures when Draft API is unavailable.
@@ -5958,12 +6094,14 @@ fixturesHub.get("/", async (c) => {
       rankMap = buildDraftRankMapFromMatches(draftMatches, currentGw);
       Object.values(teamsMap).forEach((team: any) => {
         const id = String(team.id);
-        draftEntryMap[id] = {
+        const mapped = {
           id,
           entry_name: team.entry_name || null,
           manager_name: team.manager_name || null,
           club_crest_url: crestByManager[canonicalManagerKey(team.manager_name)] || null,
         };
+        draftEntryMap[id] = mapped;
+        draftNameByDbTeamId[id] = mapped;
       });
     }
 
@@ -5995,10 +6133,26 @@ fixturesHub.get("/", async (c) => {
     (cupRes.data || []).forEach((m: any) => {
       const team1Raw = teamsMap[String(m.team_1_id)] || null;
       const team2Raw = teamsMap[String(m.team_2_id)] || null;
-      const team1 = team1Raw
+      const draftTeam1 = draftNameByDbTeamId[String(m.team_1_id)] || null;
+      const draftTeam2 = draftNameByDbTeamId[String(m.team_2_id)] || null;
+      const team1 = draftTeam1
+        ? {
+            ...team1Raw,
+            entry_name: draftTeam1.entry_name,
+            manager_name: draftTeam1.manager_name,
+            club_crest_url: draftTeam1.club_crest_url || null,
+          }
+        : team1Raw
         ? { ...team1Raw, club_crest_url: crestByManager[canonicalManagerKey(team1Raw.manager_name)] || null }
         : null;
-      const team2 = team2Raw
+      const team2 = draftTeam2
+        ? {
+            ...team2Raw,
+            entry_name: draftTeam2.entry_name,
+            manager_name: draftTeam2.manager_name,
+            club_crest_url: draftTeam2.club_crest_url || null,
+          }
+        : team2Raw
         ? { ...team2Raw, club_crest_url: crestByManager[canonicalManagerKey(team2Raw.manager_name)] || null }
         : null;
       const rows = [
@@ -6122,9 +6276,12 @@ fixturesHub.get("/", async (c) => {
             team_id: teamId,
             team: {
               id: teamId,
-              entry_name: teamById[teamId]?.entry_name || null,
-              manager_name: teamById[teamId]?.manager_name || null,
-              club_crest_url: crestByManager[canonicalManagerKey(teamById[teamId]?.manager_name)] || null,
+              entry_name: draftNameByDbTeamId[teamId]?.entry_name || teamById[teamId]?.entry_name || null,
+              manager_name: draftNameByDbTeamId[teamId]?.manager_name || teamById[teamId]?.manager_name || null,
+              club_crest_url:
+                draftNameByDbTeamId[teamId]?.club_crest_url ||
+                crestByManager[canonicalManagerKey(draftNameByDbTeamId[teamId]?.manager_name || teamById[teamId]?.manager_name)] ||
+                null,
             },
             week_points: weekPoints,
             cumulative_points: cumulative,
@@ -6586,6 +6743,7 @@ fixturesHub.get("/matchup", async (c) => {
         return {
           player_id: playerId,
           player_name: playerMap[playerId]?.name || `Player ${playerId}`,
+          player_image_url: playerMap[playerId]?.image_url || null,
           position: coerceNumber(playerMap[playerId]?.position, 3),
           lineup_slot: lineupSlot || null,
           is_bench: isBench,
@@ -6774,6 +6932,7 @@ fixturesHub.get("/lineup", async (c) => {
       return {
         player_id: playerId,
         player_name: playerMap[playerId]?.name || `Player ${playerId}`,
+        player_image_url: playerMap[playerId]?.image_url || null,
         position: coerceNumber(playerMap[playerId]?.position, 3),
         lineup_slot: lineupSlot || null,
         is_bench: isBench,

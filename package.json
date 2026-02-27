@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "dev": "vite --host 127.0.0.1 --port 5173"
+    "dev": "vite --host 127.0.0.1 --port 5173",
+    "test:ownership": "node scripts/assert-woltemade-ownership.mjs"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",

@@ -105,13 +105,15 @@ function FixtureRow({ fixture }: { fixture: Fixture }) {
       }));
 
     return (
-      <div className="block w-full rounded-md border p-3">
+      <div className="block w-full rounded-md border bg-background/80 p-3">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <div>
             <div className="text-xs text-muted-foreground inline-flex items-center gap-1">
+              {fixture.team_1_rank != null ? <span className="font-semibold">#{fixture.team_1_rank}</span> : null}
               {fixture.team_1?.club_crest_url ? <img src={fixture.team_1.club_crest_url} alt="" className="h-4 w-4 rounded object-cover border" /> : null}
               {fixture.team_1?.entry_name || "—"}
             </div>
+            <div className="text-sm font-medium">{fixture.team_1?.manager_name || "—"}</div>
             <FootballPitch players={convert(last1)} onPlayerClick={handlePlayerClick} showCaptain={true} />
           </div>
           <div className="text-center">
@@ -125,9 +127,11 @@ function FixtureRow({ fixture }: { fixture: Fixture }) {
           </div>
           <div>
             <div className="text-xs text-muted-foreground inline-flex items-center gap-1">
+              {fixture.team_2_rank != null ? <span className="font-semibold">#{fixture.team_2_rank}</span> : null}
               {fixture.team_2?.club_crest_url ? <img src={fixture.team_2.club_crest_url} alt="" className="h-4 w-4 rounded object-cover border" /> : null}
               {fixture.team_2?.entry_name || "—"}
             </div>
+            <div className="text-sm font-medium">{fixture.team_2?.manager_name || "—"}</div>
             <FootballPitch players={convert(last2)} onPlayerClick={handlePlayerClick} showCaptain={true} />
           </div>
         </div>
@@ -142,7 +146,10 @@ function FixtureRow({ fixture }: { fixture: Fixture }) {
   }
 
   return (
-    <Link to={href} className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 rounded-md border p-3 hover:bg-muted/40 transition-colors">
+    <Link
+      to={href}
+      className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 rounded-md border bg-background/80 p-3 hover:bg-background transition-colors"
+    >
       <div className="text-right">
         {fixture.team_1_rank != null ? (
           <div className="text-xs text-muted-foreground">#{fixture.team_1_rank}</div>
@@ -250,7 +257,7 @@ export default function FixturesPage() {
                     ))}
 
                     {section.cupGroup.length > 0 ? (
-                      <div className="rounded-md border p-3">
+                      <div className="rounded-md border bg-background/80 p-3">
                         <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">FFA Cup Group Stage</div>
                         <div className="overflow-x-auto">
                           <table className="w-full text-sm">

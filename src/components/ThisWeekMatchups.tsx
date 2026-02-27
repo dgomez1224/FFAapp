@@ -153,7 +153,7 @@ export function ThisWeekMatchups() {
             <Link
               key={`${m.team_1_id}-${m.team_2_id}-${idx}`}
               to={href}
-              className="block w-full rounded-md border p-4 text-foreground no-underline transition-colors hover:bg-muted/40 hover:no-underline visited:text-foreground"
+              className="block w-full rounded-md border bg-background/80 p-4 text-foreground no-underline transition-colors hover:bg-background hover:no-underline visited:text-foreground"
             >
               {/* Team names and entry names */}
               <div className="grid grid-cols-[1fr_auto_1fr] gap-4 mb-3">
@@ -223,18 +223,22 @@ export function ThisWeekMatchups() {
               </div>
 
               {/* Win records */}
-              <div className="space-y-1 text-xs border-t pt-2">
-                <div className="grid grid-cols-[6rem_1fr_auto_1fr] gap-2 items-center">
-                  <span className="text-muted-foreground font-medium">Season:</span>
-                  <div className="text-center font-medium">{season1Wins}W</div>
-                  <div className="text-center text-muted-foreground">{seasonDraws}D</div>
-                  <div className="text-center font-medium">{season2Wins}W</div>
+              <div className="space-y-2 rounded-md border bg-background/70 p-2 text-xs">
+                <div className="space-y-1">
+                  <div className="text-muted-foreground font-medium">Season</div>
+                  <div className="grid grid-cols-[1fr_5rem_1fr] gap-2 items-center">
+                    <div className="text-center font-medium">{season1Wins}W</div>
+                    <div className="text-center text-muted-foreground">{seasonDraws}D</div>
+                    <div className="text-center font-medium">{season2Wins}W</div>
+                  </div>
                 </div>
-                <div className="grid grid-cols-[6rem_1fr_auto_1fr] gap-2 items-center">
-                  <span className="text-muted-foreground font-medium">All-Time:</span>
-                  <div className="text-center font-medium">{allTime1Wins}W</div>
-                  <div className="text-center text-muted-foreground">{allTimeDraws}D</div>
-                  <div className="text-center font-medium">{allTime2Wins}W</div>
+                <div className="space-y-1">
+                  <div className="text-muted-foreground font-medium">All-Time</div>
+                  <div className="grid grid-cols-[1fr_5rem_1fr] gap-2 items-center">
+                    <div className="text-center font-medium">{allTime1Wins}W</div>
+                    <div className="text-center text-muted-foreground">{allTimeDraws}D</div>
+                    <div className="text-center font-medium">{allTime2Wins}W</div>
+                  </div>
                 </div>
               </div>
             </Link>

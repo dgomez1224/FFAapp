@@ -9,6 +9,7 @@ import { PlayerStatsModal, PlayerStats } from "../components/PlayerStatsModal";
 type LineupPlayer = {
   player_id: number;
   player_name: string;
+  player_image_url?: string | null;
   position: number;
   lineup_slot?: number | null;
   is_bench?: boolean;
@@ -76,6 +77,7 @@ function TeamPitchDisplay({
   const pitchPlayers: PitchPlayer[] = starters.map((p) => ({
     player_id: p.player_id,
     player_name: p.player_name,
+    player_image_url: p.player_image_url || null,
     position: p.position,
     raw_points: p.raw_points,
     effective_points: p.effective_points,

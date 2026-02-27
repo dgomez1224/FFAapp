@@ -4,11 +4,12 @@
  */
 
 import React, { useState } from "react";
-import { getPlayerImage } from "../lib/playerImage";
+import { getPlayerImage, getPlayerImageByIdOrName } from "../lib/playerImage";
 
 export interface PitchPlayer {
   player_id: number;
   player_name: string;
+  player_image_url?: string | null;
   position: number; // 1=GK, 2=DEF, 3=MID, 4=FWD
   raw_points: number;
   effective_points: number;
@@ -44,14 +45,38 @@ const FORMATION_Y: Record<number, number> = {
 
 export function FootballPitch({ players, onPlayerClick, showCaptain = true }: FootballPitchProps) {
   const [playerImages, setPlayerImages] = useState<Record<number, string | null>>({});
+  const avatarFallbackUrl = (name: string) =>
+    `https://ui-avatars.com/api/?name=${encodeURIComponent(name || "Player")}&background=1f2937&color=ffffff&size=128&bold=true`;
 
   React.useEffect(() => {
+    const canLoadImage = (url: string) =>
+      new Promise<boolean>((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve(true);
+        img.onerror = () => resolve(false);
+        img.src = url;
+      });
+
     async function loadImages() {
       const images: Record<number, string | null> = {};
-      for (const player of players) {
-        const url = await getPlayerImage(player.player_name);
-        images[player.player_id] = url;
-      }
+      await Promise.all(
+        players.map(async (player) => {
+          if (player.player_image_url) {
+            const isValid = await canLoadImage(player.player_image_url);
+            if (isValid) {
+              images[player.player_id] = player.player_image_url;
+              return;
+            }
+          }
+          const byIdOrName = await getPlayerImageByIdOrName(player.player_id, player.player_name);
+          if (byIdOrName && await canLoadImage(byIdOrName)) {
+            images[player.player_id] = byIdOrName;
+            return;
+          }
+          const byName = await getPlayerImage(player.player_name);
+          images[player.player_id] = byName && await canLoadImage(byName) ? byName : null;
+        }),
+      );
       setPlayerImages(images);
     }
     loadImages();
@@ -70,7 +95,14 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
   const getPlayerPosition = (position: number, playerIndex: number): { x: number; y: number } => {
     const positionPlayers = playersByPosition[position] || [];
     const count = Math.max(1, positionPlayers.length);
-    if (position === 1) return { x: 50, y: FORMATION_Y[1] };
+    if (position === 1) {
+      if (count === 1) return { x: 50, y: FORMATION_Y[1] };
+      // Allow dual-GK display side-by-side for Pick Captain and Cup lineups.
+      const startX = 42;
+      const endX = 58;
+      const step = count === 1 ? 0 : (endX - startX) / (count - 1);
+      return { x: startX + step * playerIndex, y: FORMATION_Y[1] };
+    }
     const startX = 18;
     const endX = 82;
     const step = count === 1 ? 0 : (endX - startX) / (count - 1);
@@ -134,11 +166,26 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
                   }}
                 >
                   {imageUrl ? (
-                    <img src={imageUrl} alt={player.player_name} className="w-full h-full object-cover" />
+                    <img
+                      src={imageUrl}
+                      alt={player.player_name}
+                      className="w-full h-full object-cover"
+                      onError={async () => {
+                        const current = playerImages[player.player_id] || null;
+                        const fallbackByName = await getPlayerImage(player.player_name);
+                        const next =
+                          fallbackByName && fallbackByName !== current
+                            ? fallbackByName
+                            : avatarFallbackUrl(player.player_name);
+                        setPlayerImages((prev) => ({ ...prev, [player.player_id]: next }));
+                      }}
+                    />
                   ) : (
-                    <div className="w-full h-full bg-gray-400 flex items-center justify-center text-white text-xs font-bold">
-                      {player.player_name.split(" ")[0].substring(0, 1)}
-                    </div>
+                    <img
+                      src={avatarFallbackUrl(player.player_name)}
+                      alt={player.player_name}
+                      className="w-full h-full object-cover"
+                    />
                   )}
 
                   {/* Captain badge */}

@@ -422,8 +422,8 @@ export default function ManagerProfile() {
       {/* Header */}
       <div>
         <div className="flex items-center gap-4 mb-2">
-          <Link to="/home" className="text-sm text-zinc-700 hover:underline">
-            ← Back to Home
+          <Link to="/managers" className="text-sm text-zinc-700 hover:underline">
+            ← Back to Managers
           </Link>
         </div>
         <h1 className="text-3xl font-bold text-zinc-900">{data.manager_name} Manager Insights</h1>
@@ -484,7 +484,12 @@ export default function ManagerProfile() {
                 {trophyCabinetItems.length > 0 ? (
                   trophyCabinetItems.map((icon) => (
                     <div key={icon.key} className="w-14 flex flex-col items-center justify-end">
-                      <img src={icon.src} alt={icon.alt} title={icon.title} className={`${icon.className} object-contain`} />
+                      <img
+                        src={icon.src}
+                        alt={icon.alt}
+                        title={icon.title}
+                        className={`${icon.className} object-contain`}
+                      />
                       <div className="mt-1 text-[10px] leading-none text-zinc-700 text-center w-full">
                         {icon.seasonLabel}
                       </div>

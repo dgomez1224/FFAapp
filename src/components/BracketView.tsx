@@ -339,7 +339,7 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
           {group.standings.length > 0 ? (
             <Card className="p-4">
               <div className="mb-3">
-                <h2 className="text-lg font-semibold">League of Lads Group Stage</h2>
+                <h2 className="text-lg font-semibold">FFA Cup Group Stage</h2>
                 <p className="text-sm text-muted-foreground">
                   {group.autoRegistered ? "All league members are auto-registered." : "Group stage standings."}
                 </p>
@@ -400,7 +400,7 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
           ) : group.registeredCount > 0 ? (
             <Card className="p-4">
               <div className="mb-3">
-                <h2 className="text-lg font-semibold">League of Lads Group Stage</h2>
+                <h2 className="text-lg font-semibold">FFA Cup Group Stage</h2>
                 <p className="text-sm text-muted-foreground">
                   All {group.registeredCount} league members are auto-registered. Tournament begins at gameweek 29.
                 </p>
