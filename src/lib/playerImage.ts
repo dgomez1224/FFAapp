@@ -1,20 +1,30 @@
 /**
- * Player image lookup utility.
- * Uses official Premier League bootstrap data and avoids third-party scraping.
+ * Player image resolver.
+ *
+ * Strategy:
+ * 1) Build a unified player index from Draft + Classic bootstrap APIs.
+ * 2) Resolve by player id first, then exact normalized name, then surname fallback.
+ * 3) Try multiple known image URL patterns and return the first loadable one.
+ * 4) Cache successful and failed lookups to avoid repeated network work.
  */
-
-import { EDGE_FUNCTIONS_BASE } from "./constants";
-import { getSupabaseFunctionHeaders, supabaseUrl } from "./supabaseClient";
 
 interface ImageCache {
   [playerName: string]: string | null;
 }
 
+interface IndexedPlayer {
+  id: number;
+  names: string[];
+  codes: string[];
+  directUrls: string[];
+}
+
 const imageCache: ImageCache = {};
-let officialPhotoByPlayerId: Record<number, string> | null = null;
-let officialPhotoByName: Record<string, string> | null = null;
-let fullInsightsPhotoByName: Record<string, string> | null = null;
-let fullInsightsLoaded = false;
+const idCache: Record<number, string | null> = {};
+
+let indexReady = false;
+let indexById: Record<number, IndexedPlayer> = {};
+let idsByName: Record<string, number[]> = {};
 
 function normalizeName(value: string) {
   return String(value || "")
@@ -26,36 +36,12 @@ function normalizeName(value: string) {
     .trim();
 }
 
-function buildOfficialPhotoUrl(photoValue: unknown, codeValue?: unknown) {
-  const raw = String(photoValue || "").trim();
-  if (/^https?:\/\//i.test(raw)) {
-    const httpsUrl = raw.replace(/^http:\/\//i, "https://");
-    if (/resources\.premierleague\.com/i.test(httpsUrl)) {
-      const fromUrlCode = (() => {
-        try {
-          const parsed = new URL(httpsUrl);
-          const file = (parsed.pathname.split("/").pop() || "").trim();
-          const match = file.match(/^p?([a-zA-Z0-9]+)\.(jpg|jpeg|png|webp)$/i);
-          return match?.[1] || "";
-        } catch {
-          return "";
-        }
-      })();
-      if (fromUrlCode) {
-        return `https://fantasy.premierleague.com/dist/img/photos/110x140/p${fromUrlCode}.png`;
-      }
-    }
-    return httpsUrl;
-  }
-  const fallbackCode = String(codeValue || "").trim();
-  const code = (raw || fallbackCode)
-    .replace(/^https?:\/\/[^/]+\/.*\/p?/i, "")
-    .replace(/\.(jpg|jpeg|png|webp)$/i, "")
-    .replace(/[^a-zA-Z0-9]/g, "")
+function normalizeCode(value: unknown) {
+  return String(value || "")
+    .trim()
     .replace(/^p/i, "")
-    .trim();
-  if (!code) return null;
-  return `https://fantasy.premierleague.com/dist/img/photos/110x140/p${code}.png`;
+    .replace(/\.(jpg|jpeg|png|webp)$/i, "")
+    .replace(/[^a-zA-Z0-9]/g, "");
 }
 
 function normalizeList<T = any>(value: unknown): T[] {
@@ -64,92 +50,204 @@ function normalizeList<T = any>(value: unknown): T[] {
   return [];
 }
 
-function applyBootstrapMap(payload: any, byId: Record<number, string>, byName: Record<string, string>) {
-  const players = normalizeList<any>(payload?.elements?.data ?? payload?.elements ?? payload?.players);
-  if (players.length === 0) return;
+function extractCodeFromUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    const filename = parsed.pathname.split("/").pop() || "";
+    const match = filename.match(/^p?([a-zA-Z0-9]+)\.(jpg|jpeg|png|webp)$/i);
+    return match?.[1] ? normalizeCode(match[1]) : "";
+  } catch {
+    return "";
+  }
+}
 
-  players.forEach((player: any) => {
-    const id = Number(player?.id);
-    const imageUrl = buildOfficialPhotoUrl(player?.photo || player?.image_url || player?.photo_url, player?.code);
-    if (!id || !imageUrl) return;
+function buildUrlCandidates(code: string, directUrls: string[]) {
+  const out = new Set<string>();
 
-    byId[id] = imageUrl;
+  directUrls
+    .map((u) => String(u || "").trim().replace(/^http:\/\//i, "https://"))
+    .filter(Boolean)
+    .forEach((u) => out.add(u));
 
-    const names = [
-      player?.web_name,
-      `${player?.first_name || ""} ${player?.second_name || ""}`.trim(),
-      player?.second_name,
-    ]
-      .map((name) => normalizeName(String(name || "")))
-      .filter(Boolean);
+  if (code) {
+    out.add(`https://fantasy.premierleague.com/dist/img/photos/110x140/p${code}.png`);
+    out.add(`https://fantasy.premierleague.com/dist/img/photos/250x250/p${code}.png`);
+    out.add(`https://resources.premierleague.com/premierleague/photos/players/250x250/p${code}.png`);
+  }
 
-    names.forEach((name) => {
-      if (!byName[name]) byName[name] = imageUrl;
+  return Array.from(out);
+}
+
+function indexPlayer(raw: any) {
+  const id = Number(raw?.id ?? raw?.element ?? raw?.element_id);
+  if (!Number.isInteger(id) || id <= 0) return;
+
+  const existing: IndexedPlayer = indexById[id] || {
+    id,
+    names: [],
+    codes: [],
+    directUrls: [],
+  };
+
+  const firstName = String(raw?.first_name || "").trim();
+  const secondName = String(raw?.second_name || "").trim();
+  const fullName = `${firstName} ${secondName}`.trim();
+
+  const names = [
+    raw?.web_name,
+    raw?.name,
+    fullName,
+    secondName,
+  ]
+    .map((v) => normalizeName(String(v || "")))
+    .filter(Boolean);
+
+  const directUrlCandidates = [
+    raw?.image_url,
+    raw?.photo_url,
+    raw?.headshot,
+    raw?.photo,
+  ]
+    .map((v) => String(v || "").trim())
+    .filter((v) => /^https?:\/\//i.test(v));
+
+  const codeCandidates = [
+    raw?.code,
+    raw?.photo,
+    ...directUrlCandidates.map(extractCodeFromUrl),
+  ]
+    .map((v) => normalizeCode(v))
+    .filter(Boolean);
+
+  const next: IndexedPlayer = {
+    id,
+    names: Array.from(new Set([...existing.names, ...names])),
+    codes: Array.from(new Set([...existing.codes, ...codeCandidates])),
+    directUrls: Array.from(new Set([...existing.directUrls, ...directUrlCandidates])),
+  };
+
+  indexById[id] = next;
+}
+
+async function loadIndex() {
+  if (indexReady) return;
+
+  indexById = {};
+  idsByName = {};
+
+  const endpoints = [
+    "https://draft.premierleague.com/api/bootstrap-static",
+    "https://fantasy.premierleague.com/api/bootstrap-static/",
+  ];
+
+  await Promise.all(
+    endpoints.map(async (url) => {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const payload = await res.json();
+        const players = normalizeList<any>(payload?.elements?.data ?? payload?.elements ?? payload?.players);
+        players.forEach(indexPlayer);
+      } catch {
+        // Non-fatal: keep whatever data we can gather.
+      }
+    }),
+  );
+
+  Object.values(indexById).forEach((player) => {
+    player.names.forEach((name) => {
+      if (!idsByName[name]) idsByName[name] = [];
+      if (!idsByName[name].includes(player.id)) idsByName[name].push(player.id);
     });
+  });
+
+  indexReady = true;
+}
+
+function imageLoads(url: string, timeoutMs = 4500) {
+  return new Promise<boolean>((resolve) => {
+    const img = new Image();
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      resolve(false);
+    }, timeoutMs);
+
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      img.onload = null;
+      img.onerror = null;
+    };
+
+    img.onload = () => {
+      cleanup();
+      resolve(true);
+    };
+    img.onerror = () => {
+      cleanup();
+      resolve(false);
+    };
+
+    img.src = url;
   });
 }
 
-async function loadFullInsightsPhotoMap() {
-  if (fullInsightsLoaded) return fullInsightsPhotoByName || {};
-  fullInsightsLoaded = true;
-  const byName: Record<string, string> = {};
+async function resolveById(playerId: number): Promise<string | null> {
+  if (!Number.isInteger(playerId) || playerId <= 0) return null;
+  if (Object.prototype.hasOwnProperty.call(idCache, playerId)) return idCache[playerId];
 
-  try {
-    if (!supabaseUrl) {
-      fullInsightsPhotoByName = byName;
-      return byName;
-    }
-    const res = await fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/player-insights`, {
-      headers: getSupabaseFunctionHeaders(),
-    });
-    if (!res.ok) {
-      fullInsightsPhotoByName = byName;
-      return byName;
-    }
-    const payload = await res.json();
-    const insights = Array.isArray(payload?.insights) ? payload.insights : [];
-    insights.forEach((row: any) => {
-      const key = normalizeName(row?.player_name);
-      const image = buildOfficialPhotoUrl(row?.image_url || row?.photo || row?.photo_url, row?.code);
-      if (key && image && !byName[key]) byName[key] = image;
-    });
-  } catch {
-    // Non-fatal fallback path.
+  await loadIndex();
+
+  const player = indexById[playerId];
+  if (!player) {
+    idCache[playerId] = null;
+    return null;
   }
 
-  fullInsightsPhotoByName = byName;
-  return byName;
+  const code = player.codes[0] || "";
+  const candidates = buildUrlCandidates(code, player.directUrls);
+  for (const url of candidates) {
+    if (await imageLoads(url)) {
+      idCache[playerId] = url;
+      return url;
+    }
+  }
+
+  idCache[playerId] = null;
+  return null;
 }
 
-async function loadOfficialPhotoMap() {
-  if (officialPhotoByPlayerId && officialPhotoByName) return officialPhotoByPlayerId;
+async function resolveByName(playerName: string): Promise<string | null> {
+  const normalized = normalizeName(playerName);
+  if (!normalized) return null;
 
-  const byId: Record<number, string> = {};
-  const byName: Record<string, string> = {};
+  await loadIndex();
 
-  try {
-    const draftRes = await fetch("https://draft.premierleague.com/api/bootstrap-static");
-    if (draftRes.ok) {
-      const draftPayload = await draftRes.json();
-      applyBootstrapMap(draftPayload, byId, byName);
+  const candidateIds: number[] = [];
+
+  const exact = idsByName[normalized] || [];
+  exact.forEach((id) => {
+    if (!candidateIds.includes(id)) candidateIds.push(id);
+  });
+
+  if (candidateIds.length === 0) {
+    const surname = normalized.split(" ").filter(Boolean).pop() || "";
+    if (surname) {
+      Object.entries(idsByName).forEach(([name, ids]) => {
+        const parts = name.split(" ").filter(Boolean);
+        if (parts[parts.length - 1] !== surname) return;
+        ids.forEach((id) => {
+          if (!candidateIds.includes(id)) candidateIds.push(id);
+        });
+      });
     }
-  } catch {
-    // Continue with classic source.
   }
 
-  try {
-    const classicRes = await fetch("https://fantasy.premierleague.com/api/bootstrap-static/");
-    if (classicRes.ok) {
-      const classicPayload = await classicRes.json();
-      applyBootstrapMap(classicPayload, byId, byName);
-    }
-  } catch {
-    // Use any map entries already loaded.
+  for (const id of candidateIds) {
+    const resolved = await resolveById(id);
+    if (resolved) return resolved;
   }
 
-  officialPhotoByPlayerId = byId;
-  officialPhotoByName = byName;
-  return officialPhotoByPlayerId;
+  return null;
 }
 
 export async function fetchPlayerImage(playerName: string): Promise<string | null> {
@@ -158,37 +256,9 @@ export async function fetchPlayerImage(playerName: string): Promise<string | nul
   }
 
   try {
-    await loadOfficialPhotoMap();
-    const lookupKey = normalizeName(playerName);
-    let official = officialPhotoByName?.[lookupKey] || null;
-    if (!official) {
-      const surname = lookupKey.split(" ").filter(Boolean).pop() || "";
-      if (surname) {
-        const fuzzyMatch = Object.entries(officialPhotoByName || {}).find(([name]) => {
-          const parts = name.split(" ").filter(Boolean);
-          return parts[parts.length - 1] === surname;
-        });
-        official = fuzzyMatch?.[1] || null;
-      }
-    }
-
-    if (!official) {
-      const insightsMap = await loadFullInsightsPhotoMap();
-      official = insightsMap[lookupKey] || null;
-      if (!official) {
-        const surname = lookupKey.split(" ").filter(Boolean).pop() || "";
-        if (surname) {
-          const fuzzyMatch = Object.entries(insightsMap).find(([name]) => {
-            const parts = name.split(" ").filter(Boolean);
-            return parts[parts.length - 1] === surname;
-          });
-          official = fuzzyMatch?.[1] || null;
-        }
-      }
-    }
-
-    imageCache[playerName] = official;
-    return official;
+    const resolved = await resolveByName(playerName);
+    imageCache[playerName] = resolved;
+    return resolved;
   } catch {
     imageCache[playerName] = null;
     return null;
@@ -204,11 +274,10 @@ export async function getPlayerImage(playerName: string): Promise<string | null>
 
 export async function getPlayerImageByIdOrName(playerId: number, playerName: string): Promise<string | null> {
   try {
-    const map = await loadOfficialPhotoMap();
-    const officialById = map[playerId] || null;
-    if (officialById) return officialById;
+    const byId = await resolveById(playerId);
+    if (byId) return byId;
   } catch {
-    // Fall through to name lookup.
+    // Continue to name lookup.
   }
   return getPlayerImage(playerName);
 }
@@ -220,4 +289,8 @@ export async function preloadPlayerImages(playerNames: string[]): Promise<void> 
 
 export function clearImageCache(): void {
   Object.keys(imageCache).forEach((key) => delete imageCache[key]);
+  Object.keys(idCache).forEach((key) => delete idCache[Number(key)]);
+  indexReady = false;
+  indexById = {};
+  idsByName = {};
 }
