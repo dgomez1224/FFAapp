@@ -30,18 +30,20 @@ function buildOfficialPhotoUrl(photoValue: unknown, codeValue?: unknown) {
   const raw = String(photoValue || "").trim();
   if (/^https?:\/\//i.test(raw)) {
     const httpsUrl = raw.replace(/^http:\/\//i, "https://");
-    const fromUrlCode = (() => {
-      try {
-        const parsed = new URL(httpsUrl);
-        const file = (parsed.pathname.split("/").pop() || "").trim();
-        const match = file.match(/^p?([a-zA-Z0-9]+)\.(jpg|jpeg|png|webp)$/i);
-        return match?.[1] || "";
-      } catch {
-        return "";
+    if (/resources\.premierleague\.com/i.test(httpsUrl)) {
+      const fromUrlCode = (() => {
+        try {
+          const parsed = new URL(httpsUrl);
+          const file = (parsed.pathname.split("/").pop() || "").trim();
+          const match = file.match(/^p?([a-zA-Z0-9]+)\.(jpg|jpeg|png|webp)$/i);
+          return match?.[1] || "";
+        } catch {
+          return "";
+        }
+      })();
+      if (fromUrlCode) {
+        return `https://fantasy.premierleague.com/dist/img/photos/110x140/p${fromUrlCode}.png`;
       }
-    })();
-    if (fromUrlCode) {
-      return `https://fantasy.premierleague.com/dist/img/photos/players/110x140/p${fromUrlCode}.png`;
     }
     return httpsUrl;
   }
@@ -53,7 +55,7 @@ function buildOfficialPhotoUrl(photoValue: unknown, codeValue?: unknown) {
     .replace(/^p/i, "")
     .trim();
   if (!code) return null;
-  return `https://fantasy.premierleague.com/dist/img/photos/players/110x140/p${code}.png`;
+  return `https://fantasy.premierleague.com/dist/img/photos/110x140/p${code}.png`;
 }
 
 function normalizeList<T = any>(value: unknown): T[] {
