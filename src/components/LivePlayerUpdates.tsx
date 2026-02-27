@@ -1,0 +1,441 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Card } from "./ui/card";
+import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
+import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
+import type { LiveDataResponse } from "../lib/types/api";
+
+type StatKey =
+  | "goals_scored"
+  | "assists"
+  | "starts"
+  | "penalties_saved"
+  | "yellow_cards"
+  | "red_cards"
+  | "clean_sheets"
+  | "defensive_returns";
+
+interface MatchupRow {
+  team_1_id: string;
+  team_2_id: string;
+  gameweek?: number;
+}
+
+interface MatchupsResponse {
+  gameweek: number;
+  matchups: MatchupRow[];
+}
+
+interface LineupPlayer {
+  player_id: number;
+  player_name: string;
+  player_image_url?: string | null;
+  position: number;
+  minutes: number;
+  is_bench?: boolean;
+  effective_points: number;
+  defensive_contributions: number;
+  clean_sheets: number;
+  goals_scored: number;
+  assists: number;
+  yellow_cards: number;
+  red_cards: number;
+  penalties_saved: number;
+}
+
+interface MatchupPayload {
+  gameweek: number;
+  matchup: {
+    live_team_1_points: number;
+    live_team_2_points: number;
+  };
+  team_1: {
+    manager_name: string;
+    lineup: LineupPlayer[];
+  };
+  team_2: {
+    manager_name: string;
+    lineup: LineupPlayer[];
+  };
+}
+
+interface PlayerSnapshot {
+  key: string;
+  player_id: number;
+  player_name: string;
+  player_image_url?: string | null;
+  manager_name: string;
+  team_score: number;
+  opp_score: number;
+  points: number;
+  goals_scored: number;
+  assists: number;
+  starts: number;
+  penalties_saved: number;
+  yellow_cards: number;
+  red_cards: number;
+  clean_sheets: number;
+  defensive_returns: number;
+}
+
+interface UpdateRow {
+  id: string;
+  at: number;
+  player_id: number;
+  player_name: string;
+  player_image_url?: string | null;
+  manager_name: string;
+  action: string;
+  points: number;
+  fixture_score: string;
+}
+
+const POLL_INTERVAL_MS = 20000;
+const MAX_ROWS = 30;
+
+const STAT_LABELS: Record<StatKey, string> = {
+  goals_scored: "Goal",
+  assists: "Assist",
+  starts: "Start",
+  penalties_saved: "Penalty Saved",
+  yellow_cards: "Yellow Card",
+  red_cards: "Red Card",
+  clean_sheets: "Clean Sheet",
+  defensive_returns: "Defensive Return",
+};
+
+const STAT_PRIORITY: StatKey[] = [
+  "red_cards",
+  "goals_scored",
+  "assists",
+  "penalties_saved",
+  "clean_sheets",
+  "defensive_returns",
+  "starts",
+  "yellow_cards",
+];
+
+const avatarFallback = (name: string) =>
+  `https://ui-avatars.com/api/?name=${encodeURIComponent(name || "Player")}&background=1f2937&color=ffffff&size=128&bold=true`;
+const sanitizeImageUrl = (url?: string | null) => String(url || "").replace(/^http:\/\//i, "https://").trim();
+
+function asRounded(value: number) {
+  return Math.round(Number(value || 0));
+}
+
+function hasCompletedCleanSheet(player: LineupPlayer) {
+  return Number(player.position || 0) !== 4 && Number(player.clean_sheets || 0) > 0 && Number(player.minutes || 0) >= 90;
+}
+
+function hasDefensiveReturn(player: LineupPlayer) {
+  const contributions = Number(player.defensive_contributions || 0);
+  const position = Number(player.position || 0);
+  if (position === 2) return contributions >= 10;
+  if (position === 3 || position === 4) return contributions >= 12;
+  return false;
+}
+
+function computeLeagueLiveScore(players: LineupPlayer[]) {
+  return players.reduce((sum, player) => {
+    if (player.is_bench) return sum;
+    return sum + Number(player.effective_points || 0);
+  }, 0);
+}
+
+export function summarizeMatchupHighlights(
+  payload: MatchupPayload,
+  startsByPlayerId: Record<number, number>,
+  limit = 6,
+): Array<{
+  player_id: number;
+  player_name: string;
+  player_image_url?: string | null;
+  action: string;
+  points: number;
+  fixture_score: string;
+}> {
+  const rows: Array<{
+    player_id: number;
+    player_name: string;
+    player_image_url?: string | null;
+    action: string;
+    points: number;
+    fixture_score: string;
+    weight: number;
+  }> = [];
+
+  const append = (players: LineupPlayer[], teamScore: number, oppScore: number) => {
+    players.forEach((player) => {
+      const starts = Number(startsByPlayerId[player.player_id] || 0);
+      const statMap: Record<StatKey, number> = {
+        goals_scored: Number(player.goals_scored || 0),
+        assists: Number(player.assists || 0),
+        starts,
+        penalties_saved: Number(player.penalties_saved || 0),
+        yellow_cards: Number(player.yellow_cards || 0),
+        red_cards: Number(player.red_cards || 0),
+        clean_sheets: hasCompletedCleanSheet(player) ? 1 : 0,
+        defensive_returns: hasDefensiveReturn(player) ? 1 : 0,
+      };
+
+      const key = STAT_PRIORITY.find((k) => statMap[k] > 0);
+      if (!key) return;
+
+      rows.push({
+        player_id: player.player_id,
+        player_name: player.player_name,
+        player_image_url: player.player_image_url || null,
+        action: `${STAT_LABELS[key]}${statMap[key] > 1 ? ` x${statMap[key]}` : ""}`,
+        points: asRounded(player.effective_points),
+        fixture_score: `${asRounded(teamScore)}-${asRounded(oppScore)}`,
+        weight: STAT_PRIORITY.indexOf(key),
+      });
+    });
+  };
+
+  const team1Score = computeLeagueLiveScore(payload.team_1.lineup || []);
+  const team2Score = computeLeagueLiveScore(payload.team_2.lineup || []);
+
+  append(payload.team_1.lineup || [], team1Score, team2Score);
+  append(payload.team_2.lineup || [], team2Score, team1Score);
+
+  return rows
+    .sort((a, b) => a.weight - b.weight || b.points - a.points || a.player_name.localeCompare(b.player_name))
+    .slice(0, limit)
+    .map(({ weight: _weight, ...rest }) => rest);
+}
+
+export default function LivePlayerUpdates() {
+  const [rows, setRows] = useState<UpdateRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [gameweek, setGameweek] = useState<number | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  const previousRef = useRef<Record<string, PlayerSnapshot>>({});
+
+  const load = useCallback(async (silent = false) => {
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
+
+    try {
+      const matchupsUrl = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-matchups`;
+      const matchupsRes = await fetch(matchupsUrl, { headers: getSupabaseFunctionHeaders() });
+      const matchupsPayload: MatchupsResponse = await matchupsRes.json();
+
+      if (!matchupsRes.ok || (matchupsPayload as any)?.error) {
+        throw new Error((matchupsPayload as any)?.error?.message || "Failed to fetch matchups");
+      }
+
+      setGameweek(matchupsPayload.gameweek);
+
+      const liveUrl = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/api/live?event=${matchupsPayload.gameweek}`;
+      const liveRes = await fetch(liveUrl, { headers: getSupabaseFunctionHeaders() });
+      const livePayload: LiveDataResponse | null = liveRes.ok ? await liveRes.json() : null;
+      const startsByPlayerId: Record<number, number> = {};
+      (livePayload?.elements || []).forEach((el) => {
+        startsByPlayerId[el.element] = Number(el.stats?.starts || 0);
+      });
+
+      const detailPayloads = await Promise.all(
+        (matchupsPayload.matchups || []).map(async (m) => {
+          const params = new URLSearchParams({
+            type: "league",
+            gameweek: String(m.gameweek || matchupsPayload.gameweek),
+            team1: String(m.team_1_id),
+            team2: String(m.team_2_id),
+          });
+          const detailUrl = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/fixtures/matchup?${params.toString()}`;
+          const detailRes = await fetch(detailUrl, { headers: getSupabaseFunctionHeaders() });
+          if (!detailRes.ok) return null;
+          const payload = await detailRes.json();
+          if (payload?.error) return null;
+          return payload as MatchupPayload;
+        }),
+      );
+
+      const current: Record<string, PlayerSnapshot> = {};
+      detailPayloads.filter(Boolean).forEach((payload) => {
+        if (!payload) return;
+        const t1 = asRounded(computeLeagueLiveScore(payload.team_1.lineup || []));
+        const t2 = asRounded(computeLeagueLiveScore(payload.team_2.lineup || []));
+
+        payload.team_1.lineup.forEach((p) => {
+          const key = `${payload.team_1.manager_name}-${p.player_id}`;
+          current[key] = {
+            key,
+            player_id: p.player_id,
+            player_name: p.player_name,
+            player_image_url: p.player_image_url || null,
+            manager_name: payload.team_1.manager_name,
+            team_score: t1,
+            opp_score: t2,
+            points: asRounded(p.effective_points),
+            goals_scored: Number(p.goals_scored || 0),
+            assists: Number(p.assists || 0),
+            starts: Number(startsByPlayerId[p.player_id] || 0),
+            penalties_saved: Number(p.penalties_saved || 0),
+            yellow_cards: Number(p.yellow_cards || 0),
+            red_cards: Number(p.red_cards || 0),
+            clean_sheets: hasCompletedCleanSheet(p) ? 1 : 0,
+            defensive_returns: hasDefensiveReturn(p) ? 1 : 0,
+          };
+        });
+
+        payload.team_2.lineup.forEach((p) => {
+          const key = `${payload.team_2.manager_name}-${p.player_id}`;
+          current[key] = {
+            key,
+            player_id: p.player_id,
+            player_name: p.player_name,
+            player_image_url: p.player_image_url || null,
+            manager_name: payload.team_2.manager_name,
+            team_score: t2,
+            opp_score: t1,
+            points: asRounded(p.effective_points),
+            goals_scored: Number(p.goals_scored || 0),
+            assists: Number(p.assists || 0),
+            starts: Number(startsByPlayerId[p.player_id] || 0),
+            penalties_saved: Number(p.penalties_saved || 0),
+            yellow_cards: Number(p.yellow_cards || 0),
+            red_cards: Number(p.red_cards || 0),
+            clean_sheets: hasCompletedCleanSheet(p) ? 1 : 0,
+            defensive_returns: hasDefensiveReturn(p) ? 1 : 0,
+          };
+        });
+      });
+
+      const now = Date.now();
+      const nextRows: UpdateRow[] = [];
+      const previous = previousRef.current;
+
+      const statKeys: StatKey[] = [
+        "goals_scored",
+        "assists",
+        "starts",
+        "penalties_saved",
+        "yellow_cards",
+        "red_cards",
+        "clean_sheets",
+        "defensive_returns",
+      ];
+
+      Object.values(current).forEach((snapshot) => {
+        const oldSnapshot = previous[snapshot.key];
+        statKeys.forEach((key) => {
+          const nextValue = Number(snapshot[key] || 0);
+          const previousValue = Number(oldSnapshot?.[key] || 0);
+          const delta = nextValue - previousValue;
+          if (delta <= 0) return;
+          nextRows.push({
+            id: `${snapshot.key}-${key}-${now}-${delta}`,
+            at: now,
+            player_id: snapshot.player_id,
+            player_name: snapshot.player_name,
+            player_image_url: snapshot.player_image_url,
+            manager_name: snapshot.manager_name,
+            action: `${STAT_LABELS[key]}${delta > 1 ? ` +${delta}` : ""}`,
+            points: snapshot.points,
+            fixture_score: `${snapshot.team_score}-${snapshot.opp_score}`,
+          });
+        });
+      });
+
+      if (nextRows.length > 0) {
+        setRows((prev) => [...nextRows, ...prev].slice(0, MAX_ROWS));
+      }
+
+      previousRef.current = current;
+      setLastUpdated(now);
+      setError(null);
+    } catch (err: any) {
+      if (!silent) {
+        setError(err?.message || "Failed to load live updates");
+      }
+    } finally {
+      if (!silent) {
+        setLoading(false);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const run = async (silent = false) => {
+      if (!mounted) return;
+      await load(silent);
+    };
+
+    run(false);
+    const timer = window.setInterval(() => {
+      run(true);
+    }, POLL_INTERVAL_MS);
+
+    return () => {
+      mounted = false;
+      window.clearInterval(timer);
+    };
+  }, [load]);
+
+  const visibleRows = useMemo(() => rows.slice(0, 12), [rows]);
+
+  if (loading) {
+    return (
+      <Card className="p-4">
+        <h3 className="text-lg font-semibold">Latest Updates</h3>
+        <p className="mt-2 text-sm text-muted-foreground">Loading live player updates...</p>
+      </Card>
+    );
+  }
+
+  if (error) {
+    return (
+      <Card className="p-4">
+        <h3 className="text-lg font-semibold">Latest Updates</h3>
+        <p className="mt-2 text-sm text-destructive">{error}</p>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="p-4">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div>
+          <h3 className="text-lg font-semibold">Latest Updates</h3>
+          <p className="text-xs text-muted-foreground">
+            {gameweek ? `GW ${gameweek}` : "Live"} highlights for owned players
+          </p>
+        </div>
+        {lastUpdated ? <p className="text-[11px] text-muted-foreground">Updated {new Date(lastUpdated).toLocaleTimeString()}</p> : null}
+      </div>
+
+      {visibleRows.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No live stat events yet. Updates will appear as games progress.</p>
+      ) : (
+        <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
+          {visibleRows.map((row) => (
+            <div key={row.id} className="grid grid-cols-[2.5rem_1fr_auto] items-center gap-2 rounded-md border bg-background/70 p-2">
+              <img
+                src={sanitizeImageUrl(row.player_image_url) || avatarFallback(row.player_name)}
+                alt={row.player_name}
+                className="h-9 w-9 rounded-full object-cover border"
+                onError={(event) => {
+                  (event.currentTarget as HTMLImageElement).src = avatarFallback(row.player_name);
+                }}
+              />
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">{row.player_name}</p>
+                <p className="truncate text-xs text-muted-foreground">{row.action} • {row.manager_name}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-xs font-semibold">{row.points} pts</p>
+                <p className="text-[11px] text-muted-foreground">{row.fixture_score}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}

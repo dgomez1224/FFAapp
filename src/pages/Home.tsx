@@ -9,6 +9,7 @@ import LeagueStandings from "../components/LeagueStandings";
 import GobletStandings from "../components/GobletStandings";
 import { ThisWeekMatchups } from "../components/ThisWeekMatchups";
 import SeasonStatLeaders from "../components/SeasonStatLeaders";
+import LivePlayerUpdates from "../components/LivePlayerUpdates";
 
 export default function Home() {
   return (
@@ -22,6 +23,7 @@ export default function Home() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <LeagueStandings />
+        <LivePlayerUpdates />
         <GobletStandings />
         <SeasonStatLeaders />
       </div>

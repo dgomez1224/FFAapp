@@ -37,10 +37,10 @@ const POSITION_NAMES: Record<number, string> = {
 
 // Formation positions (4-3-3)
 const FORMATION_Y: Record<number, number> = {
-  1: 84,
-  2: 68,
+  1: 82,
+  2: 64,
   3: 46,
-  4: 24,
+  4: 28,
 };
 
 export function FootballPitch({ players, onPlayerClick, showCaptain = true }: FootballPitchProps) {
@@ -49,32 +49,21 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
     `https://ui-avatars.com/api/?name=${encodeURIComponent(name || "Player")}&background=1f2937&color=ffffff&size=128&bold=true`;
 
   React.useEffect(() => {
-    const canLoadImage = (url: string) =>
-      new Promise<boolean>((resolve) => {
-        const img = new Image();
-        img.onload = () => resolve(true);
-        img.onerror = () => resolve(false);
-        img.src = url;
-      });
-
     async function loadImages() {
       const images: Record<number, string | null> = {};
       await Promise.all(
         players.map(async (player) => {
-          if (player.player_image_url) {
-            const isValid = await canLoadImage(player.player_image_url);
-            if (isValid) {
-              images[player.player_id] = player.player_image_url;
-              return;
-            }
+          const directImageUrl = String(player.player_image_url || "").replace(/^http:\/\//i, "https://");
+          if (directImageUrl) {
+            images[player.player_id] = directImageUrl;
+            return;
           }
           const byIdOrName = await getPlayerImageByIdOrName(player.player_id, player.player_name);
-          if (byIdOrName && await canLoadImage(byIdOrName)) {
+          if (byIdOrName) {
             images[player.player_id] = byIdOrName;
             return;
           }
-          const byName = await getPlayerImage(player.player_name);
-          images[player.player_id] = byName && await canLoadImage(byName) ? byName : null;
+          images[player.player_id] = await getPlayerImage(player.player_name);
         }),
       );
       setPlayerImages(images);
@@ -158,7 +147,7 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
               >
                 {/* Player circle with image */}
                 <div
-                  className={`relative w-12 h-12 rounded-full border-2 overflow-hidden flex items-center justify-center transition-transform group-hover:scale-110 ${
+                  className={`relative h-10 w-10 sm:h-12 sm:w-12 rounded-full border-2 overflow-hidden flex items-center justify-center transition-transform group-hover:scale-110 ${
                     isCaptain ? "border-amber-400 ring-2 ring-amber-300" : "border-white"
                   }`}
                   style={{
@@ -171,13 +160,14 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
                       alt={player.player_name}
                       className="w-full h-full object-cover"
                       onError={async () => {
-                        const current = playerImages[player.player_id] || null;
-                        const fallbackByName = await getPlayerImage(player.player_name);
-                        const next =
-                          fallbackByName && fallbackByName !== current
-                            ? fallbackByName
-                            : avatarFallbackUrl(player.player_name);
-                        setPlayerImages((prev) => ({ ...prev, [player.player_id]: next }));
+                        const fallbackUrl = await getPlayerImageByIdOrName(player.player_id, player.player_name);
+                        setPlayerImages((prev) => ({
+                          ...prev,
+                          [player.player_id]:
+                            fallbackUrl && fallbackUrl !== imageUrl
+                              ? fallbackUrl
+                              : avatarFallbackUrl(player.player_name),
+                        }));
                       }}
                     />
                   ) : (
@@ -194,14 +184,14 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
                       ⚡
                     </div>
                   )}
-                </div>
 
-                <div className="absolute top-full mt-1 left-1/2 -translate-x-1/2 rounded bg-black/55 px-1.5 py-0.5 text-[10px] text-white">
-                  {Math.round(player.effective_points)} pts
+                  <div className="absolute inset-x-1 bottom-0.5 rounded bg-black/60 px-1 py-0.5 text-center text-[9px] font-semibold leading-none text-white">
+                    {Math.round(player.effective_points)} pts
+                  </div>
                 </div>
 
                 {/* Player info tooltip */}
-                <div className="absolute -bottom-16 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white text-xs rounded px-2 py-1 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+                <div className="absolute -bottom-20 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white text-xs rounded px-2 py-1 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
                   <div className="font-bold">{player.player_name}</div>
                   <div>{POSITION_NAMES[player.position]}</div>
                   <div className="text-yellow-300">{Math.round(player.effective_points)} pts</div>

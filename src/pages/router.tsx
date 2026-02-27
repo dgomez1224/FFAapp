@@ -5,7 +5,7 @@
  * Auth-related routes (Login, Signup, AuthCallback) have been removed.
  */
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate, Link, useLocation, useNavigate } from "react-router-dom";
 import { LiveDashboard } from "../components/LiveDashboard";
 import { BracketView } from "../components/BracketView";
@@ -34,6 +34,8 @@ import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { contrastText, ensureReadableText, extractPaletteFromImage, mix, rgbCss } from "../lib/colorPalette";
 import leagueTrophy from "../assets/trophies/League Cup Icon.png";
+import { Button } from "../components/ui/button";
+import { MoreHorizontal } from "lucide-react";
 
 function RequireCaptainSignIn({ children }: { children: React.ReactElement }) {
   const location = useLocation();
@@ -51,6 +53,21 @@ function Shell() {
   const location = useLocation();
   const isFullBleedRoute = location.pathname === "/standings-by-gameweek";
   const [token, setToken] = useState<string | null>(() => getCaptainSessionToken());
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const mobileMenuRef = useRef<HTMLDivElement | null>(null);
+  const mobileRoutes = [
+    { label: "League", path: "/league-standings" },
+    { label: "Goblet", path: "/goblet" },
+    { label: "Managers", path: "/managers" },
+    { label: "Players", path: "/players" },
+    { label: "Fixtures", path: "/fixtures" },
+    { label: "Legacy", path: "/legacy-home" },
+    { label: "Legacy GW", path: "/legacy-gameweek-standings" },
+    { label: "GW Standings", path: "/standings-by-gameweek" },
+    { label: "Bracket", path: "/bracket" },
+    { label: "Pick Captain", path: "/pick-captain" },
+    { label: "My Page", path: "/my-page" },
+  ];
 
   useEffect(() => {
     const syncSessionToken = () => {
@@ -64,6 +81,23 @@ function Shell() {
       window.removeEventListener("storage", syncSessionToken);
     };
   }, []);
+
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+    const handleOutside = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node | null;
+      if (!mobileMenuRef.current || !target) return;
+      if (!mobileMenuRef.current.contains(target)) {
+        setMobileMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleOutside);
+    document.addEventListener("touchstart", handleOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleOutside);
+      document.removeEventListener("touchstart", handleOutside);
+    };
+  }, [mobileMenuOpen]);
 
   const handleHeaderSignOut = async () => {
     try {
@@ -183,7 +217,7 @@ function Shell() {
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col">
       <header className="border-b">
-        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4">
+        <div className="mx-auto flex min-h-16 max-w-6xl items-center justify-between gap-3 px-4 py-2">
           <Link to="/dashboard" className="group text-lg font-semibold inline-flex items-center gap-2 hover:opacity-90">
             <img
               src={leagueTrophy}
@@ -192,7 +226,8 @@ function Shell() {
             />
             League of Lads
           </Link>
-          <nav className="flex gap-4 text-sm flex-wrap">
+
+          <nav className="hidden flex-wrap gap-4 text-sm lg:flex">
             <Link to="/league-standings" className="hover:underline">
               League
             </Link>
@@ -236,6 +271,61 @@ function Shell() {
               My Page
             </Link>
           </nav>
+
+          <div ref={mobileMenuRef} className="relative lg:hidden">
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label="Open routes"
+              onClick={() => setMobileMenuOpen((prev) => !prev)}
+            >
+              <MoreHorizontal className="h-5 w-5" />
+            </Button>
+
+            {mobileMenuOpen ? (
+              <div className="absolute right-0 top-full z-50 mt-2 w-56 max-h-80 overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md">
+                <div className="px-2 py-1.5 text-sm font-medium">Routes</div>
+                <div className="my-1 h-px bg-border" />
+                {mobileRoutes.map((route) => (
+                  <button
+                    key={route.path}
+                    type="button"
+                    onClick={() => {
+                      navigate(route.path);
+                      setMobileMenuOpen(false);
+                    }}
+                    className="flex w-full items-center rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+                  >
+                    {route.label}
+                  </button>
+                ))}
+                <div className="my-1 h-px bg-border" />
+                {token ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleHeaderSignOut();
+                      setMobileMenuOpen(false);
+                    }}
+                    className="flex w-full items-center rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+                  >
+                    Sign Out
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigate("/sign-in");
+                      setMobileMenuOpen(false);
+                    }}
+                    className="flex w-full items-center rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+                  >
+                    Sign In
+                  </button>
+                )}
+              </div>
+            ) : null}
+          </div>
         </div>
       </header>
       <main className="flex-1">

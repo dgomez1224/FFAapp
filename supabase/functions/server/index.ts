@@ -466,6 +466,36 @@ function toCanonicalPlayerSurname(value: unknown): string {
   return tokens.length > 0 ? tokens[tokens.length - 1] : "";
 }
 
+function resolvePlayerImageUrl(player: any): string | null {
+  const directCandidates = [
+    player?.image_url,
+    player?.photo_url,
+    player?.photo,
+    player?.headshot,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  for (const candidate of directCandidates) {
+    if (/^https?:\/\//i.test(candidate)) {
+      return candidate.replace(/^http:\/\//i, "https://");
+    }
+  }
+
+  const photoRaw = String(player?.photo || "").trim();
+  const codeRaw = photoRaw || String(player?.code || "").trim();
+  if (!codeRaw) return null;
+
+  const code = codeRaw
+    .replace(/^https?:\/\/[^/]+\/.*\/p/i, "")
+    .replace(/\.(jpg|jpeg|png|webp)$/i, "")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .trim();
+
+  if (!code) return null;
+  return `https://resources.premierleague.com/premierleague/photos/players/250x250/p${code}.png`;
+}
+
 function extractDraftPlayerMap(bootstrap: any) {
   const rawElements = normalizeDraftList<any>(
     bootstrap?.elements?.data ??
@@ -482,11 +512,7 @@ function extractDraftPlayerMap(bootstrap: any) {
       String(
         fullName || (p?.name ?? p?.web_name),
       ).trim() || `Player ${id}`;
-    const photoRaw = String(p?.photo || "").trim();
-    const photoCode = photoRaw ? photoRaw.replace(/\.(jpg|jpeg|png)$/i, "") : String(p?.code || "").trim();
-    const imageUrl = photoCode
-      ? `https://resources.premierleague.com/premierleague/photos/players/250x250/p${photoCode}.png`
-      : null;
+    const imageUrl = resolvePlayerImageUrl(p);
     map[id] = {
       id,
       name,
@@ -6769,8 +6795,9 @@ fixturesHub.get("/matchup", async (c) => {
     const lineup1 = mapLineup(picks1?.picks, team1Id);
     const lineup2 = mapLineup(picks2?.picks, team2Id);
 
-    const total1 = lineup1.reduce((sum, p) => sum + coerceNumber(p.effective_points), 0);
-    const total2 = lineup2.reduce((sum, p) => sum + coerceNumber(p.effective_points), 0);
+    const includePlayerPoints = (player: any) => type === "cup" || !player?.is_bench;
+    const total1 = lineup1.reduce((sum, p) => sum + (includePlayerPoints(p) ? coerceNumber(p.effective_points) : 0), 0);
+    const total2 = lineup2.reduce((sum, p) => sum + (includePlayerPoints(p) ? coerceNumber(p.effective_points) : 0), 0);
 
     const scoreFromRows = (() => {
       if (type === "cup" && cupRow) {
@@ -6954,7 +6981,10 @@ fixturesHub.get("/lineup", async (c) => {
       current_gameweek: currentGw,
       has_started: hasStarted,
       captain_player_id: captainPlayerId || null,
-      total_points: lineup.reduce((sum: number, row: any) => sum + coerceNumber(row.effective_points), 0),
+      total_points: lineup.reduce(
+        (sum: number, row: any) => sum + ((type === "cup" || !row?.is_bench) ? coerceNumber(row.effective_points) : 0),
+        0,
+      ),
       team: {
         id: String(team.id),
         entry_id: String(team.entry_id),

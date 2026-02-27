@@ -204,13 +204,20 @@ export default function MatchupDetailPage() {
   const [data, setData] = useState<Payload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
 
   useEffect(() => {
-    async function load() {
+    let mounted = true;
+
+    async function load(silent = false) {
       if (!type || !gameweek || !team1 || !team2) return;
       try {
-        setLoading(true);
-        setError(null);
+        if (!silent) {
+          setLoading(true);
+        }
+        if (!silent || !data) {
+          setError(null);
+        }
         const params = new URLSearchParams({
           type,
           gameweek,
@@ -226,21 +233,46 @@ export default function MatchupDetailPage() {
         if (!res.ok || payload?.error) {
           throw new Error(payload?.error?.message || "Failed to load matchup detail");
         }
+        if (!mounted) return;
         setData(payload);
+        setLastUpdated(Date.now());
       } catch (err: any) {
-        setError(err.message || "Failed to load matchup detail");
+        if (!mounted) return;
+        if (!silent) {
+          setError(err.message || "Failed to load matchup detail");
+        }
       } finally {
-        setLoading(false);
+        if (!mounted) return;
+        if (!silent) {
+          setLoading(false);
+        }
       }
     }
-    load();
+
+    load(false);
+    const timer = window.setInterval(() => {
+      load(true);
+    }, 10000);
+
+    return () => {
+      mounted = false;
+      window.clearInterval(timer);
+    };
   }, [type, gameweek, team1, team2, searchParams]);
 
   if (loading) return <Card className="p-6"><p className="text-sm text-muted-foreground">Loading matchup…</p></Card>;
   if (error || !data) return <Card className="p-6"><p className="text-sm text-destructive">{error || "Failed to load matchup"}</p></Card>;
 
-  const team1Points = data.matchup.team_1_points ?? data.matchup.live_team_1_points;
-  const team2Points = data.matchup.team_2_points ?? data.matchup.live_team_2_points;
+  const leagueLiveTeam1 = (data.team_1.lineup || []).reduce(
+    (sum, player) => sum + (player.is_bench ? 0 : Number(player.effective_points || 0)),
+    0,
+  );
+  const leagueLiveTeam2 = (data.team_2.lineup || []).reduce(
+    (sum, player) => sum + (player.is_bench ? 0 : Number(player.effective_points || 0)),
+    0,
+  );
+  const team1Points = data.type === "league" ? leagueLiveTeam1 : (data.matchup.team_1_points ?? data.matchup.live_team_1_points);
+  const team2Points = data.type === "league" ? leagueLiveTeam2 : (data.matchup.team_2_points ?? data.matchup.live_team_2_points);
   const team1Score = Math.round(team1Points);
   const team2Score = Math.round(team2Points);
 
@@ -251,6 +283,9 @@ export default function MatchupDetailPage() {
           ← Back to Fixtures
         </Link>
         <h1 className="text-3xl font-bold mt-2">{data.type === "cup" ? "Cup Matchup" : "League Matchup"} • GW {data.gameweek}</h1>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Live updates every 10s{lastUpdated ? ` • Last refresh ${new Date(lastUpdated).toLocaleTimeString()}` : ""}
+        </p>
         <div className="mt-3 grid grid-cols-[1fr_auto_1fr] gap-4 items-center">
           <div className="text-right">
             <p className="font-semibold inline-flex items-center gap-2 justify-end">

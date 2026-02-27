@@ -11,6 +11,7 @@ import GobletStandings from "../components/GobletStandings";
 import { ThisWeekMatchups } from "../components/ThisWeekMatchups";
 import SeasonStatLeaders from "../components/SeasonStatLeaders";
 import { ThisWeeksWaivers } from "../components/ThisWeeksWaivers";
+import LivePlayerUpdates from "../components/LivePlayerUpdates";
 
 export default function DashboardPage() {
   return (
@@ -24,6 +25,7 @@ export default function DashboardPage() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <LeagueStandings />
+        <LivePlayerUpdates />
         <GobletStandings />
         <SeasonStatLeaders />
       </div>

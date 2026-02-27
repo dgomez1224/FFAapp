@@ -1,14 +1,7 @@
 /**
- * Player Image Fetching Utility
- * Fetches player images from the web using Bing Image Search
+ * Player image lookup utility.
+ * Uses official Premier League bootstrap data and avoids third-party scraping.
  */
-
-interface ImageSearchResult {
-  image?: {
-    contentUrl: string;
-  };
-  contentUrl?: string;
-}
 
 interface ImageCache {
   [playerName: string]: string | null;
@@ -16,111 +9,113 @@ interface ImageCache {
 
 const imageCache: ImageCache = {};
 let officialPhotoByPlayerId: Record<number, string> | null = null;
+let officialPhotoByName: Record<string, string> | null = null;
 
-async function loadOfficialPhotoMap() {
-  if (officialPhotoByPlayerId) return officialPhotoByPlayerId;
-  try {
-    const res = await fetch("https://fantasy.premierleague.com/api/bootstrap-static/");
-    if (!res.ok) throw new Error("Failed bootstrap");
-    const payload = await res.json();
-    const map: Record<number, string> = {};
-    (payload?.elements || []).forEach((p: any) => {
-      const id = Number(p?.id);
-      const photo = String(p?.photo || "");
-      const code = photo.replace(".jpg", "").trim();
-      if (!id || !code) return;
-      map[id] = `https://resources.premierleague.com/premierleague/photos/players/250x250/p${code}.png`;
-    });
-    officialPhotoByPlayerId = map;
-    return map;
-  } catch {
-    officialPhotoByPlayerId = {};
-    return officialPhotoByPlayerId;
-  }
+function normalizeName(value: string) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-/**
- * Fetch a player image by searching the web
- * Returns a suitable image URL or null if not found
- */
+function buildOfficialPhotoUrl(photoValue: unknown, codeValue?: unknown) {
+  const raw = String(photoValue || "").trim();
+  if (/^https?:\/\//i.test(raw)) return raw.replace(/^http:\/\//i, "https://");
+  const fallbackCode = String(codeValue || "").trim();
+  const code = (raw || fallbackCode)
+    .replace(/^https?:\/\/[^/]+\/.*\/p/i, "")
+    .replace(/\.(jpg|jpeg|png|webp)$/i, "")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .trim();
+  if (!code) return null;
+  return `https://resources.premierleague.com/premierleague/photos/players/250x250/p${code}.png`;
+}
+
+function applyBootstrapMap(payload: any, byId: Record<number, string>, byName: Record<string, string>) {
+  if (!Array.isArray(payload?.elements)) return;
+
+  payload.elements.forEach((player: any) => {
+    const id = Number(player?.id);
+    const imageUrl = buildOfficialPhotoUrl(player?.photo || player?.image_url || player?.photo_url, player?.code);
+    if (!id || !imageUrl) return;
+
+    byId[id] = imageUrl;
+
+    const names = [
+      player?.web_name,
+      `${player?.first_name || ""} ${player?.second_name || ""}`.trim(),
+      player?.second_name,
+    ]
+      .map((name) => normalizeName(String(name || "")))
+      .filter(Boolean);
+
+    names.forEach((name) => {
+      if (!byName[name]) byName[name] = imageUrl;
+    });
+  });
+}
+
+async function loadOfficialPhotoMap() {
+  if (officialPhotoByPlayerId && officialPhotoByName) return officialPhotoByPlayerId;
+
+  const byId: Record<number, string> = {};
+  const byName: Record<string, string> = {};
+
+  try {
+    const draftRes = await fetch("https://draft.premierleague.com/api/bootstrap-static");
+    if (draftRes.ok) {
+      const draftPayload = await draftRes.json();
+      applyBootstrapMap(draftPayload, byId, byName);
+    }
+  } catch {
+    // Continue with classic source.
+  }
+
+  try {
+    const classicRes = await fetch("https://fantasy.premierleague.com/api/bootstrap-static/");
+    if (classicRes.ok) {
+      const classicPayload = await classicRes.json();
+      applyBootstrapMap(classicPayload, byId, byName);
+    }
+  } catch {
+    // Use any map entries already loaded.
+  }
+
+  officialPhotoByPlayerId = byId;
+  officialPhotoByName = byName;
+  return officialPhotoByPlayerId;
+}
+
 export async function fetchPlayerImage(playerName: string): Promise<string | null> {
-  // Check cache first
   if (playerName in imageCache) {
     return imageCache[playerName];
   }
 
   try {
-    // Use Bing Image Search API (free tier available)
-    const searchQuery = `${playerName} football player headshot`;
-    const response = await fetch(
-      `https://api.bing.microsoft.com/v7.0/images/search?q=${encodeURIComponent(searchQuery)}&count=1&mkt=en-US`,
-      {
-        headers: {
-          "Ocp-Apim-Subscription-Key": process.env.REACT_APP_BING_IMAGE_SEARCH_KEY || "",
-        },
+    await loadOfficialPhotoMap();
+    const lookupKey = normalizeName(playerName);
+    let official = officialPhotoByName?.[lookupKey] || null;
+    if (!official) {
+      const surname = lookupKey.split(" ").filter(Boolean).pop() || "";
+      if (surname) {
+        const fuzzyMatch = Object.entries(officialPhotoByName || {}).find(([name]) => {
+          const parts = name.split(" ").filter(Boolean);
+          return parts[parts.length - 1] === surname;
+        });
+        official = fuzzyMatch?.[1] || null;
       }
-    );
-
-    if (!response.ok) {
-      // Fallback: Try a simpler approach with DuckDuckGo (no API key needed)
-      return await fetchPlayerImageFromDuckDuckGo(playerName);
     }
-
-    const data = await response.json();
-    const imageUrl = data?.value?.[0]?.contentUrl;
-
-    if (imageUrl) {
-      imageCache[playerName] = imageUrl;
-      return imageUrl;
-    }
-
-    // If Bing fails, try DuckDuckGo
-    return await fetchPlayerImageFromDuckDuckGo(playerName);
-  } catch (error) {
-    console.error(`Failed to fetch image for ${playerName}:`, error);
+    imageCache[playerName] = official;
+    return official;
+  } catch {
     imageCache[playerName] = null;
     return null;
   }
 }
 
-/**
- * Fallback image search using DuckDuckGo's image proxy
- * More reliable and doesn't require API key
- */
-async function fetchPlayerImageFromDuckDuckGo(playerName: string): Promise<string | null> {
-  try {
-    const searchQuery = `${playerName} football player`;
-    // Using a public image search endpoint that works without authentication
-    const proxyUrl = `https://duckduckgo.com/i.js?q=${encodeURIComponent(searchQuery)}&v=7`;
-
-    const response = await fetch(proxyUrl);
-    if (!response.ok) {
-      imageCache[playerName] = null;
-      return null;
-    }
-
-    const data = await response.json();
-    const imageUrl = data?.results?.[0]?.image;
-
-    if (imageUrl) {
-      imageCache[playerName] = imageUrl;
-      return imageUrl;
-    }
-
-    // Last resort: construct a generic image URL
-    // This won't work but prevents errors
-    imageCache[playerName] = null;
-    return null;
-  } catch (error) {
-    console.error(`DuckDuckGo search failed for ${playerName}:`, error);
-    imageCache[playerName] = null;
-    return null;
-  }
-}
-
-/**
- * Get cached player image or fetch if not cached
- */
 export async function getPlayerImage(playerName: string): Promise<string | null> {
   if (playerName in imageCache) {
     return imageCache[playerName];
@@ -131,25 +126,19 @@ export async function getPlayerImage(playerName: string): Promise<string | null>
 export async function getPlayerImageByIdOrName(playerId: number, playerName: string): Promise<string | null> {
   try {
     const map = await loadOfficialPhotoMap();
-    const official = map[playerId] || null;
-    if (official) return official;
+    const officialById = map[playerId] || null;
+    if (officialById) return officialById;
   } catch {
-    // Fall through to name-based lookup.
+    // Fall through to name lookup.
   }
   return getPlayerImage(playerName);
 }
 
-/**
- * Preload multiple player images
- */
 export async function preloadPlayerImages(playerNames: string[]): Promise<void> {
   const uncachedNames = playerNames.filter((name) => !(name in imageCache));
   await Promise.all(uncachedNames.map((name) => fetchPlayerImage(name)));
 }
 
-/**
- * Clear image cache
- */
 export function clearImageCache(): void {
   Object.keys(imageCache).forEach((key) => delete imageCache[key]);
 }
