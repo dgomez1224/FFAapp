@@ -478,7 +478,16 @@ function resolvePlayerImageUrl(player: any): string | null {
 
   for (const candidate of directCandidates) {
     if (/^https?:\/\//i.test(candidate)) {
-      return candidate.replace(/^http:\/\//i, "https://");
+      const httpsUrl = candidate.replace(/^http:\/\//i, "https://");
+      const fromUrlCode = httpsUrl
+        .replace(/^https?:\/\/[^/]+\/.*\/p/i, "")
+        .replace(/\.(jpg|jpeg|png|webp)$/i, "")
+        .replace(/[^a-zA-Z0-9]/g, "")
+        .trim();
+      if (fromUrlCode) {
+        return `https://fantasy.premierleague.com/dist/img/photos/players/250x250/p${fromUrlCode}.png`;
+      }
+      return httpsUrl;
     }
   }
 
@@ -493,7 +502,7 @@ function resolvePlayerImageUrl(player: any): string | null {
     .trim();
 
   if (!code) return null;
-  return `https://resources.premierleague.com/premierleague/photos/players/250x250/p${code}.png`;
+  return `https://fantasy.premierleague.com/dist/img/photos/players/250x250/p${code}.png`;
 }
 
 function extractDraftPlayerMap(bootstrap: any) {
