@@ -26,6 +26,8 @@ type CaptainContext = {
   players: CaptainPlayer[];
   selected_captain_id: number | null;
   selected_captain_name: string | null;
+  selected_vice_captain_id: number | null;
+  selected_vice_captain_name: string | null;
 };
 
 export default function PickCaptain() {
@@ -36,6 +38,7 @@ export default function PickCaptain() {
   const [success, setSuccess] = useState<string | null>(null);
   const [context, setContext] = useState<CaptainContext | null>(null);
   const [captainId, setCaptainId] = useState<number | null>(null);
+  const [viceCaptainId, setViceCaptainId] = useState<number | null>(null);
   const [selectedPlayer, setSelectedPlayer] = useState<PlayerStats | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
 
@@ -57,6 +60,14 @@ export default function PickCaptain() {
       }
       setContext(payload);
       setCaptainId(payload.selected_captain_id ?? null);
+      setViceCaptainId(payload.selected_vice_captain_id ?? null);
+      if ((payload.selected_vice_captain_id ?? null) && !payload.selected_vice_captain_name) {
+        const resolvedViceName =
+          (payload.players || []).find((p: CaptainPlayer) => p.id === payload.selected_vice_captain_id)?.name || null;
+        if (resolvedViceName) {
+          setContext((prev) => (prev ? { ...prev, selected_vice_captain_name: resolvedViceName } : prev));
+        }
+      }
     } catch (err: any) {
       setError(err?.message || "Failed to load captain context");
     } finally {
@@ -69,8 +80,12 @@ export default function PickCaptain() {
   }, []);
 
   const handleSave = async () => {
-    if (!token || !captainId) {
-      setError("Please choose a captain.");
+    if (!token || !captainId || !viceCaptainId) {
+      setError("Please choose both a captain and vice-captain.");
+      return;
+    }
+    if (captainId === viceCaptainId) {
+      setError("Captain and vice-captain must be different players.");
       return;
     }
     setSaving(true);
@@ -87,13 +102,18 @@ export default function PickCaptain() {
         body: JSON.stringify({
           token,
           captain_player_id: captainId,
+          vice_captain_player_id: viceCaptainId,
         }),
       });
       const payload = await res.json();
       if (!res.ok || payload?.error) {
         throw new Error(payload?.error?.message || "Failed to save captain");
       }
-      setSuccess(`Captain saved for GW${payload.gameweek}: ${payload.captain_name}`);
+      const captainName = (context?.players || []).find((p) => p.id === captainId)?.name || payload?.captain_name || `Player ${captainId}`;
+      const viceName = (context?.players || []).find((p) => p.id === viceCaptainId)?.name || payload?.vice_captain_name || `Player ${viceCaptainId}`;
+      setSuccess(
+        `Captaincy saved for GW${payload.gameweek}: C ${captainName} / VC ${viceName}`,
+      );
       await loadContext();
     } catch (err: any) {
       setError(err?.message || "Failed to save captain");
@@ -129,7 +149,7 @@ export default function PickCaptain() {
     raw_points: 0,
     effective_points: 0,
     is_captain: p.id === captainId,
-    is_vice_captain: false,
+    is_vice_captain: p.id === viceCaptainId,
     is_cup_captain: p.id === captainId,
     multiplier: p.id === captainId ? 2 : 1,
   })) as PitchPlayer[];
@@ -155,7 +175,7 @@ export default function PickCaptain() {
         raw_points: 0,
         effective_points: 0,
         is_captain: player.is_captain,
-        is_vice_captain: false,
+        is_vice_captain: player.is_vice_captain,
         is_cup_captain: player.is_cup_captain,
         multiplier: player.multiplier,
         goals_scored: (payload.history || [])[0]?.goals ?? 0,
@@ -185,6 +205,11 @@ export default function PickCaptain() {
 
   const handleSelectCaptainFromModal = (playerId: number) => {
     setCaptainId(playerId);
+    setSelectedPlayer(null);
+  };
+
+  const handleSelectViceCaptainFromModal = (playerId: number) => {
+    setViceCaptainId(playerId);
     setSelectedPlayer(null);
   };
 
@@ -228,11 +253,14 @@ export default function PickCaptain() {
         <FootballPitch players={pitchPlayers} onPlayerClick={handlePlayerClick} showCaptain={true} />
 
         <div className="mt-5 flex items-center gap-2">
-          <Button onClick={handleSave} disabled={saving || !captainId}>
-            {saving ? "Saving..." : "Save Captain"}
+          <Button onClick={handleSave} disabled={saving || !captainId || !viceCaptainId || captainId === viceCaptainId}>
+            {saving ? "Saving..." : "Save Captains"}
           </Button>
           {context.selected_captain_name && (
-            <p className="text-sm text-muted-foreground">Current selection: {context.selected_captain_name}</p>
+            <p className="text-sm text-muted-foreground">
+              Current selection: C {context.selected_captain_name}
+              {context.selected_vice_captain_name ? ` / VC ${context.selected_vice_captain_name}` : ""}
+            </p>
           )}
         </div>
 
@@ -252,6 +280,7 @@ export default function PickCaptain() {
         onClose={() => setSelectedPlayer(null)}
         showHistory={true}
         onSelectCaptain={handleSelectCaptainFromModal}
+        onSelectViceCaptain={handleSelectViceCaptainFromModal}
       />
     </div>
   );

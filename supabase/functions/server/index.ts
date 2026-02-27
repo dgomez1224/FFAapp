@@ -5911,12 +5911,24 @@ captainPicks.get("/context", async (c) => {
       })
       .filter((p: any) => Number.isInteger(p.id));
 
-    const { data: existingSelection } = await supabase
-      .from("cup_captain_selections")
-      .select("captain_player_id, captain_name, gameweek, updated_at")
-      .eq("team_id", session.team_id)
-      .eq("gameweek", targetGameweek)
-      .maybeSingle();
+    let existingSelection: any = null;
+    try {
+      const { data } = await supabase
+        .from("cup_captain_selections")
+        .select("captain_player_id, captain_name, vice_captain_player_id, vice_captain_name, gameweek, updated_at")
+        .eq("team_id", session.team_id)
+        .eq("gameweek", targetGameweek)
+        .maybeSingle();
+      existingSelection = data || null;
+    } catch {
+      const { data } = await supabase
+        .from("cup_captain_selections")
+        .select("captain_player_id, captain_name, gameweek, updated_at")
+        .eq("team_id", session.team_id)
+        .eq("gameweek", targetGameweek)
+        .maybeSingle();
+      existingSelection = data || null;
+    }
 
     const { data: team } = await supabase
       .from("teams")
@@ -5935,6 +5947,8 @@ captainPicks.get("/context", async (c) => {
       players,
       selected_captain_id: existingSelection?.captain_player_id ?? null,
       selected_captain_name: existingSelection?.captain_name ?? null,
+      selected_vice_captain_id: existingSelection?.vice_captain_player_id ?? null,
+      selected_vice_captain_name: existingSelection?.vice_captain_name ?? null,
       selected_updated_at: existingSelection?.updated_at ?? null,
     });
   } catch (err: any) {
@@ -5947,8 +5961,11 @@ captainPicks.post("/select", async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const token = String(body?.token || "").trim();
     const captainPlayerId = parsePositiveInt(body?.captain_player_id);
+    const viceCaptainPlayerId = parsePositiveInt(body?.vice_captain_player_id);
     if (!token) return jsonError(c, 400, "Missing token");
     if (!captainPlayerId) return jsonError(c, 400, "Invalid captain_player_id");
+    if (!viceCaptainPlayerId) return jsonError(c, 400, "Invalid vice_captain_player_id");
+    if (viceCaptainPlayerId === captainPlayerId) return jsonError(c, 400, "Captain and vice captain must be different");
 
     const supabase = getSupabaseAdmin();
     const session = await resolveCaptainSession(supabase, token);
@@ -5970,26 +5987,46 @@ captainPicks.post("/select", async (c) => {
     if (!squadIds.has(captainPlayerId)) {
       return jsonError(c, 400, "Captain must be selected from this manager's squad");
     }
+    if (!squadIds.has(viceCaptainPlayerId)) {
+      return jsonError(c, 400, "Vice captain must be selected from this manager's squad");
+    }
 
     const bootstrap = await fetchDraftBootstrap();
     const playersById = extractDraftPlayerMap(bootstrap);
     const captainName = playersById[captainPlayerId]?.name || `Player ${captainPlayerId}`;
+    const viceCaptainName = playersById[viceCaptainPlayerId]?.name || `Player ${viceCaptainPlayerId}`;
 
-    const { error: upsertError } = await supabase
-      .from("cup_captain_selections")
-      .upsert(
-        {
-          team_id: session.team_id,
-          manager_name: session.manager_name,
-          entry_id: squad.entryId,
-          gameweek: targetGameweek,
-          captain_player_id: captainPlayerId,
-          captain_name: captainName,
-          squad_event: squad.event,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "team_id,gameweek" },
+    let upsertError: any = null;
+    try {
+      const { error } = await supabase
+        .from("cup_captain_selections")
+        .upsert(
+          {
+            team_id: session.team_id,
+            manager_name: session.manager_name,
+            entry_id: squad.entryId,
+            gameweek: targetGameweek,
+            captain_player_id: captainPlayerId,
+            captain_name: captainName,
+            vice_captain_player_id: viceCaptainPlayerId,
+            vice_captain_name: viceCaptainName,
+            squad_event: squad.event,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "team_id,gameweek" },
+        );
+      upsertError = error;
+    } catch (err: any) {
+      upsertError = err;
+    }
+
+    if (upsertError && String(upsertError?.message || "").toLowerCase().includes("vice_captain")) {
+      return jsonError(
+        c,
+        500,
+        "Vice captain fields are missing in cup_captain_selections. Run migration 202602271930_add_vice_captain_to_cup_selections.sql",
       );
+    }
 
     if (upsertError) {
       return jsonError(c, 500, "Failed to save captain selection", upsertError.message);
@@ -6001,6 +6038,8 @@ captainPicks.post("/select", async (c) => {
       gameweek: targetGameweek,
       captain_player_id: captainPlayerId,
       captain_name: captainName,
+      vice_captain_player_id: viceCaptainPlayerId,
+      vice_captain_name: viceCaptainName,
     });
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to save captain selection");
@@ -6565,7 +6604,7 @@ fixturesHub.get("/matchup", async (c) => {
         .maybeSingle();
       currentGw = parsePositiveInt(seasonState?.current_gameweek) || currentGw;
     }
-    const cupCaptainByTeam: Record<string, number> = {};
+    const cupCaptainByTeam: Record<string, { captain: number; vice: number }> = {};
     let rankMap: Record<string, number> = {};
     let team1: any = null;
     let team2: any = null;
@@ -6670,7 +6709,7 @@ fixturesHub.get("/matchup", async (c) => {
           .in("id", [team1Id, team2Id]),
         supabase
           .from("cup_captain_selections")
-          .select("team_id, captain_player_id")
+          .select("team_id, captain_player_id, vice_captain_player_id")
           .in("team_id", [team1Id, team2Id])
           .eq("gameweek", gameweek),
       ]);
@@ -6678,7 +6717,10 @@ fixturesHub.get("/matchup", async (c) => {
         return jsonError(c, 500, "Failed to fetch teams", teamsRes.error.message);
       }
       (cupSelectionRes.data || []).forEach((row: any) => {
-        cupCaptainByTeam[String(row.team_id)] = coerceNumber(row.captain_player_id);
+        cupCaptainByTeam[String(row.team_id)] = {
+          captain: coerceNumber(row.captain_player_id),
+          vice: coerceNumber(row.vice_captain_player_id),
+        };
       });
       const teamMap: Record<string, any> = {};
       (teamsRes.data || []).forEach((t: any) => {
@@ -6763,8 +6805,14 @@ fixturesHub.get("/matchup", async (c) => {
             ? Number((pick as any).event_points)
             : 0;
         const rawPoints = hasLive ? coerceNumber(liveMap[playerId], 0) : pickPoints;
-        const cupCaptainId = cupCaptainByTeam[teamId] || 0;
-        const isCupCaptain = type === "cup" && hasStarted && cupCaptainId > 0 && cupCaptainId === playerId;
+        const cupSelection = cupCaptainByTeam[teamId] || { captain: 0, vice: 0 };
+        const cupCaptainId = cupSelection.captain;
+        const cupViceId = cupSelection.vice;
+        const captainMinutes = coerceNumber(liveStatsMap[cupCaptainId]?.minutes, 0);
+        const promotedVice = cupCaptainId > 0 && captainMinutes <= 0 && cupViceId > 0 ? cupViceId : 0;
+        const activeCaptainId = promotedVice || cupCaptainId || cupViceId;
+        const isCupCaptain = type === "cup" && hasStarted && activeCaptainId > 0 && activeCaptainId === playerId;
+        const isCupVice = type === "cup" && cupViceId > 0 && cupViceId === playerId;
         const effectivePoints = rawPoints * (isCupCaptain ? 2 : 1);
         const stats = liveStatsMap[playerId] || {};
         return {
@@ -6775,7 +6823,7 @@ fixturesHub.get("/matchup", async (c) => {
           lineup_slot: lineupSlot || null,
           is_bench: isBench,
           is_captain: !!pick.is_captain,
-          is_vice_captain: !!pick.is_vice_captain,
+          is_vice_captain: !!pick.is_vice_captain || isCupVice,
           is_cup_captain: isCupCaptain,
           raw_points: rawPoints,
           multiplier: isCupCaptain ? 2 : 1,
@@ -6904,14 +6952,16 @@ fixturesHub.get("/lineup", async (c) => {
     }
 
     let captainPlayerId = 0;
+    let viceCaptainPlayerId = 0;
     if (type === "cup") {
       const { data: captainRow } = await supabase
         .from("cup_captain_selections")
-        .select("captain_player_id")
+        .select("captain_player_id, vice_captain_player_id")
         .eq("team_id", teamId)
         .eq("gameweek", gameweek)
         .maybeSingle();
       captainPlayerId = coerceNumber(captainRow?.captain_player_id);
+      viceCaptainPlayerId = coerceNumber(captainRow?.vice_captain_player_id);
     }
 
     const picks = await fetchDraftPicksForEntries([String(team.entry_id)], gameweek, true);
@@ -6954,7 +7004,11 @@ fixturesHub.get("/lineup", async (c) => {
       const isBench = lineupSlot > 11;
       const hasLive = Object.prototype.hasOwnProperty.call(liveMap, playerId);
       const rawPoints = hasLive ? coerceNumber(liveMap[playerId], 0) : coerceNumber(pick.points, 0);
-      const isCupCaptain = type === "cup" && hasStarted && captainPlayerId > 0 && playerId === captainPlayerId;
+      const captainMinutes = coerceNumber(liveStatsMap[captainPlayerId]?.minutes, 0);
+      const promotedVice = captainPlayerId > 0 && captainMinutes <= 0 && viceCaptainPlayerId > 0 ? viceCaptainPlayerId : 0;
+      const activeCaptainId = promotedVice || captainPlayerId || viceCaptainPlayerId;
+      const isCupCaptain = type === "cup" && hasStarted && activeCaptainId > 0 && playerId === activeCaptainId;
+      const isCupVice = type === "cup" && viceCaptainPlayerId > 0 && playerId === viceCaptainPlayerId;
       const effectivePoints = rawPoints * (isCupCaptain ? 2 : 1);
       const stats = liveStatsMap[playerId] || {};
       return {
@@ -6965,7 +7019,7 @@ fixturesHub.get("/lineup", async (c) => {
         lineup_slot: lineupSlot || null,
         is_bench: isBench,
         is_captain: !!pick.is_captain,
-        is_vice_captain: !!pick.is_vice_captain,
+        is_vice_captain: !!pick.is_vice_captain || isCupVice,
         is_cup_captain: isCupCaptain,
         raw_points: rawPoints,
         multiplier: isCupCaptain ? 2 : 1,
@@ -6982,6 +7036,7 @@ fixturesHub.get("/lineup", async (c) => {
       current_gameweek: currentGw,
       has_started: hasStarted,
       captain_player_id: captainPlayerId || null,
+      vice_captain_player_id: viceCaptainPlayerId || null,
       total_points: lineup.reduce(
         (sum: number, row: any) => sum + ((type === "cup" || !row?.is_bench) ? coerceNumber(row.effective_points) : 0),
         0,

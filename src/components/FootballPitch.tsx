@@ -101,7 +101,8 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
     };
   };
 
-  const hasActiveMultiplier = showCaptain && players.some((p) => !!p.is_cup_captain && p.multiplier > 1);
+  const hasActiveCaptainOrVice =
+    showCaptain && players.some((p) => (!!p.is_cup_captain && p.multiplier > 1) || !!p.is_vice_captain);
 
   return (
     <div className="relative w-full bg-gradient-to-b from-green-500 to-green-600 rounded-lg overflow-hidden">
@@ -133,6 +134,7 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
             const pos = getPlayerPosition(parseInt(position), playerIdx);
             const imageUrl = playerImages[player.player_id];
             const isCaptain = showCaptain && player.is_cup_captain && player.multiplier > 1;
+            const isViceCaptain = showCaptain && !isCaptain && !!player.is_vice_captain;
 
             return (
               <button
@@ -148,10 +150,18 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
                 {/* Player circle with image */}
                 <div
                   className={`relative h-10 w-10 sm:h-12 sm:w-12 rounded-full border-2 overflow-hidden flex items-center justify-center transition-transform group-hover:scale-110 ${
-                    isCaptain ? "border-amber-400 ring-2 ring-amber-300" : "border-white"
+                    isCaptain
+                      ? "border-amber-400 ring-2 ring-amber-300"
+                      : isViceCaptain
+                      ? "border-sky-400 ring-2 ring-sky-300"
+                      : "border-white"
                   }`}
                   style={{
-                    background: isCaptain ? "rgba(251, 191, 36, 0.2)" : "rgba(255, 255, 255, 0.1)",
+                    background: isCaptain
+                      ? "rgba(251, 191, 36, 0.2)"
+                      : isViceCaptain
+                      ? "rgba(56, 189, 248, 0.2)"
+                      : "rgba(255, 255, 255, 0.1)",
                   }}
                 >
                   {imageUrl ? (
@@ -184,6 +194,11 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
                       ⚡
                     </div>
                   )}
+                  {isViceCaptain && (
+                    <div className="absolute -top-1 -right-1 bg-sky-500 text-white text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                      V
+                    </div>
+                  )}
 
                   <div className="absolute inset-x-1 bottom-0.5 rounded bg-black/60 px-1 py-0.5 text-center text-[9px] font-semibold leading-none text-white">
                     {Math.round(player.effective_points)} pts
@@ -203,9 +218,10 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
       </div>
 
       {/* Legend */}
-      {hasActiveMultiplier && (
-        <div className="absolute bottom-2 left-2 text-xs text-white bg-black/40 rounded px-2 py-1">
+      {hasActiveCaptainOrVice && (
+        <div className="absolute bottom-2 left-2 text-xs text-white bg-black/40 rounded px-2 py-1 space-y-0.5">
           <div>⚡ = Captain</div>
+          <div>V = Vice Captain</div>
         </div>
       )}
     </div>

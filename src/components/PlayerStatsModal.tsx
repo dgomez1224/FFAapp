@@ -55,6 +55,7 @@ interface PlayerStatsModalProps {
   onClose: () => void;
   showHistory?: boolean;
   onSelectCaptain?: (playerId: number) => void;
+  onSelectViceCaptain?: (playerId: number) => void;
   showEffectivePoints?: boolean;
 }
 
@@ -64,6 +65,7 @@ export function PlayerStatsModal({
   onClose,
   showHistory = false,
   onSelectCaptain,
+  onSelectViceCaptain,
   showEffectivePoints = true,
 }: PlayerStatsModalProps) {
   if (!isOpen) return null;
@@ -185,6 +187,11 @@ export function PlayerStatsModal({
             {onSelectCaptain && (
               <Button onClick={() => onSelectCaptain(player.player_id)} className="w-full" variant="secondary">
                 Select As Captain
+              </Button>
+            )}
+            {onSelectViceCaptain && (
+              <Button onClick={() => onSelectViceCaptain(player.player_id)} className="w-full" variant="secondary">
+                Select As Vice Captain
               </Button>
             )}
             <Button onClick={onClose} className="w-full mt-0" variant="outline">
