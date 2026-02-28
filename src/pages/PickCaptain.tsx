@@ -43,6 +43,10 @@ export default function PickCaptain() {
   const [historyLoading, setHistoryLoading] = useState(false);
 
   const token = useMemo(() => getCaptainSessionToken(), []);
+  const toPositiveIntOrNull = (value: unknown): number | null => {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
+  };
 
   const loadContext = async () => {
     if (!token) {
@@ -58,12 +62,29 @@ export default function PickCaptain() {
       if (!res.ok || payload?.error) {
         throw new Error(payload?.error?.message || "Failed to load captain context");
       }
-      setContext(payload);
-      setCaptainId(payload.selected_captain_id ?? null);
-      setViceCaptainId(payload.selected_vice_captain_id ?? null);
-      if ((payload.selected_vice_captain_id ?? null) && !payload.selected_vice_captain_name) {
+      const normalizedPlayers: CaptainPlayer[] = (payload.players || [])
+        .map((p: any) => ({
+          id: toPositiveIntOrNull(p?.id) ?? 0,
+          name: String(p?.name || "").trim() || `Player ${p?.id}`,
+          image_url: p?.image_url || null,
+          team: toPositiveIntOrNull(p?.team),
+          position: toPositiveIntOrNull(p?.position),
+        }))
+        .filter((p: CaptainPlayer) => p.id > 0);
+      const normalizedCaptainId = toPositiveIntOrNull(payload.selected_captain_id);
+      const normalizedViceCaptainId = toPositiveIntOrNull(payload.selected_vice_captain_id);
+      const normalizedContext: CaptainContext = {
+        ...payload,
+        players: normalizedPlayers,
+        selected_captain_id: normalizedCaptainId,
+        selected_vice_captain_id: normalizedViceCaptainId,
+      };
+      setContext(normalizedContext);
+      setCaptainId(normalizedCaptainId);
+      setViceCaptainId(normalizedViceCaptainId);
+      if (normalizedViceCaptainId && !payload.selected_vice_captain_name) {
         const resolvedViceName =
-          (payload.players || []).find((p: CaptainPlayer) => p.id === payload.selected_vice_captain_id)?.name || null;
+          normalizedPlayers.find((p: CaptainPlayer) => p.id === normalizedViceCaptainId)?.name || null;
         if (resolvedViceName) {
           setContext((prev) => (prev ? { ...prev, selected_vice_captain_name: resolvedViceName } : prev));
         }
@@ -221,6 +242,16 @@ export default function PickCaptain() {
     }
     setError(null);
     setCaptainId(playerId);
+    setContext((prev) =>
+      prev
+        ? {
+            ...prev,
+            selected_captain_id: playerId,
+            selected_captain_name:
+              (prev.players || []).find((p) => p.id === playerId)?.name || prev.selected_captain_name || null,
+          }
+        : prev,
+    );
     setSelectedPlayer(null);
   };
 
@@ -231,6 +262,16 @@ export default function PickCaptain() {
     }
     setError(null);
     setViceCaptainId(playerId);
+    setContext((prev) =>
+      prev
+        ? {
+            ...prev,
+            selected_vice_captain_id: playerId,
+            selected_vice_captain_name:
+              (prev.players || []).find((p) => p.id === playerId)?.name || prev.selected_vice_captain_name || null,
+          }
+        : prev,
+    );
     setSelectedPlayer(null);
   };
 
