@@ -114,6 +114,17 @@ export default function PickCaptain() {
       setSuccess(
         `Captaincy saved for GW${payload.gameweek}: C ${captainName} / VC ${viceName}`,
       );
+      setContext((prev) =>
+        prev
+          ? {
+              ...prev,
+              selected_captain_id: captainId,
+              selected_captain_name: captainName,
+              selected_vice_captain_id: viceCaptainId,
+              selected_vice_captain_name: viceName,
+            }
+          : prev,
+      );
       await loadContext();
     } catch (err: any) {
       setError(err?.message || "Failed to save captain");
@@ -204,14 +215,33 @@ export default function PickCaptain() {
   };
 
   const handleSelectCaptainFromModal = (playerId: number) => {
+    if (playerId === viceCaptainId) {
+      setError("Captain and vice-captain must be different players.");
+      return;
+    }
+    setError(null);
     setCaptainId(playerId);
     setSelectedPlayer(null);
   };
 
   const handleSelectViceCaptainFromModal = (playerId: number) => {
+    if (playerId === captainId) {
+      setError("Captain and vice-captain must be different players.");
+      return;
+    }
+    setError(null);
     setViceCaptainId(playerId);
     setSelectedPlayer(null);
   };
+
+  const selectedCaptainName =
+    (context?.players || []).find((p) => p.id === captainId)?.name ||
+    context?.selected_captain_name ||
+    null;
+  const selectedViceCaptainName =
+    (context?.players || []).find((p) => p.id === viceCaptainId)?.name ||
+    context?.selected_vice_captain_name ||
+    null;
 
   if (loading) {
     return (
@@ -256,10 +286,11 @@ export default function PickCaptain() {
           <Button onClick={handleSave} disabled={saving || !captainId || !viceCaptainId || captainId === viceCaptainId}>
             {saving ? "Saving..." : "Save Captains"}
           </Button>
-          {context.selected_captain_name && (
+          {(selectedCaptainName || selectedViceCaptainName) && (
             <p className="text-sm text-muted-foreground">
-              Current selection: C {context.selected_captain_name}
-              {context.selected_vice_captain_name ? ` / VC ${context.selected_vice_captain_name}` : ""}
+              Current selection:
+              {selectedCaptainName ? ` C ${selectedCaptainName}` : " C -"}
+              {selectedViceCaptainName ? ` / VC ${selectedViceCaptainName}` : " / VC -"}
             </p>
           )}
         </div>
