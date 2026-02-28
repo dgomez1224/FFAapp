@@ -506,7 +506,7 @@ function resolvePlayerImageUrl(player: any): string | null {
     .trim();
 
   if (!code) return null;
-  return `https://resources.premierleague.com/premierleague/photos/players/250x250/p${code}.png`;
+  return `https://resources.premierleague.com/premierleague/photos/players/110x140/p${code}.png`;
 }
 
 function extractDraftPlayerMap(bootstrap: any) {
@@ -2501,126 +2501,261 @@ cupGroupStage.get("/", async (c) => {
 
 const gobletStandings = new Hono();
 
-/** Sync h2h_matchups and goblet_standings with live points for current GW. Call before reading ranks or goblet. */
-async function syncH2hAndGobletWithLive(supabase: ReturnType<typeof getSupabaseAdmin>): Promise<void> {
-  let currentEvent: number | null = null;
+/** Resolve current gameweek from Draft bootstrap. */
+async function resolveCurrentGameweek(): Promise<number | null> {
   try {
     const bootstrap = await fetchDraftBootstrap();
-    currentEvent = extractDraftCurrentEventId(bootstrap);
+    return extractDraftCurrentEventId(bootstrap);
   } catch {
-    return;
-  }
-  if (currentEvent == null || currentEvent < 1) return;
-  try {
-    const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
-    const entries = normalizeDraftList<any>(details?.league_entries);
-    const matches = normalizeDraftList<any>(details?.matches);
-    const entryIds = entries.map((e: any) => String(e?.entry_id ?? e?.entry ?? "")).filter(Boolean);
-    if (entryIds.length === 0 || (matches || []).length === 0) return;
-    const { data: dbTeams } = await supabase.from("teams").select("id, entry_id").in("entry_id", entryIds);
-    const teamIdByEntryId: Record<string, string> = {};
-    (dbTeams || []).forEach((t: any) => { teamIdByEntryId[String(t.entry_id)] = t.id; });
-    const draftIdToTeamId: Record<string, string> = {};
-    entries.forEach((e: any) => {
-      const draftId = e?.id ?? e?.league_entry_id ?? e?.entry_id ?? e?.entry;
-      const fplEntryId = String(e?.entry_id ?? e?.entry ?? "");
-      const uuid = teamIdByEntryId[fplEntryId];
-      if (draftId != null && uuid) draftIdToTeamId[String(draftId)] = uuid;
-    });
-    let liveEntryPoints: Record<string, number> = {};
-    try {
-      const livePayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${currentEvent}/live`);
-      const liveMap = extractLivePointsMap(livePayload);
-      const currentGwEntryIds = new Set<string>();
-      matches.forEach((m: any) => {
-        if (coerceNumber(m.event) !== currentEvent) return;
-        const e1 = String(m.league_entry_1 ?? m.entry_1 ?? m.home ?? "");
-        const e2 = String(m.league_entry_2 ?? m.entry_2 ?? m.away ?? "");
-        if (e1) currentGwEntryIds.add(e1);
-        if (e2) currentGwEntryIds.add(e2);
-      });
-      const picksResults = await Promise.all(
-        Array.from(currentGwEntryIds).map(async (entryId) => {
-          try {
-            const picksRes = await fetchJSON<any>(`${DRAFT_BASE_URL}/entry/${entryId}/event/${currentEvent}`);
-            const picks = normalizeDraftList<any>(picksRes?.picks ?? []);
-            let total = 0;
-            picks.forEach((pick: any) => {
-              const pos = coerceNumber(pick.position, 0);
-              if (pos >= 1 && pos <= 11) {
-                const el = parsePositiveInt(pick?.element ?? pick?.element_id ?? pick?.player_id);
-                if (el) total += coerceNumber(liveMap[el], 0);
-              }
-            });
-            return { entryId, total };
-          } catch {
-            return { entryId, total: 0 };
-          }
-        }),
-      );
-      picksResults.forEach((r) => { liveEntryPoints[r.entryId] = r.total; });
-    } catch {
-      liveEntryPoints = {};
-    }
-    const h2hRows: any[] = [];
-    matches.forEach((m: any) => {
-      const gw = coerceNumber(m.event);
-      const id1 = draftIdToTeamId[String(m.league_entry_1 ?? m.entry_1 ?? m.home)];
-      const id2 = draftIdToTeamId[String(m.league_entry_2 ?? m.entry_2 ?? m.away)];
-      if (!id1 || !id2) return;
-      const e1Key = String(m.league_entry_1 ?? m.entry_1 ?? m.home ?? "");
-      const e2Key = String(m.league_entry_2 ?? m.entry_2 ?? m.away ?? "");
-      const useLive = gw === currentEvent && Object.keys(liveEntryPoints).length > 0;
-      const p1 = useLive
-        ? coerceNumber(liveEntryPoints[e1Key], coerceNumber(m.league_entry_1_points ?? m.score_1 ?? m.home_score, 0))
-        : coerceNumber(m.league_entry_1_points ?? m.score_1 ?? m.home_score);
-      const p2 = useLive
-        ? coerceNumber(liveEntryPoints[e2Key], coerceNumber(m.league_entry_2_points ?? m.score_2 ?? m.away_score, 0))
-        : coerceNumber(m.league_entry_2_points ?? m.score_2 ?? m.away_score);
-      const winnerId = p1 > p2 ? id1 : p2 > p1 ? id2 : null;
-      h2hRows.push({ team_1_id: id1, team_2_id: id2, gameweek: gw, team_1_points: p1, team_2_points: p2, winner_id: winnerId, updated_at: new Date().toISOString() });
-    });
-    if (h2hRows.length > 0) {
-      await supabase.from("h2h_matchups").upsert(h2hRows, { onConflict: "team_1_id,team_2_id,gameweek" });
-    }
-    const pointsByTeamGw: Record<string, Record<number, number>> = {};
-    matches.forEach((m: any) => {
-      const gw = coerceNumber(m.event);
-      const id1 = draftIdToTeamId[String(m.league_entry_1 ?? m.entry_1 ?? m.home)];
-      const id2 = draftIdToTeamId[String(m.league_entry_2 ?? m.entry_2 ?? m.away)];
-      if (!id1 || !id2) return;
-      const e1Key = String(m.league_entry_1 ?? m.entry_1 ?? m.home ?? "");
-      const e2Key = String(m.league_entry_2 ?? m.entry_2 ?? m.away ?? "");
-      const useLive = gw === currentEvent && Object.keys(liveEntryPoints).length > 0;
-      const p1 = useLive
-        ? coerceNumber(liveEntryPoints[e1Key], coerceNumber(m.league_entry_1_points ?? m.score_1 ?? m.home_score, 0))
-        : coerceNumber(m.league_entry_1_points ?? m.score_1 ?? m.home_score);
-      const p2 = useLive
-        ? coerceNumber(liveEntryPoints[e2Key], coerceNumber(m.league_entry_2_points ?? m.score_2 ?? m.away_score, 0))
-        : coerceNumber(m.league_entry_2_points ?? m.score_2 ?? m.away_score);
-      if (!pointsByTeamGw[id1]) pointsByTeamGw[id1] = {};
-      if (!pointsByTeamGw[id2]) pointsByTeamGw[id2] = {};
-      pointsByTeamGw[id1][gw] = (pointsByTeamGw[id1][gw] || 0) + p1;
-      pointsByTeamGw[id2][gw] = (pointsByTeamGw[id2][gw] || 0) + p2;
-    });
-    const gobletRows: any[] = [];
-    Object.entries(pointsByTeamGw).forEach(([tid, byGw]) => {
-      let total = 0;
-      Object.entries(byGw).sort((a, b) => a[0].localeCompare(b[0])).forEach(([gwStr, pts]) => {
-        const gw = Number(gwStr);
-        total += pts;
-        gobletRows.push({ team_id: tid, round: gw, points: pts, total_points: total, updated_at: new Date().toISOString() });
-      });
-    });
-    if (gobletRows.length > 0) {
-      await supabase.from("goblet_standings").upsert(gobletRows, { onConflict: "team_id,round" });
-    }
-  } catch {
-    // Non-fatal
+    return null;
   }
 }
 
+/** Fetch draft league matches and map any match key (draft id, league_entry_id, entry_id) -> team_id (UUID). */
+async function fetchDraftMatches(supabase: ReturnType<typeof getSupabaseAdmin>): Promise<{
+  matches: any[];
+  entryIdToTeamId: Record<string, string>;
+}> {
+  const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
+  const entries = normalizeDraftList<any>(details?.league_entries ?? []);
+  const matches = normalizeDraftList<any>(details?.matches ?? []);
+  const fplEntryIds = entries.map((e: any) => String(e?.entry_id ?? e?.entry ?? "")).filter(Boolean);
+  const entryIdToTeamId: Record<string, string> = {};
+  if (fplEntryIds.length > 0) {
+    const { data: dbTeams } = await supabase.from("teams").select("id, entry_id").in("entry_id", fplEntryIds);
+    const fplToTeamId: Record<string, string> = {};
+    (dbTeams || []).forEach((t: any) => {
+      fplToTeamId[String(t.entry_id)] = t.id;
+    });
+    entries.forEach((e: any) => {
+      const teamId = fplToTeamId[String(e?.entry_id ?? e?.entry ?? "")];
+      if (!teamId) return;
+      const keys = [
+        e?.id,
+        e?.league_entry_id,
+        e?.entry_id,
+        e?.entry,
+      ].filter((v) => v != null && v !== "").map((v) => String(v));
+      keys.forEach((k) => { entryIdToTeamId[k] = teamId; });
+    });
+  }
+  return { matches, entryIdToTeamId };
+}
+
+/** Compute live points per entry for current GW only (starters only). */
+async function computeLiveEntryPoints(currentGw: number): Promise<Record<string, number>> {
+  console.log("🔥 computeLiveEntryPoints EXECUTED", currentGw);
+  const liveEntryPoints: Record<string, number> = {};
+  try {
+    const livePayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${currentGw}/live`);
+    const liveMap = extractLivePointsMap(livePayload);
+    const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
+    const matches = normalizeDraftList<any>(details?.matches ?? []);
+    const currentGwEntryIds = new Set<string>();
+    matches.forEach((m: any) => {
+      if (coerceNumber(m.event) !== currentGw) return;
+      const e1 = String(m.league_entry_1 ?? m.entry_1 ?? m.home ?? "");
+      const e2 = String(m.league_entry_2 ?? m.entry_2 ?? m.away ?? "");
+      if (e1) currentGwEntryIds.add(e1);
+      if (e2) currentGwEntryIds.add(e2);
+    });
+    const picksResults = await Promise.all(
+      Array.from(currentGwEntryIds).map(async (entryId) => {
+        try {
+          const picksRes = await fetchJSON<any>(`${DRAFT_BASE_URL}/entry/${entryId}/event/${currentGw}`);
+          const picks = normalizeDraftList<any>(picksRes?.picks ?? []);
+          let total = 0;
+          picks.forEach((pick: any) => {
+            const pos = coerceNumber(pick.position, 0);
+            if (pos >= 1 && pos <= 11) {
+              const el = parsePositiveInt(pick?.element ?? pick?.element_id ?? pick?.player_id);
+              if (el) total += coerceNumber(liveMap[el], 0);
+            }
+          });
+          return { entryId, total };
+        } catch {
+          return { entryId, total: 0 };
+        }
+      }),
+    );
+    picksResults.forEach((r) => { liveEntryPoints[r.entryId] = r.total; });
+  } catch {
+    // non-fatal
+  }
+  return liveEntryPoints;
+}
+
+/**
+ * Compute current-GW league fixture scores using the same formula as /fixtures/matchup:
+ * fetch picks per team, sum non-bench effective_points (live map or pick points).
+ * Returns a map keyed by "team1Id_team2Id" (draft ids) for lookup in fixtures route.
+ */
+async function computeLeagueMatchupStyleScores(
+  currentGw: number,
+  currentGwMatches: any[],
+  draftEntries: any[],
+): Promise<Record<string, { total1: number; total2: number }>> {
+  const result: Record<string, { total1: number; total2: number }> = {};
+  if (currentGw < 1 || !currentGwMatches.length) return result;
+
+  let liveMap: Record<number, number> = {};
+  try {
+    const livePayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${currentGw}/live`);
+    liveMap = extractLivePointsMap(livePayload);
+  } catch {
+    return result;
+  }
+
+  const draftIdToApiId: Record<string, string> = {};
+  draftEntries.forEach((e: any) => {
+    const apiId = String(e?.entry_id ?? e?.entry ?? "").trim();
+    if (!apiId) return;
+    const keys = [e?.id, e?.league_entry_id, e?.entry_id, e?.entry]
+      .filter((v) => v != null && v !== "")
+      .map((v) => String(v));
+    keys.forEach((k) => { draftIdToApiId[k] = apiId; });
+  });
+
+  const sumNonBenchFromPicks = (picks: any[] | undefined, live: Record<number, number>): number => {
+    return (picks || [])
+      .filter((p: any) => {
+        const pos = coerceNumber(p.position, 0);
+        return pos >= 1 && pos <= 11;
+      })
+      .reduce(
+        (sum: number, p: any) =>
+          sum + coerceNumber(live[coerceNumber(p.element)] ?? (p as any).points ?? 0, 0),
+        0,
+      );
+  };
+
+  for (const m of currentGwMatches) {
+    const e1 = String(m.league_entry_1 ?? m.entry_1 ?? m.home ?? "");
+    const e2 = String(m.league_entry_2 ?? m.entry_2 ?? m.away ?? "");
+    if (!e1 || !e2) continue;
+    const apiId1 = draftIdToApiId[e1] ?? e1;
+    const apiId2 = draftIdToApiId[e2] ?? e2;
+
+    const [res1, res2] = await Promise.all([
+      fetchDraftPicksForEntries([apiId1], currentGw, true),
+      fetchDraftPicksForEntries([apiId2], currentGw, true),
+    ]);
+
+    const total1 = sumNonBenchFromPicks(res1?.picks, liveMap);
+    const total2 = sumNonBenchFromPicks(res2?.picks, liveMap);
+    const key = `${e1}_${e2}`;
+    result[key] = { total1, total2 };
+  }
+
+  return result;
+}
+
+/** Rebuild goblet_standings from h2h_matchups only. Deterministic; no deletes. */
+async function rebuildGobletStandings(supabase: ReturnType<typeof getSupabaseAdmin>): Promise<void> {
+  const { data: matches, error } = await supabase
+    .from("h2h_matchups")
+    .select("team_1_id, team_2_id, gameweek, team_1_points, team_2_points");
+  if (error || !matches || matches.length === 0) return;
+
+  const byTeamByGw: Record<string, Record<number, number>> = {};
+  for (const m of matches) {
+    const t1 = String(m.team_1_id);
+    const t2 = String(m.team_2_id);
+    const gw = coerceNumber(m.gameweek);
+    const p1 = coerceNumber(m.team_1_points, 0);
+    const p2 = coerceNumber(m.team_2_points, 0);
+    if (!byTeamByGw[t1]) byTeamByGw[t1] = {};
+    if (!byTeamByGw[t2]) byTeamByGw[t2] = {};
+    byTeamByGw[t1][gw] = (byTeamByGw[t1][gw] ?? 0) + p1;
+    byTeamByGw[t2][gw] = (byTeamByGw[t2][gw] ?? 0) + p2;
+  }
+
+  const gobletRows: any[] = [];
+  for (const teamId of Object.keys(byTeamByGw)) {
+    let total = 0;
+    const gws = Object.keys(byTeamByGw[teamId])
+      .map(Number)
+      .sort((a, b) => a - b);
+    for (const gw of gws) {
+      const points = byTeamByGw[teamId][gw] ?? 0;
+      total += points;
+      gobletRows.push({
+        team_id: teamId,
+        round: gw,
+        points,
+        total_points: total,
+        updated_at: new Date().toISOString(),
+      });
+    }
+  }
+  if (gobletRows.length > 0) {
+    await supabase.from("goblet_standings").upsert(gobletRows, { onConflict: "team_id,round" });
+  }
+}
+
+/** Sync h2h_matchups and goblet_standings: live for current GW only, past GWs immutable. Idempotent. */
+async function syncGobletLive(supabase: ReturnType<typeof getSupabaseAdmin>): Promise<void> {
+  const currentGw = await resolveCurrentGameweek();
+  if (currentGw == null || currentGw < 1) return;
+
+  let matches: any[] = [];
+  let entryIdToTeamId: Record<string, string> = {};
+  try {
+    const out = await fetchDraftMatches(supabase);
+    matches = out.matches;
+    entryIdToTeamId = out.entryIdToTeamId;
+  } catch {
+    return;
+  }
+  if (matches.length === 0) return;
+
+  const liveEntryPoints = await computeLiveEntryPoints(currentGw);
+
+  const h2hRows: any[] = [];
+  for (const match of matches) {
+    const gw = coerceNumber(match.event);
+    const entry1Id = String(match.league_entry_1 ?? match.entry_1 ?? match.home ?? "");
+    const entry2Id = String(match.league_entry_2 ?? match.entry_2 ?? match.away ?? "");
+    const team1Id = entryIdToTeamId[entry1Id];
+    const team2Id = entryIdToTeamId[entry2Id];
+    if (!team1Id || !team2Id) continue;
+
+    const isCurrent = gw === currentGw;
+    const team1Points = isCurrent
+      ? coerceNumber(liveEntryPoints[entry1Id], coerceNumber(match.league_entry_1_points ?? match.score_1 ?? match.home_score, 0))
+      : coerceNumber(match.league_entry_1_points ?? match.score_1 ?? match.home_score, 0);
+    const team2Points = isCurrent
+      ? coerceNumber(liveEntryPoints[entry2Id], coerceNumber(match.league_entry_2_points ?? match.score_2 ?? match.away_score, 0))
+      : coerceNumber(match.league_entry_2_points ?? match.score_2 ?? match.away_score, 0);
+
+    const winner_id =
+      team1Points > team2Points ? team1Id : team2Points > team1Points ? team2Id : null;
+
+    h2hRows.push({
+      team_1_id: team1Id,
+      team_2_id: team2Id,
+      gameweek: gw,
+      team_1_points: team1Points,
+      team_2_points: team2Points,
+      winner_id,
+      updated_at: new Date().toISOString(),
+    });
+  }
+
+  if (h2hRows.length > 0) {
+    await supabase.from("h2h_matchups").upsert(h2hRows, { onConflict: "team_1_id,team_2_id,gameweek" });
+  }
+
+  await rebuildGobletStandings(supabase);
+}
+
+/** @deprecated Use syncGobletLive. Kept for callers that still use the old name. */
+async function syncH2hAndGobletWithLive(supabase: ReturnType<typeof getSupabaseAdmin>): Promise<void> {
+  return syncGobletLive(supabase);
+}
+
 gobletStandings.get("/", async (c) => {
+  console.log("📦 GOBLET ROUTE START");
   try {
     const gobletSort = (a: any, b: any) =>
       coerceNumber(b.points_for, 0) - coerceNumber(a.points_for, 0) ||
@@ -3637,30 +3772,9 @@ playerInsights.get("/", async (c) => {
       });
 
     if (!selections || selections.length === 0) {
-      const filtered = fullInsightsFromBootstrap.filter((row: any) => {
-        if (filterPosition && coerceNumber(row.position) !== filterPosition) return false;
-        if (filterTeam && coerceNumber(row.team) !== filterTeam) return false;
-        if (filterAvailability && String(row.availability || "").toLowerCase() !== filterAvailability) return false;
-        if (filterOwnership === "owned" && !(row.owned_by || []).length) return false;
-        if (filterOwnership === "unowned" && (row.owned_by || []).length) return false;
-        if (filterOwnership && filterOwnership !== "owned" && filterOwnership !== "unowned") {
-          const canonicalFilter = toCanonicalManagerName(filterOwnership) || filterOwnership.toUpperCase();
-          const ownedBy = (row.owned_by || []) as string[];
-          const ownedByManager = ownedBy.some(
-            (o) => toCanonicalManagerName(o) === canonicalFilter || String(o || "").toUpperCase() === canonicalFilter
-          );
-          if (!ownedByManager) return false;
-        }
-        if (!matchesAvgMinutesBucket(coerceNumber(row.minutes_per_game_played, 0), filterAvgMinutesBucket)) return false;
-        if (!matchesAvgMinutesRange(coerceNumber(row.minutes_per_game_played, 0))) return false;
-        if (filterSearch && !String(row.player_name || "").toLowerCase().includes(filterSearch)) return false;
-        return true;
-      });
-
-      const summaryDerived = await resolveSummaryDerived(
-        filtered.map((row: any) => coerceNumber(row.player_id)).filter((id: number) => id > 0),
-      );
-      const adjusted = filtered.map((row: any) => {
+      const allPlayerIds = fullInsightsFromBootstrap.map((row: any) => coerceNumber(row.player_id)).filter((id: number) => id > 0);
+      const summaryDerived = await resolveSummaryDerived(allPlayerIds);
+      const adjusted = fullInsightsFromBootstrap.map((row: any) => {
         const derived = summaryDerived[coerceNumber(row.player_id)];
         const games = derived?.games_played;
         if (!Number.isInteger(games)) return row;
@@ -3679,10 +3793,6 @@ playerInsights.get("/", async (c) => {
           average_points_away: derived?.average_points_away ?? row.average_points_away ?? null,
         };
       });
-      const finalAdjusted = adjusted.filter((row: any) => {
-        const mpg = coerceNumber(row.minutes_per_game_played, 0);
-        return matchesAvgMinutesBucket(mpg, filterAvgMinutesBucket) && matchesAvgMinutesRange(mpg);
-      });
 
       const managersList = await (async () => {
         const { data: teams } = await supabase.from("teams").select("manager_name");
@@ -3690,7 +3800,7 @@ playerInsights.get("/", async (c) => {
         return [...new Set(names)].sort((a, b) => a.localeCompare(b));
       })();
       return c.json({
-        insights: finalAdjusted,
+        insights: adjusted,
         managers: managersList,
         source: "fpl_bootstrap",
         debug: includeDebug ? { ownership: ownershipDebug } : undefined,
@@ -3760,30 +3870,9 @@ playerInsights.get("/", async (c) => {
       };
     });
 
-    const filtered = insights.filter((row: any) => {
-      if (filterPosition && coerceNumber(row.position) !== filterPosition) return false;
-      if (filterTeam && coerceNumber(row.team) !== filterTeam) return false;
-      if (filterAvailability && String(row.availability || "").toLowerCase() !== filterAvailability) return false;
-      if (filterOwnership === "owned" && !(row.owned_by || []).length) return false;
-      if (filterOwnership === "unowned" && (row.owned_by || []).length) return false;
-      if (filterOwnership && filterOwnership !== "owned" && filterOwnership !== "unowned") {
-        const canonicalFilter = toCanonicalManagerName(filterOwnership) || filterOwnership.toUpperCase();
-        const ownedBy = (row.owned_by || []) as string[];
-        const ownedByManager = ownedBy.some(
-          (o) => toCanonicalManagerName(o) === canonicalFilter || String(o || "").toUpperCase() === canonicalFilter
-        );
-        if (!ownedByManager) return false;
-      }
-      if (!matchesAvgMinutesBucket(coerceNumber(row.minutes_per_game_played, 0), filterAvgMinutesBucket)) return false;
-      if (!matchesAvgMinutesRange(coerceNumber(row.minutes_per_game_played, 0))) return false;
-      if (filterSearch && !String(row.player_name || "").toLowerCase().includes(filterSearch)) return false;
-      return true;
-    });
-
-    const summaryDerived = await resolveSummaryDerived(
-      filtered.map((row: any) => coerceNumber(row.player_id)).filter((id: number) => id > 0),
-    );
-    const adjusted = filtered.map((row: any) => {
+    const allPlayerIds = insights.map((row: any) => coerceNumber(row.player_id)).filter((id: number) => id > 0);
+    const summaryDerived = await resolveSummaryDerived(allPlayerIds);
+    const adjusted = insights.map((row: any) => {
       const derived = summaryDerived[coerceNumber(row.player_id)];
       const games = derived?.games_played;
       if (!Number.isInteger(games)) return row;
@@ -3802,10 +3891,6 @@ playerInsights.get("/", async (c) => {
         average_points_away: derived?.average_points_away ?? row.average_points_away ?? null,
       };
     });
-    const finalAdjusted = adjusted.filter((row: any) => {
-      const mpg = coerceNumber(row.minutes_per_game_played, 0);
-      return matchesAvgMinutesBucket(mpg, filterAvgMinutesBucket) && matchesAvgMinutesRange(mpg);
-    });
 
     const managersList = await (async () => {
       const { data: teams } = await supabase.from("teams").select("manager_name");
@@ -3813,7 +3898,7 @@ playerInsights.get("/", async (c) => {
       return [...new Set(names)].sort((a, b) => a.localeCompare(b));
     })();
     return c.json({
-      insights: finalAdjusted.sort((a: any, b: any) => coerceNumber(b.selected_count) - coerceNumber(a.selected_count)),
+      insights: adjusted.sort((a: any, b: any) => coerceNumber(b.selected_count) - coerceNumber(a.selected_count)),
       managers: managersList,
       source: "database",
       debug: includeDebug ? { ownership: ownershipDebug } : undefined,
@@ -4182,6 +4267,7 @@ h2hStandings.get("/", async (c) => {
 });
 
 h2hMatchups.get("/", async (c) => {
+  console.log("📦 THIS WEEK ROUTE START");
   try {
     const gameweekParam = c.req.query("gameweek");
     let gameweek = gameweekParam ? Number(gameweekParam) : 1;
@@ -5429,7 +5515,7 @@ liveData.get("/", async (c) => {
       explain: el.explain || [],
     }));
 
-    // Fetch fixtures for status
+    // Fetch fixtures for status (include kickoff_time for event-time sorting)
     const fixtureStatuses = normalizeDraftList<any>(liveData.fixtures).map((f: any) => ({
       id: f.id,
       started: !!f.started,
@@ -5437,6 +5523,7 @@ liveData.get("/", async (c) => {
       elapsed: f.minutes || f.elapsed || 0,
       team_h: f.team_h,
       team_a: f.team_a,
+      kickoff_time: f.kickoff_time ?? null,
     }));
 
     return c.json({
@@ -6551,6 +6638,7 @@ const fixturesHub = new Hono();
 const leagueActivity = new Hono();
 
 fixturesHub.get("/", async (c) => {
+  console.log("📦 FIXTURES ROUTE START");
   try {
     const supabase = getSupabaseAdmin();
     try {
@@ -6700,44 +6788,32 @@ fixturesHub.get("/", async (c) => {
 
     let fixturesLiveEntryPoints: Record<string, number> = {};
     if (currentGw != null && currentGw > 0) {
-      try {
-        const livePayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${currentGw}/live`);
-        const liveMap = extractLivePointsMap(livePayload);
-        const currentGwEntryIds = new Set<string>();
-        draftMatches.forEach((m: any) => {
-          if (coerceNumber(m.event) !== currentGw) return;
-          const e1 = String(m.league_entry_1 ?? m.entry_1 ?? m.home ?? "");
-          const e2 = String(m.league_entry_2 ?? m.entry_2 ?? m.away ?? "");
-          if (e1) currentGwEntryIds.add(e1);
-          if (e2) currentGwEntryIds.add(e2);
-        });
-        const picksResults = await Promise.all(
-          Array.from(currentGwEntryIds).map(async (entryId) => {
-            try {
-              const picksRes = await fetchJSON<any>(`${DRAFT_BASE_URL}/entry/${entryId}/event/${currentGw}`);
-              const picks = normalizeDraftList<any>(picksRes?.picks ?? []);
-              let total = 0;
-              picks.forEach((pick: any) => {
-                const pos = coerceNumber(pick.position, 0);
-                if (pos >= 1 && pos <= 11) {
-                  const el = parsePositiveInt(pick?.element ?? pick?.element_id ?? pick?.player_id);
-                  if (el) total += coerceNumber(liveMap[el], 0);
-                }
-              });
-              return { entryId, total };
-            } catch {
-              return { entryId, total: 0 };
-            }
-          }),
-        );
-        picksResults.forEach((r) => { fixturesLiveEntryPoints[r.entryId] = r.total; });
-      } catch {
-        fixturesLiveEntryPoints = {};
+      fixturesLiveEntryPoints = await computeLiveEntryPoints(currentGw);
+    }
+
+    let matchupStyleScores: Record<string, { total1: number; total2: number }> = {};
+    if (currentGw != null && currentGw > 0 && draftMatches.length > 0 && draftEntries.length > 0) {
+      const currentGwMatches = draftMatches.filter((m: any) => coerceNumber(m.event) === currentGw);
+      if (currentGwMatches.length > 0) {
+        matchupStyleScores = await computeLeagueMatchupStyleScores(currentGw, currentGwMatches, draftEntries);
       }
     }
 
+    const liveEntryPointsForRank =
+      Object.keys(matchupStyleScores).length > 0
+        ? (() => {
+            const synthetic: Record<string, number> = {};
+            Object.entries(matchupStyleScores).forEach(([matchKey, { total1, total2 }]) => {
+              const [e1, e2] = matchKey.split("_");
+              if (e1) synthetic[e1] = total1;
+              if (e2) synthetic[e2] = total2;
+            });
+            return synthetic;
+          })()
+        : fixturesLiveEntryPoints;
+
     if (draftMatches.length > 0) {
-      rankMap = buildDraftRankMapWithLive(draftMatches, currentGw, fixturesLiveEntryPoints);
+      rankMap = buildDraftRankMapWithLive(draftMatches, currentGw, liveEntryPointsForRank);
     }
 
     const leagueByGw: Record<string, any[]> = {};
@@ -6748,12 +6824,14 @@ fixturesHub.get("/", async (c) => {
       const team1Id = String(m.league_entry_1 ?? m.entry_1 ?? m.home ?? "");
       const team2Id = String(m.league_entry_2 ?? m.entry_2 ?? m.away ?? "");
       if (!team1Id || !team2Id) return;
-      const useLive = gw === currentGw && Object.keys(fixturesLiveEntryPoints).length > 0;
+      const matchKey = `${team1Id}_${team2Id}`;
+      const matchupScores = gw === currentGw ? matchupStyleScores[matchKey] : null;
+      const useLive = gw === currentGw && (matchupScores != null || Object.keys(fixturesLiveEntryPoints).length > 0);
       const p1 = useLive
-        ? coerceNumber(fixturesLiveEntryPoints[team1Id], coerceNumber(m.league_entry_1_points ?? m.score_1 ?? m.home_score, 0))
+        ? (matchupScores != null ? matchupScores.total1 : coerceNumber(fixturesLiveEntryPoints[team1Id], coerceNumber(m.league_entry_1_points ?? m.score_1 ?? m.home_score, 0)))
         : coerceNumber(m.league_entry_1_points ?? m.score_1 ?? m.home_score, 0);
       const p2 = useLive
-        ? coerceNumber(fixturesLiveEntryPoints[team2Id], coerceNumber(m.league_entry_2_points ?? m.score_2 ?? m.away_score, 0))
+        ? (matchupScores != null ? matchupScores.total2 : coerceNumber(fixturesLiveEntryPoints[team2Id], coerceNumber(m.league_entry_2_points ?? m.score_2 ?? m.away_score, 0)))
         : coerceNumber(m.league_entry_2_points ?? m.score_2 ?? m.away_score, 0);
       leagueByGw[key].push({
         fixture_id: `league-${gw}-${team1Id}-${team2Id}`,
@@ -6971,6 +7049,18 @@ fixturesHub.get("/", async (c) => {
       enrichMatchups(leagueByGw),
       enrichMatchups(cupByGw),
     ]);
+
+    const leagueMatches = Object.entries(enrichedLeague || {}).flatMap(([gw, arr]) =>
+      (arr || []).map((m: any) => ({
+        gameweek: coerceNumber(gw),
+        team_1_points: m.team_1_points,
+        team_2_points: m.team_2_points,
+      }))
+    );
+    console.log(
+      "Fixtures final scores:",
+      leagueMatches.map((m: any) => ({ gw: m.gameweek, t1: m.team_1_points, t2: m.team_2_points }))
+    );
 
     return c.json({
       season: seasonStateRes.data?.season || CURRENT_SEASON,
@@ -7268,43 +7358,8 @@ fixturesHub.get("/matchup", async (c) => {
         entry_name: formatDraftTeamName(entry2),
         club_crest_url: crestByManager[canonicalManagerKey(formatDraftManagerName(entry2))] || null,
       };
-      let matchupLiveEntryPoints: Record<string, number> = {};
-      if (currentGw != null && currentGw > 0) {
-        try {
-          const livePayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${currentGw}/live`);
-          const liveMap = extractLivePointsMap(livePayload);
-          const currentGwEntryIds = new Set<string>();
-          matches.forEach((m: any) => {
-            if (coerceNumber(m.event) !== currentGw) return;
-            const e1 = String(m.league_entry_1 ?? m.entry_1 ?? m.home ?? "");
-            const e2 = String(m.league_entry_2 ?? m.entry_2 ?? m.away ?? "");
-            if (e1) currentGwEntryIds.add(e1);
-            if (e2) currentGwEntryIds.add(e2);
-          });
-          const picksResults = await Promise.all(
-            Array.from(currentGwEntryIds).map(async (entryId) => {
-              try {
-                const picksRes = await fetchJSON<any>(`${DRAFT_BASE_URL}/entry/${entryId}/event/${currentGw}`);
-                const picks = normalizeDraftList<any>(picksRes?.picks ?? []);
-                let total = 0;
-                picks.forEach((pick: any) => {
-                  const pos = coerceNumber(pick.position, 0);
-                  if (pos >= 1 && pos <= 11) {
-                    const el = parsePositiveInt(pick?.element ?? pick?.element_id ?? pick?.player_id);
-                    if (el) total += coerceNumber(liveMap[el], 0);
-                  }
-                });
-                return { entryId, total };
-              } catch {
-                return { entryId, total: 0 };
-              }
-            }),
-          );
-          picksResults.forEach((r) => { matchupLiveEntryPoints[r.entryId] = r.total; });
-        } catch {
-          matchupLiveEntryPoints = {};
-        }
-      }
+      const matchupLiveEntryPoints =
+        currentGw != null && currentGw > 0 ? await computeLiveEntryPoints(currentGw) : {};
       rankMap = buildDraftRankMapWithLive(matches, currentGw, matchupLiveEntryPoints);
       leagueRow = matches.find((m: any) => {
         const left = String(m.league_entry_1 ?? m.entry_1 ?? m.home ?? "");
@@ -7391,20 +7446,34 @@ fixturesHub.get("/matchup", async (c) => {
     const playerMap = extractDraftPlayerMap(bootstrap || {});
     let liveMap: Record<number, number> = {};
     let liveStatsMap: Record<number, any> = {};
+    let liveFixtures: any[] = [];
     try {
       const live = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${gameweek}/live`);
       liveMap = extractLivePointsMap(live);
       liveStatsMap = extractLivePlayerStatsMap(live);
+      liveFixtures = normalizeDraftList<any>(live?.fixtures ?? []);
     } catch {
       try {
         const classicLive = await fetchJSON<any>(`${FPL_BASE_URL}/event/${gameweek}/live/`);
         liveMap = extractLivePointsMap(classicLive);
         liveStatsMap = extractLivePlayerStatsMap(classicLive);
+        liveFixtures = normalizeDraftList<any>(classicLive?.fixtures ?? []);
       } catch {
         liveMap = {};
         liveStatsMap = {};
+        liveFixtures = [];
       }
     }
+
+    const fixtureByTeamId: Record<number, { kickoff_time: string | null; elapsed: number }> = {};
+    liveFixtures.forEach((f: any) => {
+      const kickoff = f?.kickoff_time ?? null;
+      const elapsed = coerceNumber(f?.minutes ?? f?.elapsed, 0);
+      const th = coerceNumber(f?.team_h, 0);
+      const ta = coerceNumber(f?.team_a, 0);
+      if (th > 0) fixtureByTeamId[th] = { kickoff_time: kickoff, elapsed };
+      if (ta > 0) fixtureByTeamId[ta] = { kickoff_time: kickoff, elapsed };
+    });
 
     const hasStarted = gameweek < currentGw;
 
@@ -7435,6 +7504,10 @@ fixturesHub.get("/matchup", async (c) => {
         const isCupCaptain = type === "cup" && hasStarted && activeCaptainId > 0 && activeCaptainId === playerId;
         const isCupVice = type === "cup" && cupViceId > 0 && cupViceId === playerId;
         const effectivePoints = rawPoints * (isCupCaptain ? 2 : 1);
+        const playerTeamId = playerMap[playerId]?.team ?? null;
+        const fixtureTiming = playerTeamId != null ? fixtureByTeamId[playerTeamId] : null;
+        const fixtureCompleted = coerceNumber(fixtureTiming?.elapsed, 0) >= 90;
+        const cleanSheets = fixtureCompleted && coerceNumber(stats.clean_sheets, 0) >= 1 ? 1 : 0;
         return {
           player_id: playerId,
           player_name: playerMap[playerId]?.name || `Player ${playerId}`,
@@ -7453,12 +7526,14 @@ fixturesHub.get("/matchup", async (c) => {
           minutes: coerceNumber(stats.minutes, 0),
           defensive_contributions: defensiveContributions,
           defensive_return: defensiveReturn,
-          clean_sheets: coerceNumber(stats.clean_sheets, 0),
+          clean_sheets: cleanSheets,
           goals_conceded: coerceNumber(stats.goals_conceded, 0),
           yellow_cards: coerceNumber(stats.yellow_cards, 0),
           red_cards: coerceNumber(stats.red_cards, 0),
           penalties_missed: coerceNumber(stats.penalties_missed, 0),
           penalties_saved: coerceNumber(stats.penalties_saved, 0),
+          fixture_kickoff_time: fixtureTiming?.kickoff_time ?? null,
+          fixture_elapsed: fixtureTiming?.elapsed ?? 0,
         };
       });
 

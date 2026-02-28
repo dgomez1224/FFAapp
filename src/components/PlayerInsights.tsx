@@ -64,6 +64,35 @@ const AVAILABILITY_LABELS: Record<string, string> = {
   u: "Unavailable",
 };
 
+/** Normalize manager name for strict comparison: trim, collapse spaces, lowercase. */
+function normalizeManagerNameForMatch(name: string): string {
+  return String(name || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+/**
+ * Canonical form used elsewhere (e.g. teams.manager_name): uppercase, first token.
+ * "David Gomez" -> "DAVID", so dropdown "DAVID" can match table "David Gomez".
+ */
+function canonicalManagerFromFullName(name: string): string {
+  const upper = String(name || "").trim().toUpperCase();
+  const first = upper.split(/[^A-Z]+/).filter(Boolean)[0] || "";
+  return first || upper;
+}
+
+/** True when owner is the same person: full name match OR canonical match (e.g. DAVID === David Gomez). */
+function ownerMatchesFilter(owner: string, selectedFilter: string): boolean {
+  const o = String(owner || "").trim();
+  const f = String(selectedFilter || "").trim();
+  if (!o || !f) return false;
+  if (normalizeManagerNameForMatch(o) === normalizeManagerNameForMatch(f)) return true;
+  const ownerCanonical = canonicalManagerFromFullName(o);
+  const filterCanonical = f.toUpperCase();
+  return ownerCanonical !== "" && filterCanonical !== "" && ownerCanonical === filterCanonical;
+}
+
 export default function PlayerInsights() {
   const [data, setData] = useState<PlayerInsightsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -82,37 +111,30 @@ export default function PlayerInsights() {
   const [pendingSearch, setPendingSearch] = useState<string>("");
   const [filterSearch, setFilterSearch] = useState<string>("");
 
+  // Debounce slider (avg min) so dragging doesn't re-filter every pixel
   useEffect(() => {
     const t = setTimeout(() => {
       setFilterMinAvgMinutes(pendingMinAvgMinutes);
       setFilterMaxAvgMinutes(pendingMaxAvgMinutes);
-    }, 250);
+    }, 450);
     return () => clearTimeout(t);
   }, [pendingMinAvgMinutes, pendingMaxAvgMinutes]);
 
+  // Debounce search so typing doesn't re-filter on every keystroke
   useEffect(() => {
     const t = setTimeout(() => {
       setFilterSearch(pendingSearch);
-    }, 300);
+    }, 500);
     return () => clearTimeout(t);
   }, [pendingSearch]);
 
+  // Single fetch: API returns all players; filtering is client-side
   useEffect(() => {
     async function fetchInsights() {
       try {
         setLoading(true);
         setError(null);
-
-        const params = new URLSearchParams();
-        if (filterPosition) params.set("position", filterPosition);
-        if (filterTeam) params.set("team", filterTeam);
-        if (filterAvailability) params.set("availability", filterAvailability);
-        if (filterOwnership && filterOwnership !== "all") params.set("ownership", filterOwnership === "free_agent" ? "free_agent" : filterOwnership);
-        params.set("min_avg_minutes", String(filterMinAvgMinutes));
-        params.set("max_avg_minutes", String(filterMaxAvgMinutes));
-        if (filterSearch) params.set("search", filterSearch);
-
-        const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/player-insights${params.toString() ? `?${params.toString()}` : ""}`;
+        const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/player-insights`;
         const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
         const payload: PlayerInsightsResponse = await res.json();
 
@@ -129,12 +151,62 @@ export default function PlayerInsights() {
     }
 
     fetchInsights();
-  }, [filterPosition, filterTeam, filterAvailability, filterOwnership, filterMinAvgMinutes, filterMaxAvgMinutes, filterSearch]);
+  }, []);
 
-  const players = data?.insights || [];
+  const allPlayers = data?.insights || [];
+
+  // Client-side filters (API returns all players)
+  const filteredPlayers = useMemo(() => {
+    let rows = allPlayers;
+    if (filterPosition) {
+      const pos = Number(filterPosition);
+      if (Number.isFinite(pos)) rows = rows.filter((p) => Number(p.position) === pos);
+    }
+    if (filterTeam) {
+      const team = Number(filterTeam);
+      if (Number.isFinite(team)) rows = rows.filter((p) => Number(p.team) === team);
+    }
+    if (filterAvailability) {
+      const avail = String(filterAvailability).toLowerCase();
+      rows = rows.filter((p) => String(p.availability || "").toLowerCase() === avail);
+    }
+    if (filterOwnership && filterOwnership !== "all") {
+      if (filterOwnership === "free_agent" || filterOwnership === "unowned") {
+        rows = rows.filter((p) => !(p.owned_by || []).length);
+      } else {
+        rows = rows.filter((p) =>
+          (p.owned_by || []).some((o) => ownerMatchesFilter(String(o || ""), filterOwnership))
+        );
+      }
+    }
+    const minAvg = Number(filterMinAvgMinutes);
+    const maxAvg = Number(filterMaxAvgMinutes);
+    if (Number.isFinite(minAvg) || Number.isFinite(maxAvg)) {
+      rows = rows.filter((p) => {
+        const mpg = Number(p.minutes_per_game_played ?? 0);
+        if (Number.isFinite(minAvg) && mpg < minAvg) return false;
+        if (Number.isFinite(maxAvg) && mpg > maxAvg) return false;
+        return true;
+      });
+    }
+    if (filterSearch.trim()) {
+      const q = filterSearch.trim().toLowerCase();
+      rows = rows.filter((p) => String(p.player_name || "").toLowerCase().includes(q));
+    }
+    return rows;
+  }, [
+    allPlayers,
+    filterPosition,
+    filterTeam,
+    filterAvailability,
+    filterOwnership,
+    filterMinAvgMinutes,
+    filterMaxAvgMinutes,
+    filterSearch,
+  ]);
 
   const sortedPlayers = useMemo(() => {
-    const rows = [...players];
+    const rows = [...filteredPlayers];
     rows.sort((a, b) => {
       const av = (a as any)?.[sortKey];
       const bv = (b as any)?.[sortKey];
@@ -150,15 +222,15 @@ export default function PlayerInsights() {
       return sortDir === "asc" ? cmp : -cmp;
     });
     return rows;
-  }, [players, sortDir, sortKey]);
+  }, [filteredPlayers, sortDir, sortKey]);
 
   const teamOptions = useMemo(() => {
     const set = new Set<number>();
-    players.forEach((p) => {
+    allPlayers.forEach((p) => {
       if (typeof p.team === "number" && Number.isFinite(p.team)) set.add(p.team);
     });
     return Array.from(set).sort((a, b) => a - b);
-  }, [players]);
+  }, [allPlayers]);
 
   if (loading) {
     return (
@@ -220,7 +292,7 @@ export default function PlayerInsights() {
             <option value="">All Teams</option>
             {teamOptions.map((team) => (
               <option key={team} value={String(team)}>
-                {(players.find((p) => p.team === team)?.team_name || `Team ${team}`)}
+                {(allPlayers.find((p) => p.team === team)?.team_name || `Team ${team}`)}
               </option>
             ))}
           </select>

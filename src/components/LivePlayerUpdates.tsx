@@ -40,6 +40,10 @@ interface LineupPlayer {
   yellow_cards: number;
   red_cards: number;
   penalties_saved: number;
+  /** Fixture kickoff (ISO string) for event-time sorting */
+  fixture_kickoff_time?: string | null;
+  /** Minutes elapsed in fixture for event-time sorting */
+  fixture_elapsed?: number;
 }
 
 interface MatchupPayload {
@@ -89,12 +93,15 @@ interface PlayerSnapshot {
   red_cards: number;
   clean_sheets: number;
   defensive_returns: number;
+  fixture_kickoff_time?: string | null;
+  fixture_elapsed?: number;
 }
 
 interface UpdateRow {
   id: string;
   at: number;
-  /** When the update/news was added (Draft API); used for sort when present */
+  /** Real-world event time (kickoff + elapsed, or Date.now() if unknown). Always numeric; sort by this only. */
+  event_time: number;
   news_added?: string | null;
   player_id: number;
   player_name: string;
@@ -106,10 +113,28 @@ interface UpdateRow {
   competition?: string;
   competition_detail?: string;
   action: string;
-  /** Stat type for icon display */
   statKey?: StatKey;
   points: number;
   fixture_score: string;
+}
+
+function computeEventTime(
+  fixtureKickoff?: string | null,
+  fixtureElapsed?: number,
+): number {
+  if (!fixtureKickoff) return Date.now();
+  const kickoffMs = new Date(fixtureKickoff).getTime();
+  if (!Number.isFinite(kickoffMs)) return Date.now();
+  const elapsedMs = (fixtureElapsed ?? 0) * 60 * 1000;
+  return kickoffMs + elapsedMs;
+}
+
+function sortUpdates(rows: UpdateRow[]): UpdateRow[] {
+  return [...rows].sort((a, b) => {
+    const diff = (b.event_time ?? (b as any).timestamp ?? 0) - (a.event_time ?? (a as any).timestamp ?? 0);
+    if (diff !== 0) return diff;
+    return a.id.localeCompare(b.id);
+  });
 }
 
 const POLL_INTERVAL_MS = 20000;
@@ -157,6 +182,7 @@ function asRounded(value: number) {
   return Math.round(Number(value || 0));
 }
 
+/** Clean sheet only counts when the player's match is completed (90+ mins). Forwards (4) don't get CS. */
 function hasCompletedCleanSheet(player: LineupPlayer) {
   return Number(player.position || 0) !== 4 && Number(player.clean_sheets || 0) > 0 && Number(player.minutes || 0) >= 90;
 }
@@ -325,6 +351,8 @@ export default function LivePlayerUpdates() {
             red_cards: Number(p.red_cards || 0),
             clean_sheets: hasCompletedCleanSheet(p) ? 1 : 0,
             defensive_returns: hasDefensiveReturn(p) ? 1 : 0,
+            fixture_kickoff_time: p.fixture_kickoff_time ?? null,
+            fixture_elapsed: p.fixture_elapsed ?? 0,
           };
         });
 
@@ -354,12 +382,13 @@ export default function LivePlayerUpdates() {
             red_cards: Number(p.red_cards || 0),
             clean_sheets: hasCompletedCleanSheet(p) ? 1 : 0,
             defensive_returns: hasDefensiveReturn(p) ? 1 : 0,
+            fixture_kickoff_time: p.fixture_kickoff_time ?? null,
+            fixture_elapsed: p.fixture_elapsed ?? 0,
           };
         });
       });
 
       const now = Date.now();
-      const nextRows: UpdateRow[] = [];
       const previous = previousRef.current;
 
       const statKeys: StatKey[] = [
@@ -383,17 +412,22 @@ export default function LivePlayerUpdates() {
         return null;
       };
 
+      const rawRows: Omit<UpdateRow, "at">[] = [];
       Object.values(current).forEach((snapshot) => {
         const oldSnapshot = previous[snapshot.key];
-        statKeys.forEach((key) => {
+        const event_time = computeEventTime(
+          snapshot.fixture_kickoff_time ?? undefined,
+          snapshot.fixture_elapsed ?? undefined,
+        );
+        for (const key of statKeys) {
           const nextValue = Number(snapshot[key] || 0);
           const previousValue = Number(oldSnapshot?.[key] || 0);
           const delta = nextValue - previousValue;
-          if (delta <= 0) return;
+          if (delta <= 0) continue;
           const detail = compDetail(snapshot);
-          nextRows.push({
+          rawRows.push({
             id: `${snapshot.key}-${key}-${now}-${delta}`,
-            at: now,
+            event_time,
             player_id: snapshot.player_id,
             player_name: snapshot.player_name,
             player_image_url: snapshot.player_image_url,
@@ -408,8 +442,13 @@ export default function LivePlayerUpdates() {
             points: snapshot.points,
             fixture_score: `${snapshot.team_score}-${snapshot.opp_score}`,
           });
-        });
+        }
       });
+
+      const nextRows: UpdateRow[] = rawRows.map((row) => ({
+        ...row,
+        at: now,
+      }));
 
       if (nextRows.length > 0) {
         setRows((prev) => [...nextRows, ...prev].slice(0, MAX_ROWS));
@@ -448,17 +487,7 @@ export default function LivePlayerUpdates() {
     };
   }, [load]);
 
-  const getSortTime = (r: UpdateRow) =>
-    r.news_added ? new Date(r.news_added).getTime() : (r.at ?? 0);
-  const visibleRows = useMemo(
-    () =>
-      [...rows].sort((a, b) => {
-        const ta = getSortTime(a);
-        const tb = getSortTime(b);
-        return tb - ta;
-      }),
-    [rows],
-  );
+  const visibleRows = useMemo(() => sortUpdates(rows), [rows]);
 
   if (loading) {
     return (
