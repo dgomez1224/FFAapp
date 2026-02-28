@@ -1,3 +1,5 @@
+# Deploy Frontend to GitHub Pages
+# Requires: Repo Settings → Pages → Build and deployment → Source = "GitHub Actions"
 name: Deploy Frontend to GitHub Pages
 
 on:

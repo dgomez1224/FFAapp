@@ -113,7 +113,8 @@ interface UpdateRow {
 }
 
 const POLL_INTERVAL_MS = 20000;
-const MAX_ROWS = 30;
+/** Keep all updates for the current gameweek (no cap in practice) */
+const MAX_ROWS = 500;
 
 const STAT_LABELS: Record<StatKey, string> = {
   goals_scored: "Goal",
@@ -451,10 +452,11 @@ export default function LivePlayerUpdates() {
     r.news_added ? new Date(r.news_added).getTime() : (r.at ?? 0);
   const visibleRows = useMemo(
     () =>
-      [...rows]
-        .sort((a, b) => getSortTime(b) - getSortTime(a))
-        .reverse()
-        .slice(0, 12),
+      [...rows].sort((a, b) => {
+        const ta = getSortTime(a);
+        const tb = getSortTime(b);
+        return tb - ta;
+      }),
     [rows],
   );
 
