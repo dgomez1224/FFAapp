@@ -1,0 +1,11 @@
+/* Premier League font — use when installed locally (e.g. Font Book) */
+@font-face {
+  font-family: "Premier League";
+  src: local("Premier League"), local("Premier League W01");
+  font-weight: 400 700;
+  font-display: swap;
+}
+
+.font-heading {
+  font-family: "Premier League", ui-sans-serif, system-ui, sans-serif;
+}

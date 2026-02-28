@@ -24,6 +24,8 @@ interface Standing {
   points: number;
   points_for: number;
   points_against: number;
+  avg_margin_victory?: number | null;
+  avg_margin_defeat?: number | null;
 }
 
 interface LeagueStandingsResponse {
@@ -87,7 +89,7 @@ export default function LeagueStandings() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-semibold">League Standings</h1>
+        <h1 className="font-heading text-2xl font-semibold">League Standings</h1>
         <p className="text-sm text-muted-foreground">Ranked by league points, then points for.</p>
       </div>
 
@@ -106,6 +108,8 @@ export default function LeagueStandings() {
               <TableHead className="text-right">Pts</TableHead>
               <TableHead className="text-right">For</TableHead>
               <TableHead className="text-right">Against</TableHead>
+              <TableHead className="text-right">Avg Δ Win</TableHead>
+              <TableHead className="text-right">Avg Δ Loss</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody className="fpl-table-body">
@@ -132,6 +136,8 @@ export default function LeagueStandings() {
                   <TableCell className="fpl-points">{standing.points}</TableCell>
                   <TableCell className="fpl-numeric">{standing.points_for}</TableCell>
                   <TableCell className="fpl-numeric">{standing.points_against}</TableCell>
+                  <TableCell className="fpl-numeric">{standing.avg_margin_victory != null ? standing.avg_margin_victory.toFixed(1) : "—"}</TableCell>
+                  <TableCell className="fpl-numeric">{standing.avg_margin_defeat != null ? standing.avg_margin_defeat.toFixed(1) : "—"}</TableCell>
                 </TableRow>
               ))}
             </TableBody>

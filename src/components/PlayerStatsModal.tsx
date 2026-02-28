@@ -21,6 +21,8 @@ export interface PlayerStats {
   assists?: number;
   minutes?: number;
   defensive_contributions?: number;
+  /** DEF 10+ or MID/FWD 12+ = defensive return (already in API score) */
+  defensive_return?: boolean;
   clean_sheets?: number;
   goals_conceded?: number;
   yellow_cards?: number;
@@ -34,6 +36,12 @@ export interface PlayerStats {
     goals?: number;
     assists?: number;
     minutes?: number;
+    clean_sheets?: number;
+    goals_conceded?: number;
+    penalties_saved?: number;
+    penalties_missed?: number;
+    fixture_difficulty?: number | null;
+    is_upcoming?: boolean;
     opponent_team_name?: string | null;
     was_home?: boolean;
     fixture?: string | null;
@@ -54,6 +62,8 @@ interface PlayerStatsModalProps {
   isOpen: boolean;
   onClose: () => void;
   showHistory?: boolean;
+  /** When false, hide Gameweek Statistics (e.g. when fixture hasn't started or not current/last GW). */
+  showGameweekStats?: boolean;
   onSelectCaptain?: (playerId: number) => void;
   onSelectViceCaptain?: (playerId: number) => void;
   showEffectivePoints?: boolean;
@@ -64,6 +74,7 @@ export function PlayerStatsModal({
   isOpen,
   onClose,
   showHistory = false,
+  showGameweekStats = true,
   onSelectCaptain,
   onSelectViceCaptain,
   showEffectivePoints = true,
@@ -117,64 +128,120 @@ export function PlayerStatsModal({
             )}
           </div>
 
-          {/* Match stats */}
+          {/* Match stats — only show for current/last completed GW when value ≥ 1 */}
+          {showGameweekStats && (
           <div className="space-y-2 text-sm">
             <h3 className="font-semibold mb-2">Gameweek Statistics</h3>
             <div className="grid grid-cols-2 gap-2">
-              <div className="p-2 bg-muted rounded">
-                <p className="text-muted-foreground text-xs">Goals</p>
-                <p className="text-lg font-bold">{player.goals_scored ?? 0}</p>
-              </div>
-              <div className="p-2 bg-muted rounded">
-                <p className="text-muted-foreground text-xs">Assists</p>
-                <p className="text-lg font-bold">{player.assists ?? 0}</p>
-              </div>
-              <div className="p-2 bg-muted rounded">
-                <p className="text-muted-foreground text-xs">Minutes</p>
-                <p className="text-lg font-bold">{player.minutes ?? 0}</p>
-              </div>
-              <div className="p-2 bg-muted rounded">
-                <p className="text-muted-foreground text-xs">Def. Cont.</p>
-                <p className="text-lg font-bold">{player.defensive_contributions ?? 0}</p>
-              </div>
-              {player.clean_sheets !== undefined && (
+              {(player.goals_scored ?? 0) >= 1 && (
+                <div className="p-2 bg-muted rounded">
+                  <p className="text-muted-foreground text-xs">Goals</p>
+                  <p className="text-lg font-bold">{player.goals_scored}</p>
+                </div>
+              )}
+              {(player.assists ?? 0) >= 1 && (
+                <div className="p-2 bg-muted rounded">
+                  <p className="text-muted-foreground text-xs">Assists</p>
+                  <p className="text-lg font-bold">{player.assists}</p>
+                </div>
+              )}
+              {(player.minutes ?? 0) >= 1 && (
+                <div className="p-2 bg-muted rounded">
+                  <p className="text-muted-foreground text-xs">Minutes</p>
+                  <p className="text-lg font-bold">{player.minutes}</p>
+                </div>
+              )}
+              {(player.defensive_contributions ?? 0) >= 1 && (
+                <div className="p-2 bg-muted rounded">
+                  <p className="text-muted-foreground text-xs">Def. Cont.</p>
+                  <p className="text-lg font-bold">{player.defensive_contributions}</p>
+                </div>
+              )}
+              {(() => {
+                const pos = player.position ?? 0;
+                const contrib = player.defensive_contributions ?? 0;
+                const hasReturn = player.defensive_return === true || (pos === 2 && contrib >= 10) || ([3, 4].includes(pos) && contrib >= 12);
+                return hasReturn ? (
+                  <div className="p-2 bg-muted rounded">
+                    <p className="text-muted-foreground text-xs">Defensive Return</p>
+                    <p className="text-sm font-medium">✓</p>
+                  </div>
+                ) : null;
+              })()}
+              {(player.clean_sheets ?? 0) >= 1 && (
                 <div className="p-2 bg-muted rounded">
                   <p className="text-muted-foreground text-xs">Clean Sheets</p>
                   <p className="text-lg font-bold">{player.clean_sheets}</p>
                 </div>
               )}
-              {player.yellow_cards !== undefined && (
+              {(player.goals_conceded ?? 0) >= 1 && (
+                <div className="p-2 bg-muted rounded">
+                  <p className="text-muted-foreground text-xs">Goals Conceded</p>
+                  <p className="text-lg font-bold">{player.goals_conceded}</p>
+                </div>
+              )}
+              {(player.penalties_saved ?? 0) >= 1 && (
+                <div className="p-2 bg-muted rounded">
+                  <p className="text-muted-foreground text-xs">Penalty Saves</p>
+                  <p className="text-lg font-bold">{player.penalties_saved}</p>
+                </div>
+              )}
+              {(player.penalties_missed ?? 0) >= 1 && (
+                <div className="p-2 bg-muted rounded">
+                  <p className="text-muted-foreground text-xs">Penalties Missed</p>
+                  <p className="text-lg font-bold">{player.penalties_missed}</p>
+                </div>
+              )}
+              {(player.yellow_cards ?? 0) >= 1 && (
                 <div className="p-2 bg-muted rounded">
                   <p className="text-muted-foreground text-xs">Yellow Cards</p>
                   <p className="text-lg font-bold">{player.yellow_cards}</p>
                 </div>
               )}
+              {(player.red_cards ?? 0) >= 1 && (
+                <div className="p-2 bg-muted rounded">
+                  <p className="text-muted-foreground text-xs">Red Cards</p>
+                  <p className="text-lg font-bold">{player.red_cards}</p>
+                </div>
+              )}
             </div>
           </div>
+          )}
 
           {showHistory && (
             <div className="space-y-2 text-sm mt-4">
               <h3 className="font-semibold mb-3">Gameweek History</h3>
               {player.history && player.history.length > 0 ? (
                 <div className="space-y-2 max-h-80 overflow-y-auto">
-                    {player.history.map((entry) => (
-                      <div key={entry.gameweek} className="p-2 bg-muted rounded flex justify-between items-center">
-                        <div>
-                          <p className="font-medium">GW {entry.gameweek}</p>
-                          {(entry.opponent_team_name || entry.fixture || entry.result) && (
-                            <p className="text-xs text-muted-foreground">
-                              {entry.was_home != null ? (entry.was_home ? "vs " : "@ ") : ""}
-                              {entry.opponent_team_name || entry.fixture || "Fixture"}
-                              {entry.result ? ` • ${entry.result}` : ""}
-                            </p>
-                          )}
-                          <p className="text-xs text-muted-foreground">
-                            {entry.goals ?? 0}G {entry.assists ?? 0}A {entry.minutes ?? 0}M
-                          </p>
+                    {player.history.map((entry) => {
+                      const statParts: string[] = [];
+                      if ((entry.goals ?? 0) >= 1) statParts.push(`${entry.goals}G`);
+                      if ((entry.assists ?? 0) >= 1) statParts.push(`${entry.assists}A`);
+                      if ((entry.minutes ?? 0) >= 1) statParts.push(`${entry.minutes}M`);
+                      if ((entry.clean_sheets ?? 0) >= 1) statParts.push(`${entry.clean_sheets}CS`);
+                      if ((entry.goals_conceded ?? 0) >= 1) statParts.push(`${entry.goals_conceded}GC`);
+                      if ((entry.penalties_saved ?? 0) >= 1) statParts.push(`${entry.penalties_saved}PSv`);
+                      if ((entry.penalties_missed ?? 0) >= 1) statParts.push(`${entry.penalties_missed}PM`);
+                      return (
+                        <div key={entry.gameweek} className="p-2 bg-muted rounded flex justify-between items-center">
+                          <div>
+                            <p className="font-medium">GW {entry.gameweek}{entry.is_upcoming ? " (Upcoming)" : ""}</p>
+                            {(entry.opponent_team_name || entry.fixture || entry.result) && (
+                              <p className="text-xs text-muted-foreground">
+                                {entry.was_home != null ? (entry.was_home ? "vs " : "@ ") : ""}
+                                {entry.opponent_team_name || entry.fixture || "Fixture"}
+                                {entry.fixture_difficulty != null ? ` (FDR: ${entry.fixture_difficulty})` : ""}
+                                {entry.result ? ` • ${entry.result}` : ""}
+                              </p>
+                            )}
+                            {statParts.length > 0 && (
+                              <p className="text-xs text-muted-foreground">{statParts.join(" ")}</p>
+                            )}
+                          </div>
+                          {!entry.is_upcoming ? <p className="font-bold text-green-600">{Math.round(entry.points)}</p> : null}
                         </div>
-                      <p className="font-bold text-green-600">{Math.round(entry.points)}</p>
-                    </div>
-                  ))}
+                      );
+                    })}
                 </div>
               ) : (
                 <p className="text-muted-foreground text-sm">No history available</p>

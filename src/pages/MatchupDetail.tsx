@@ -61,9 +61,11 @@ type Payload = {
 function TeamPitchDisplay({
   team,
   matchupType,
+  showGameweekStats = true,
 }: {
   team: TeamDetail;
   matchupType: "league" | "cup";
+  showGameweekStats?: boolean;
 }) {
   const [selectedPlayer, setSelectedPlayer] = useState<PlayerStats | null>(null);
 
@@ -111,6 +113,12 @@ function TeamPitchDisplay({
           goals: h.goals ?? 0,
           assists: h.assists ?? 0,
           minutes: h.minutes ?? 0,
+          clean_sheets: h.clean_sheets ?? 0,
+          goals_conceded: h.goals_conceded ?? 0,
+          penalties_saved: h.penalties_saved ?? 0,
+          penalties_missed: h.penalties_missed ?? 0,
+          fixture_difficulty: h.fixture_difficulty ?? null,
+          is_upcoming: !!h.is_upcoming,
           opponent_team_name: h.opponent_team_name ?? null,
           was_home: h.was_home,
           fixture: h.fixture ?? null,
@@ -149,6 +157,7 @@ function TeamPitchDisplay({
         isOpen={!!selectedPlayer}
         onClose={() => setSelectedPlayer(null)}
         showHistory={true}
+        showGameweekStats={showGameweekStats}
         showEffectivePoints={matchupType === "cup"}
       />
 
@@ -311,8 +320,16 @@ export default function MatchupDetailPage() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <TeamPitchDisplay team={data.team_1} matchupType={data.type} />
-        <TeamPitchDisplay team={data.team_2} matchupType={data.type} />
+        <TeamPitchDisplay
+          team={data.team_1}
+          matchupType={data.type}
+          showGameweekStats={data.gameweek <= data.current_gameweek || !!data.matchup?.has_started}
+        />
+        <TeamPitchDisplay
+          team={data.team_2}
+          matchupType={data.type}
+          showGameweekStats={data.gameweek <= data.current_gameweek || !!data.matchup?.has_started}
+        />
       </div>
     </div>
   );

@@ -87,7 +87,7 @@ export default function GobletStandings() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-semibold">Goblet Standings</h1>
+        <h1 className="font-heading text-2xl font-semibold">Goblet Standings</h1>
         <p className="text-sm text-muted-foreground">
           Ranked by points for. Data source: {data.source}
         </p>

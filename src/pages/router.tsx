@@ -218,7 +218,7 @@ function Shell() {
     <div className="min-h-screen bg-background text-foreground flex flex-col">
       <header className="border-b">
         <div className="mx-auto flex min-h-16 max-w-6xl items-center justify-between gap-3 px-4 py-2">
-          <Link to="/dashboard" className="group text-lg font-semibold inline-flex items-center gap-2 hover:opacity-90">
+          <Link to="/dashboard" className="font-heading group text-lg font-semibold inline-flex items-center gap-2 hover:opacity-90">
             <img
               src={leagueTrophy}
               alt="League trophy"
@@ -227,47 +227,47 @@ function Shell() {
             League of Lads
           </Link>
 
-          <nav className="hidden flex-wrap gap-4 text-sm lg:flex">
-            <Link to="/league-standings" className="hover:underline">
+          <nav className="font-heading hidden flex-wrap items-center gap-5 text-sm tracking-wide lg:flex">
+            <Link to="/league-standings" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               League
             </Link>
-            <Link to="/goblet" className="hover:underline">
+            <Link to="/goblet" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               Goblet
             </Link>
-            <Link to="/managers" className="hover:underline">
+            <Link to="/managers" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               Managers
             </Link>
-            <Link to="/players" className="hover:underline">
+            <Link to="/players" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               Players
             </Link>
-            <Link to="/fixtures" className="hover:underline">
+            <Link to="/fixtures" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               Fixtures
             </Link>
-            <Link to="/legacy-home" className="hover:underline">
+            <Link to="/legacy-home" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               Legacy
             </Link>
-            <Link to="/legacy-gameweek-standings" className="hover:underline">
+            <Link to="/legacy-gameweek-standings" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               Legacy GW
             </Link>
-            <Link to="/standings-by-gameweek" className="hover:underline">
+            <Link to="/standings-by-gameweek" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               GW Standings
             </Link>
-            <Link to="/bracket" className="hover:underline">
+            <Link to="/bracket" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               Bracket
             </Link>
             {token ? (
-              <button type="button" onClick={handleHeaderSignOut} className="hover:underline">
+              <button type="button" onClick={handleHeaderSignOut} className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
                 Sign Out
               </button>
             ) : (
-              <Link to="/sign-in" className="hover:underline">
+              <Link to="/sign-in" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
                 Sign In
               </Link>
             )}
-            <Link to="/pick-captain" className="hover:underline">
+            <Link to="/pick-captain" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               Pick Captain
             </Link>
-            <Link to="/my-page" className="hover:underline">
+            <Link to="/my-page" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               My Page
             </Link>
           </nav>

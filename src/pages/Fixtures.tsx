@@ -185,10 +185,11 @@ export default function FixturesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const REFRESH_MS = 30_000; // 30s so ongoing gameweek updates automatically
   useEffect(() => {
-    async function load() {
+    async function load(silent = false) {
       try {
-        setLoading(true);
+        if (!silent) setLoading(true);
         setError(null);
         const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/fixtures`;
         const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
@@ -198,12 +199,14 @@ export default function FixturesPage() {
         }
         setData(payload);
       } catch (err: any) {
-        setError(err.message || "Failed to load fixtures");
+        if (!silent) setError(err.message || "Failed to load fixtures");
       } finally {
-        setLoading(false);
+        if (!silent) setLoading(false);
       }
     }
-    load();
+    load(false);
+    const timer = setInterval(() => load(true), REFRESH_MS);
+    return () => clearInterval(timer);
   }, []);
 
   if (loading) {

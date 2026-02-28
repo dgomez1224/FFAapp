@@ -43,17 +43,23 @@ interface LineupPlayer {
 }
 
 interface MatchupPayload {
+  type?: "league" | "cup";
   gameweek: number;
   matchup: {
     live_team_1_points: number;
     live_team_2_points: number;
+    round?: string | null;
+    team_1_points?: number | null;
+    team_2_points?: number | null;
   };
   team_1: {
     manager_name: string;
+    entry_name?: string | null;
     lineup: LineupPlayer[];
   };
   team_2: {
     manager_name: string;
+    entry_name?: string | null;
     lineup: LineupPlayer[];
   };
 }
@@ -64,9 +70,17 @@ interface PlayerSnapshot {
   player_name: string;
   player_image_url?: string | null;
   manager_name: string;
+  team_name?: string | null;
+  opp_team_name?: string | null;
   team_score: number;
   opp_score: number;
   points: number;
+  is_bench: boolean;
+  competition?: "league" | "cup";
+  cup_round?: string | null;
+  cup_team_points?: number | null;
+  cup_opp_points?: number | null;
+  cup_rank?: number | null;
   goals_scored: number;
   assists: number;
   starts: number;
@@ -80,11 +94,20 @@ interface PlayerSnapshot {
 interface UpdateRow {
   id: string;
   at: number;
+  /** When the update/news was added (Draft API); used for sort when present */
+  news_added?: string | null;
   player_id: number;
   player_name: string;
   player_image_url?: string | null;
   manager_name: string;
+  is_benched: boolean;
+  team_name?: string | null;
+  opp_team_name?: string | null;
+  competition?: string;
+  competition_detail?: string;
   action: string;
+  /** Stat type for icon display */
+  statKey?: StatKey;
   points: number;
   fixture_score: string;
 }
@@ -101,6 +124,17 @@ const STAT_LABELS: Record<StatKey, string> = {
   red_cards: "Red Card",
   clean_sheets: "Clean Sheet",
   defensive_returns: "Defensive Return",
+};
+
+const STAT_ICONS: Record<StatKey, string> = {
+  goals_scored: "⚽",
+  assists: "👟",
+  starts: "▶️",
+  penalties_saved: "🧤",
+  yellow_cards: "🟨",
+  red_cards: "🟥",
+  clean_sheets: "🛡️",
+  defensive_returns: "🔒",
 };
 
 const STAT_PRIORITY: StatKey[] = [
@@ -260,6 +294,10 @@ export default function LivePlayerUpdates() {
         const t1 = asRounded(computeLeagueLiveScore(payload.team_1.lineup || []));
         const t2 = asRounded(computeLeagueLiveScore(payload.team_2.lineup || []));
 
+        const compType = (payload.type === "cup" ? "cup" : "league") as "league" | "cup";
+        const team1Name = payload.team_1.entry_name ?? payload.team_1.manager_name;
+        const team2Name = payload.team_2.entry_name ?? payload.team_2.manager_name;
+
         payload.team_1.lineup.forEach((p) => {
           const key = `${payload.team_1.manager_name}-${p.player_id}`;
           current[key] = {
@@ -268,9 +306,16 @@ export default function LivePlayerUpdates() {
             player_name: p.player_name,
             player_image_url: p.player_image_url || null,
             manager_name: payload.team_1.manager_name,
+            team_name: team1Name,
+            opp_team_name: team2Name,
             team_score: t1,
             opp_score: t2,
             points: asRounded(p.effective_points),
+            is_bench: !!p.is_bench,
+            competition: compType,
+            cup_round: payload.matchup?.round ?? null,
+            cup_team_points: payload.matchup?.team_1_points ?? null,
+            cup_opp_points: payload.matchup?.team_2_points ?? null,
             goals_scored: Number(p.goals_scored || 0),
             assists: Number(p.assists || 0),
             starts: Number(startsByPlayerId[p.player_id] || 0),
@@ -290,9 +335,16 @@ export default function LivePlayerUpdates() {
             player_name: p.player_name,
             player_image_url: p.player_image_url || null,
             manager_name: payload.team_2.manager_name,
+            team_name: team2Name,
+            opp_team_name: team1Name,
             team_score: t2,
             opp_score: t1,
             points: asRounded(p.effective_points),
+            is_bench: !!p.is_bench,
+            competition: compType,
+            cup_round: payload.matchup?.round ?? null,
+            cup_team_points: payload.matchup?.team_2_points ?? null,
+            cup_opp_points: payload.matchup?.team_1_points ?? null,
             goals_scored: Number(p.goals_scored || 0),
             assists: Number(p.assists || 0),
             starts: Number(startsByPlayerId[p.player_id] || 0),
@@ -320,6 +372,16 @@ export default function LivePlayerUpdates() {
         "defensive_returns",
       ];
 
+      const compDetail = (snap: PlayerSnapshot) => {
+        if (snap.competition === "cup" && snap.cup_round) {
+          if (snap.cup_team_points != null && snap.cup_opp_points != null) {
+            return `${snap.team_score}-${snap.opp_score} (${snap.cup_round})`;
+          }
+          return snap.cup_round;
+        }
+        return null;
+      };
+
       Object.values(current).forEach((snapshot) => {
         const oldSnapshot = previous[snapshot.key];
         statKeys.forEach((key) => {
@@ -327,6 +389,7 @@ export default function LivePlayerUpdates() {
           const previousValue = Number(oldSnapshot?.[key] || 0);
           const delta = nextValue - previousValue;
           if (delta <= 0) return;
+          const detail = compDetail(snapshot);
           nextRows.push({
             id: `${snapshot.key}-${key}-${now}-${delta}`,
             at: now,
@@ -334,7 +397,13 @@ export default function LivePlayerUpdates() {
             player_name: snapshot.player_name,
             player_image_url: snapshot.player_image_url,
             manager_name: snapshot.manager_name,
+            is_benched: snapshot.is_bench,
+            team_name: snapshot.team_name ?? null,
+            opp_team_name: snapshot.opp_team_name ?? null,
+            competition: snapshot.competition === "cup" ? "Cup" : "League",
+            competition_detail: detail ?? undefined,
             action: `${STAT_LABELS[key]}${delta > 1 ? ` +${delta}` : ""}`,
+            statKey: key,
             points: snapshot.points,
             fixture_score: `${snapshot.team_score}-${snapshot.opp_score}`,
           });
@@ -378,7 +447,16 @@ export default function LivePlayerUpdates() {
     };
   }, [load]);
 
-  const visibleRows = useMemo(() => rows.slice(0, 12), [rows]);
+  const getSortTime = (r: UpdateRow) =>
+    r.news_added ? new Date(r.news_added).getTime() : (r.at ?? 0);
+  const visibleRows = useMemo(
+    () =>
+      [...rows]
+        .sort((a, b) => getSortTime(b) - getSortTime(a))
+        .reverse()
+        .slice(0, 12),
+    [rows],
+  );
 
   if (loading) {
     return (
@@ -425,12 +503,30 @@ export default function LivePlayerUpdates() {
                 }}
               />
               <div className="min-w-0">
-                <p className="truncate text-sm font-medium">{row.player_name}</p>
-                <p className="truncate text-xs text-muted-foreground">{row.action} • {row.manager_name}</p>
+                <p className="truncate text-sm font-medium">
+                  {row.player_name}
+                  <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">
+                    ({row.is_benched ? "Benched" : "Started"})
+                  </span>
+                </p>
+                <p className="truncate text-xs text-muted-foreground flex items-center gap-1.5">
+                  {row.statKey && (
+                    <span className="shrink-0 text-sm" title={row.action} aria-hidden>
+                      {STAT_ICONS[row.statKey]}
+                    </span>
+                  )}
+                  <span>{row.action}</span>
+                  <span>•</span>
+                  <span>{row.manager_name}</span>
+                  {row.competition ? ` • ${row.competition}` : ""}
+                  {row.competition_detail ? ` • ${row.competition_detail}` : ""}
+                </p>
               </div>
               <div className="text-right">
                 <p className="text-xs font-semibold">{row.points} pts</p>
-                <p className="text-[11px] text-muted-foreground">{row.fixture_score}</p>
+                <p className="text-[11px] text-muted-foreground">
+                  {[row.team_name, row.fixture_score, row.opp_team_name].filter(Boolean).join(" ")}
+                </p>
               </div>
             </div>
           ))}

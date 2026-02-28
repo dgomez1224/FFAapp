@@ -45,6 +45,7 @@ interface PlayerInsight {
 
 interface PlayerInsightsResponse {
   insights?: PlayerInsight[];
+  managers?: string[];
   source: "database" | "fpl_bootstrap";
 }
 
@@ -73,7 +74,7 @@ export default function PlayerInsights() {
   const [filterPosition, setFilterPosition] = useState<string>("");
   const [filterTeam, setFilterTeam] = useState<string>("");
   const [filterAvailability, setFilterAvailability] = useState<string>("");
-  const [filterOwnership, setFilterOwnership] = useState<string>("");
+  const [filterOwnership, setFilterOwnership] = useState<string>("all");
   const [pendingMinAvgMinutes, setPendingMinAvgMinutes] = useState<number>(0);
   const [pendingMaxAvgMinutes, setPendingMaxAvgMinutes] = useState<number>(90);
   const [filterMinAvgMinutes, setFilterMinAvgMinutes] = useState<number>(0);
@@ -106,7 +107,7 @@ export default function PlayerInsights() {
         if (filterPosition) params.set("position", filterPosition);
         if (filterTeam) params.set("team", filterTeam);
         if (filterAvailability) params.set("availability", filterAvailability);
-        if (filterOwnership) params.set("ownership", filterOwnership);
+        if (filterOwnership && filterOwnership !== "all") params.set("ownership", filterOwnership === "free_agent" ? "free_agent" : filterOwnership);
         params.set("min_avg_minutes", String(filterMinAvgMinutes));
         params.set("max_avg_minutes", String(filterMaxAvgMinutes));
         if (filterSearch) params.set("search", filterSearch);
@@ -232,9 +233,13 @@ export default function PlayerInsights() {
             <option value="u">Unavailable</option>
           </select>
           <select className="rounded-md border px-3 py-2 text-sm" value={filterOwnership} onChange={(e) => setFilterOwnership(e.target.value)}>
-            <option value="">All Ownership</option>
-            <option value="owned">Owned</option>
-            <option value="unowned">Unowned</option>
+            <option value="all">All Managers</option>
+            <option value="free_agent">Free agent</option>
+            {(data?.managers || []).map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
           </select>
           <div className="rounded-md border px-3 py-2 text-sm">
             <div className="mb-1 text-xs text-muted-foreground">

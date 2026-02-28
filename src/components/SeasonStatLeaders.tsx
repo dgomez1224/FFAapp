@@ -8,7 +8,6 @@ type LeaderLine = { manager_name: string; value: number; details: string | null 
 type LeaderMetric = { value: number; leaders: LeaderLine[] };
 
 type Payload = {
-  season: string;
   season_leaders: {
     points_in_gameweek: LeaderMetric;
     most_50_plus_gws: LeaderMetric;

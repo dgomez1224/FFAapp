@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022"],
+    "lib": ["ES2022", "DOM"],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "allowJs": true,
@@ -9,6 +9,6 @@
     "noEmit": true,
     "types": []
   },
-  "include": ["*.ts"],
+  "include": ["*.ts", "deno.d.ts"],
   "exclude": ["node_modules"]
 }
