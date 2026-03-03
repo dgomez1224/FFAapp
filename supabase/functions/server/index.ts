@@ -237,19 +237,10 @@ async function fetchDraftBootstrap() {
 }
 
 async function resolveConfiguredDraftLeagueId(
-  supabase: ReturnType<typeof getSupabaseAdmin>,
+  _supabase: ReturnType<typeof getSupabaseAdmin>,
 ) {
-  try {
-    const { data } = await supabase
-      .from("season_state")
-      .select("league_id")
-      .eq("season", CURRENT_SEASON)
-      .maybeSingle();
-    const fromDb = parsePositiveInt(data?.league_id);
-    return fromDb || DEFAULT_DRAFT_LEAGUE_ID;
-  } catch {
-    return DEFAULT_DRAFT_LEAGUE_ID;
-  }
+  // season_state table has been removed; always use configured default.
+  return DEFAULT_DRAFT_LEAGUE_ID;
 }
 
 function normalizeEmail(value: unknown) {
@@ -337,20 +328,11 @@ async function resolveCupTargetGameweek(
   supabase: ReturnType<typeof getSupabaseAdmin>,
 ) {
   let currentGameweek: number | null = null;
-  const { data: seasonState } = await supabase
-    .from("season_state")
-    .select("current_gameweek")
-    .eq("season", CURRENT_SEASON)
-    .maybeSingle();
-  currentGameweek = parsePositiveInt(seasonState?.current_gameweek);
-
-  if (!currentGameweek) {
-    try {
-      const bootstrap = await fetchDraftBootstrap();
-      currentGameweek = extractDraftCurrentEventId(bootstrap);
-    } catch {
-      currentGameweek = null;
-    }
+  try {
+    const bootstrap = await fetchDraftBootstrap();
+    currentGameweek = extractDraftCurrentEventId(bootstrap);
+  } catch {
+    currentGameweek = null;
   }
 
   return Math.max(CUP_START_GAMEWEEK, currentGameweek || CUP_START_GAMEWEEK);
@@ -2053,16 +2035,6 @@ async function fetchClassicH2HStandings(entryId: string) {
 }
 
 async function resolveLeagueContextFromDb(supabase: ReturnType<typeof getSupabaseAdmin>) {
-  const { data: seasonState, error: seasonError } = await supabase
-    .from("season_state")
-    .select("season, current_gameweek, league_id, league_name")
-    .eq("season", CURRENT_SEASON)
-    .maybeSingle();
-
-  if (seasonError) {
-    throw new Error(`Failed to load season_state: ${seasonError.message}`);
-  }
-
   const { data: teams, error: teamsError } = await supabase
     .from("teams")
     .select("id, entry_id, entry_name, manager_name, manager_short_name, seed");
@@ -2073,11 +2045,11 @@ async function resolveLeagueContextFromDb(supabase: ReturnType<typeof getSupabas
 
   return {
     entryId: STATIC_ENTRY_ID,
-    leagueId: seasonState?.league_id ?? null,
-    leagueName: seasonState?.league_name ?? null,
-    currentGameweek: seasonState?.current_gameweek ?? null,
+    leagueId: DEFAULT_DRAFT_LEAGUE_ID,
+    leagueName: "League of Lads",
+    currentGameweek: null,
     teams: teams || [],
-    hasSeasonState: !!seasonState,
+    hasSeasonState: false,
   };
 }
 
@@ -3186,9 +3158,10 @@ managerInsights.get("/:teamId", async (c) => {
     // Fetch historical data for this manager across seasons
     const { data: history } = await supabase
       .from("league_history")
-      .select("*")
+      .select("id, season, entry_id, entry_name, manager_name, final_rank, total_points, awards, records, additional_data, created_at, updated_at")
       .eq("entry_id", team.entry_id)
-      .order("season", { ascending: false });
+      .order("season", { ascending: false })
+      .limit(40);
 
     // Fetch current season scores
     const { data: scores } = await supabase
@@ -3428,18 +3401,6 @@ playerInsights.get("/", async (c) => {
       } catch {
         currentGameweekContext = 0;
         latestCompletedGameweek = 0;
-      }
-      if (!currentGameweekContext) {
-        try {
-          const { data: seasonState } = await supabase
-            .from("season_state")
-            .select("current_gameweek")
-            .eq("season", CURRENT_SEASON)
-            .maybeSingle();
-          currentGameweekContext = coerceNumber(seasonState?.current_gameweek, 0);
-        } catch {
-          currentGameweekContext = 0;
-        }
       }
       ownershipDebug.current_gameweek_context = currentGameweekContext || null;
       ownershipGameweek = latestCompletedGameweek || currentGameweekContext || 1;
@@ -4715,7 +4676,7 @@ leagueHistory.get("/", async (c) => {
     // Try unified view first, fallback to individual tables
     const { data: unified, error: unifiedError } = await supabase
       .from("unified_league_standings")
-      .select("*")
+      .select("season, manager_name, entry_id, entry_name, final_rank, total_points, wins, draws, losses, points_for, points_against, source")
       .order("season", { ascending: false })
       .order("final_rank", { ascending: true });
 
@@ -4724,7 +4685,7 @@ leagueHistory.get("/", async (c) => {
       const [legacyRes, computedRes] = await Promise.all([
         supabase
           .from("legacy_league_standings")
-          .select("*")
+          .select("season, manager_name, entry_id, entry_name, final_rank, total_points, wins, draws, losses, points_for, points_against, imported_at")
           .lt("season", HISTORICAL_STATS_CUTOFF_SEASON)
           .order("season", { ascending: false }),
         supabase
@@ -4832,9 +4793,10 @@ leagueHistory.get("/:season", async (c) => {
 
     const { data: history, error: historyError } = await supabase
       .from("league_history")
-      .select("*")
+      .select("id, season, entry_id, entry_name, manager_name, final_rank, total_points, awards, records, additional_data, created_at, updated_at")
       .eq("season", season)
-      .order("final_rank", { ascending: true });
+      .order("final_rank", { ascending: true })
+      .limit(40);
 
     if (historyError) {
       return jsonError(c, 500, "Failed to fetch season history", historyError.message);
@@ -5061,10 +5023,11 @@ managerRatings.get("/history/:teamId", async (c) => {
 
     const { data: history, error: historyError } = await supabase
       .from("manager_rating_history")
-      .select("*")
+      .select("team_id, season, gameweek, rating")
       .eq("team_id", teamId)
       .order("season", { ascending: false })
-      .order("gameweek", { ascending: false });
+      .order("gameweek", { ascending: false })
+      .limit(80);
 
     if (historyError) {
       return jsonError(c, 500, "Failed to fetch rating history", historyError.message);
@@ -5084,7 +5047,7 @@ managerRatings.get("/deltas/:teamId", async (c) => {
 
     let query = supabase
       .from("manager_rating_deltas")
-      .select("*")
+      .select("team_id, season, gameweek, rating_before, rating_after, delta")
       .eq("team_id", teamId)
       .order("season", { ascending: false })
       .order("gameweek", { ascending: false });
@@ -5092,6 +5055,8 @@ managerRatings.get("/deltas/:teamId", async (c) => {
     if (season) {
       query = query.eq("season", season);
     }
+
+    query = query.limit(80);
 
     const { data: deltas, error: deltasError } = await query;
 
@@ -5218,7 +5183,7 @@ bracket.get("/", async (c) => {
 
     const { data: tournament, error: tournamentError } = await supabase
       .from("tournaments")
-      .select("*")
+      .select("id, entry_id, name, season, status, start_gameweek, group_stage_gameweeks, is_active, created_at")
       .eq("entry_id", STATIC_ENTRY_ID)
       .order("created_at", { ascending: false })
       .limit(1)
@@ -5428,15 +5393,15 @@ liveContext.get("/", async (c) => {
     const entryId = entryIdParam || STATIC_ENTRY_ID;
 
     const supabase = getSupabaseAdmin();
-    
-    // Fetch current gameweek
-    const { data: seasonState } = await supabase
-      .from("season_state")
-      .select("current_gameweek, league_id, league_name, season")
-      .eq("season", CURRENT_SEASON)
-      .maybeSingle();
 
-    const currentEvent = seasonState?.current_gameweek || 1;
+    // Resolve current gameweek from Draft bootstrap (season_state table removed)
+    let currentEvent = 1;
+    try {
+      const bootstrapForGw = await fetchDraftBootstrap();
+      currentEvent = extractDraftCurrentEventId(bootstrapForGw) || 1;
+    } catch {
+      currentEvent = 1;
+    }
 
     // Fetch bootstrap static for metadata versioning
     let bootstrapVersion: string | null = null;
@@ -5790,7 +5755,7 @@ adminRefresh.post("/refresh-current-season", async (c) => {
 
     const { data: existingTournament } = await supabase
       .from("tournaments")
-      .select("*")
+      .select("id")
       .eq("entry_id", STATIC_ENTRY_ID)
       .eq("season", CURRENT_SEASON)
       .maybeSingle();
@@ -5815,21 +5780,6 @@ adminRefresh.post("/refresh-current-season", async (c) => {
         return jsonError(c, 500, "Failed to create tournament", tournamentError.message);
       }
       tournamentId = newTournament?.id ?? null;
-    }
-
-    const { error: stateError } = await supabase
-      .from("season_state")
-      .upsert({
-        season: CURRENT_SEASON,
-        current_gameweek: currentGameweek,
-        deadline_time: deadlineTime,
-        league_id: String(leagueId),
-        league_name: leagueName,
-        updated_at: new Date().toISOString(),
-      }, { onConflict: "season" });
-
-    if (stateError) {
-      return jsonError(c, 500, "Failed to update season state", stateError.message);
     }
 
     const { data: teams } = await supabase
@@ -6647,12 +6597,7 @@ fixturesHub.get("/", async (c) => {
       // Continue with persisted rows.
     }
 
-    const [seasonStateRes, teamsRes, cupRes] = await Promise.all([
-      supabase
-        .from("season_state")
-        .select("season, current_gameweek")
-        .eq("season", CURRENT_SEASON)
-        .maybeSingle(),
+    const [teamsRes, cupRes] = await Promise.all([
       supabase
         .from("teams")
         .select("id, entry_id, entry_name, manager_name"),
@@ -6688,7 +6633,7 @@ fixturesHub.get("/", async (c) => {
     let draftEntries: any[] = [];
     let draftMatches: any[] = [];
     let rankMap: Record<string, number> = {};
-    let currentGw = coerceNumber(seasonStateRes.data?.current_gameweek, 1);
+    let currentGw = 1;
     const draftEntryMap: Record<string, { id: string; entry_name: string | null; manager_name: string | null; club_crest_url?: string | null }> = {};
     const draftEntryByEntryId: Record<string, { entry_name: string | null; manager_name: string | null; club_crest_url?: string | null }> = {};
     const draftNameByDbTeamId: Record<string, { entry_name: string | null; manager_name: string | null; club_crest_url?: string | null }> = {};
@@ -7020,7 +6965,7 @@ fixturesHub.get("/", async (c) => {
     }
 
     // Enrich fixtures with last used lineup for unstarted games
-    const currentGwForLineups = coerceNumber(seasonStateRes.data?.current_gameweek, 1);
+    const currentGwForLineups = currentGw;
     const enrichMatchups = async (groups: Record<string, any[]>) => {
       const out: Record<string, any[]> = {};
       for (const [gw, matchups] of Object.entries(groups)) {
@@ -7063,8 +7008,8 @@ fixturesHub.get("/", async (c) => {
     );
 
     return c.json({
-      season: seasonStateRes.data?.season || CURRENT_SEASON,
-      current_gameweek: coerceNumber(seasonStateRes.data?.current_gameweek, 1),
+      season: CURRENT_SEASON,
+      current_gameweek: currentGw,
       league: groupToArray(enrichedLeague),
       cup: groupToArray(enrichedCup),
       cup_group: Object.entries(cupGroupByGw)
@@ -7263,12 +7208,7 @@ fixturesHub.get("/matchup", async (c) => {
       const bootstrap = await fetchDraftBootstrap();
       currentGw = extractDraftCurrentEventId(bootstrap) || currentGw;
     } catch {
-      const { data: seasonState } = await supabase
-        .from("season_state")
-        .select("current_gameweek")
-        .eq("season", CURRENT_SEASON)
-        .maybeSingle();
-      currentGw = parsePositiveInt(seasonState?.current_gameweek) || currentGw;
+      currentGw = gameweek;
     }
     const cupCaptainByTeam: Record<string, { captain: number; vice: number }> = {};
     let rankMap: Record<string, number> = {};
@@ -7639,12 +7579,7 @@ fixturesHub.get("/lineup", async (c) => {
       const bootstrap = await fetchDraftBootstrap();
       currentGw = extractDraftCurrentEventId(bootstrap) || currentGw;
     } catch {
-      const { data: seasonState } = await supabase
-        .from("season_state")
-        .select("current_gameweek")
-        .eq("season", CURRENT_SEASON)
-        .maybeSingle();
-      currentGw = parsePositiveInt(seasonState?.current_gameweek) || currentGw;
+      currentGw = gameweek;
     }
 
     let captainPlayerId = 0;
@@ -7913,10 +7848,11 @@ legacyStats.get("/season-standings/:season", async (c) => {
 
     const { data, error } = await supabase
       .from("legacy_season_standings")
-      .select("*")
+      .select("season, manager_name, entry_id, entry_name, final_rank, total_points, wins, draws, losses, points_for, points_against, competition_type")
       .eq("season", season)
       .eq("competition_type", competitionType)
-      .order("final_rank", { ascending: true });
+      .order("final_rank", { ascending: true })
+      .limit(40);
 
     if (error) {
       return jsonError(c, 500, "Failed to fetch season standings", error.message);
@@ -7976,9 +7912,10 @@ legacyStats.get("/manager/:managerName", async (c) => {
     // Fetch season standings
     const { data: seasonStandingsRaw } = await supabase
       .from("legacy_season_standings")
-      .select("*")
+      .select("season, manager_name, entry_id, entry_name, final_rank, total_points, wins, draws, losses, points_for, points_against, competition_type")
       .in("manager_name", managerVariants)
-      .order("season", { ascending: false });
+      .order("season", { ascending: false })
+      .limit(80);
     const seasonStandings = (seasonStandingsRaw || []).map((row: any) => ({
       ...row,
       manager_name: managerName,
@@ -7990,11 +7927,12 @@ legacyStats.get("/manager/:managerName", async (c) => {
     // Fetch H2H stats by season
     const { data: h2hBySeasonRaw } = await supabase
       .from("legacy_h2h_stats")
-      .select("*")
+      .select("season, manager_name, opponent_name, wins, draws, losses, games_played, avg_points")
       .in("manager_name", managerVariants)
       .not("season", "is", null)
       .order("season", { ascending: false })
-      .order("opponent_name", { ascending: true });
+      .order("opponent_name", { ascending: true })
+      .limit(400);
     const h2hSeasonMap: Record<string, any> = {};
     (h2hBySeasonRaw || []).forEach((row: any) => {
       const opponent = toCanonicalManagerName(row.opponent_name) || normalizeManagerName(row.opponent_name);
@@ -8028,17 +7966,19 @@ legacyStats.get("/manager/:managerName", async (c) => {
     // Fetch season trophies
     const { data: trophiesRaw } = await supabase
       .from("legacy_season_trophies")
-      .select("*")
+      .select("season, manager_name, league_champion, cup_winner, goblet_winner")
       .in("manager_name", managerVariants)
-      .order("season", { ascending: false });
+      .order("season", { ascending: false })
+      .limit(80);
     const trophies = (trophiesRaw || []).map((row: any) => ({ ...row, manager_name: managerName }));
 
     // Fetch manager season stats
     const { data: seasonStatsRaw } = await supabase
       .from("legacy_manager_season_stats")
-      .select("*")
+      .select("season, manager_name, total_points, games_played, points_per_game")
       .in("manager_name", managerVariants)
-      .order("season", { ascending: false });
+      .order("season", { ascending: false })
+      .limit(80);
     const seasonStats = (seasonStatsRaw || []).map((row: any) => ({ ...row, manager_name: managerName }));
 
     return c.json({
@@ -8070,10 +8010,11 @@ legacyStats.get("/h2h/:managerName", async (c) => {
       const managerVariants = getManagerNameVariants(managerName);
       const { data, error } = await supabase
         .from("legacy_h2h_stats")
-        .select("*")
+        .select("season, manager_name, opponent_name, wins, draws, losses, games_played, avg_points")
         .in("manager_name", managerVariants)
         .eq("season", season)
-        .order("opponent_name", { ascending: true });
+        .order("opponent_name", { ascending: true })
+        .limit(200);
 
       if (error) {
         return jsonError(c, 500, "Failed to fetch H2H stats", error.message);
@@ -8138,10 +8079,11 @@ legacyStats.get("/gameweek-standings/:season/:gameweek", async (c) => {
 
     const { data, error } = await supabase
       .from("legacy_gameweek_standings")
-      .select("*")
+      .select("season, gameweek, manager_name, rank, points, total_points")
       .eq("season", season)
       .eq("gameweek", gameweek)
-      .order("rank", { ascending: true });
+      .order("rank", { ascending: true })
+      .limit(40);
 
     if (error) {
       return jsonError(c, 500, "Failed to fetch gameweek standings", error.message);

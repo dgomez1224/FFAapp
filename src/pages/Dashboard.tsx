@@ -12,6 +12,8 @@ import { ThisWeekMatchups } from "../components/ThisWeekMatchups";
 import SeasonStatLeaders from "../components/SeasonStatLeaders";
 import { ThisWeeksWaivers } from "../components/ThisWeeksWaivers";
 import LivePlayerUpdates from "../components/LivePlayerUpdates";
+import CupGroupStage from "../components/CupGroupStage";
+import { BracketView } from "../components/BracketView";
 
 export default function DashboardPage() {
   return (
@@ -32,6 +34,8 @@ export default function DashboardPage() {
 
       <ThisWeekMatchups />
       <ThisWeeksWaivers />
+      <CupGroupStage />
+      <BracketView showLegacySelector={false} />
     </div>
   );
 }

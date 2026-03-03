@@ -1,3 +1,5 @@
+import { CANONICAL_MANAGERS, type CanonicalManager } from "./canonicalManagers";
+
 /**
  * Public Read-Only Mode Constants
  * 
@@ -19,6 +21,12 @@ export const STATIC_ENTRY_ID = "164475";
  * FPL API Base URL
  */
 export const FPL_BASE_URL = "https://fantasy.premierleague.com/api";
+
+/**
+ * Draft FPL API Base URL and League ID
+ */
+export const DRAFT_BASE_URL = "https://draft.premierleague.com/api";
+export const LEAGUE_ID = "28469";
 
 /**
  * Supabase Edge Functions Base Path
@@ -43,6 +51,13 @@ export const HISTORICAL_STATS_CUTOFF_SEASON = "2025/26";
  * Used to determine if data should be auto-computed or loaded from CSV
  */
 export const CURRENT_SEASON = "2025/26";
+
+/**
+ * Canonical manager list re-exported for convenience.
+ * These are the only valid manager identifiers in the system.
+ */
+export const MANAGERS = CANONICAL_MANAGERS;
+export type ManagerName = CanonicalManager;
 
 /**
  * Flourish Embed IDs for Standings by Gameweek

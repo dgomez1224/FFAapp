@@ -159,16 +159,18 @@ export default function Home() {
         const [leagueRes, gobletRes] = await Promise.all([
           supabase
             .from("legacy_season_standings")
-            .select("*")
+            .select("season, manager_name, final_rank, wins, draws, losses, points_for, points, competition_type")
             .eq("season", selectedSeason)
             .eq("competition_type", "league")
-            .order("final_rank", { ascending: true }),
+            .order("final_rank", { ascending: true })
+            .limit(40),
           supabase
             .from("legacy_season_standings")
-            .select("*")
+            .select("season, manager_name, final_rank, wins, draws, losses, points_for, points, competition_type")
             .eq("season", selectedSeason)
             .eq("competition_type", "goblet")
-            .order("final_rank", { ascending: true }),
+            .order("final_rank", { ascending: true })
+            .limit(40),
         ]);
 
         if (leagueRes.error) {

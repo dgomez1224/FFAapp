@@ -34,6 +34,8 @@ import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { contrastText, ensureReadableText, extractPaletteFromImage, mix, rgbCss } from "../lib/colorPalette";
 import leagueTrophy from "../assets/trophies/League Cup Icon.png";
+import cupTrophy from "../assets/trophies/FFA Cup Icon + Year.png";
+import gobletTrophy from "../assets/trophies/Goblet Icon.png";
 import { Button } from "../components/ui/button";
 import { MoreHorizontal } from "lucide-react";
 
@@ -64,7 +66,7 @@ function Shell() {
     { label: "Legacy", path: "/legacy-home" },
     { label: "Legacy GW", path: "/legacy-gameweek-standings" },
     { label: "GW Standings", path: "/standings-by-gameweek" },
-    { label: "Bracket", path: "/bracket" },
+    { label: "FFA Cup", path: "/bracket" },
     { label: "Pick Captain", path: "/pick-captain" },
     { label: "My Page", path: "/my-page" },
   ];
@@ -220,11 +222,23 @@ function Shell() {
         <div className="mx-auto flex min-h-16 max-w-6xl items-center justify-between gap-3 px-4 py-2">
           <Link to="/dashboard" className="font-heading group text-lg font-semibold inline-flex items-center gap-2 hover:opacity-90">
             <img
-              src={leagueTrophy}
-              alt="League trophy"
+              src={
+                location.pathname.startsWith("/goblet")
+                  ? gobletTrophy
+                  : location.pathname.startsWith("/bracket")
+                  ? cupTrophy
+                  : leagueTrophy
+              }
+              alt={
+                location.pathname.startsWith("/goblet")
+                  ? "Goblet trophy"
+                  : location.pathname.startsWith("/bracket")
+                  ? "FFA Cup trophy"
+                  : "League trophy"
+              }
               className="h-7 w-5 object-contain transition-all duration-200 group-hover:scale-110 group-hover:brightness-110 group-hover:sepia group-hover:saturate-[8] group-hover:hue-rotate-[340deg]"
             />
-            League of Lads
+            {location.pathname.startsWith("/bracket") ? "FFA Bench Boost Cup" : "League of Lads"}
           </Link>
 
           <nav className="font-heading hidden flex-wrap items-center gap-5 text-sm tracking-wide lg:flex">
@@ -253,7 +267,7 @@ function Shell() {
               GW Standings
             </Link>
             <Link to="/bracket" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-              Bracket
+              FFA Cup
             </Link>
             {token ? (
               <button type="button" onClick={handleHeaderSignOut} className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
