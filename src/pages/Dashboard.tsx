@@ -24,11 +24,12 @@ export default function DashboardPage() {
           Current season snapshot powered by Draft data.
         </p>
       </div>
-
-      <LeagueStandings />
-      <BracketView showLegacySelector={false} />
-      <GobletStandings />
+      
       <LivePlayerUpdates />
+      <LeagueStandings />
+      <BracketView showLegacySelector={false} />``
+      <GobletStandings />
+      
       <ThisWeekMatchups />
       <SeasonStatLeaders />
 

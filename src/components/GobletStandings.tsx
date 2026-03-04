@@ -5,7 +5,7 @@
  * with aggregate leaderboard tracking.
  */
 
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState } from "react";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { Card } from "./ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
@@ -26,12 +26,13 @@ interface GobletStandingsResponse {
   source: "database" | "derived" | "draft";
 }
 
+const BASELINE_KEY = "goblet_baseline_ranks";
+
 export default function GobletStandings() {
   const [data, setData] = useState<GobletStandingsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { getCrest } = useManagerCrestMap();
-  const baselineRanksRef = useRef<Record<string, number> | null>(null);
 
   useEffect(() => {
     async function fetchStandings() {
@@ -48,14 +49,19 @@ export default function GobletStandings() {
         }
 
         const standings = payload?.standings || [];
-        if (!baselineRanksRef.current && standings.length > 0) {
-          const initial: Record<string, number> = {};
-          standings.forEach((s, index) => {
-            if (s.manager_name) {
-              initial[s.manager_name] = index + 1;
-            }
-          });
-          baselineRanksRef.current = initial;
+        try {
+          const stored = sessionStorage.getItem(BASELINE_KEY);
+          if (!stored && standings.length > 0) {
+            const initial: Record<string, number> = {};
+            standings.forEach((s, index) => {
+              if (s.manager_name) {
+                initial[s.manager_name] = index + 1;
+              }
+            });
+            sessionStorage.setItem(BASELINE_KEY, JSON.stringify(initial));
+          }
+        } catch {
+          // Ignore sessionStorage errors (e.g. unavailable environment)
         }
 
         setData(payload);
@@ -96,6 +102,14 @@ export default function GobletStandings() {
     );
   }
 
+  let baselineRanks: Record<string, number> = {};
+  try {
+    const stored = sessionStorage.getItem(BASELINE_KEY);
+    baselineRanks = stored ? JSON.parse(stored) : {};
+  } catch {
+    baselineRanks = {};
+  }
+
   return (
     <div className="space-y-4">
       <div>
@@ -121,8 +135,8 @@ export default function GobletStandings() {
               {data.standings.map((standing, index) => {
                 const managerKey = standing.manager_name ?? "";
                 const baselineRank =
-                  managerKey && baselineRanksRef.current
-                    ? baselineRanksRef.current[managerKey]
+                  managerKey && baselineRanks
+                    ? baselineRanks[managerKey]
                     : undefined;
                 const currentRank = index + 1;
                 const moved =

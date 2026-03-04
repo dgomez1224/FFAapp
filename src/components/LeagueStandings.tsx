@@ -42,6 +42,20 @@ function computeLiveStandingsFromMatches(
     return baseline;
   }
 
+  // Only process entries that exist in baseline
+  const baselineIds = new Set(
+    baseline
+      .map((s: any) =>
+        String(
+          (s as any).league_entry ??
+            (s as any).entry_id ??
+            (s as any).id ??
+            ""
+        )
+      )
+      .filter((id) => id)
+  );
+
   const byId: Record<string, Standing> = {};
   baseline.forEach((row) => {
     byId[row.team_id] = { ...row };
@@ -56,8 +70,14 @@ function computeLiveStandingsFromMatches(
     const team2Id = m?.league_entry_2 ?? m?.entry_2 ?? m?.away;
     if (team1Id == null || team2Id == null) return;
 
-    const key1 = String(team1Id);
-    const key2 = String(team2Id);
+    const entry1Id = String(team1Id);
+    const entry2Id = String(team2Id);
+
+    // Skip any match entry not in baseline
+    if (!baselineIds.has(entry1Id) && !baselineIds.has(entry2Id)) return;
+
+    const key1 = entry1Id;
+    const key2 = entry2Id;
 
     if (!byId[key1]) {
       byId[key1] = {

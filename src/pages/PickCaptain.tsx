@@ -41,6 +41,7 @@ export default function PickCaptain() {
   const [viceCaptainId, setViceCaptainId] = useState<number | null>(null);
   const [selectedPlayer, setSelectedPlayer] = useState<PlayerStats | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [livePoints, setLivePoints] = useState<Record<number, number>>({});
 
   const token = useMemo(() => getCaptainSessionToken(), []);
   const toPositiveIntOrNull = (value: unknown): number | null => {
@@ -79,7 +80,33 @@ export default function PickCaptain() {
         selected_captain_id: normalizedCaptainId,
         selected_vice_captain_id: normalizedViceCaptainId,
       };
+
       setContext(normalizedContext);
+
+      // Fetch live points for the current active GW (target GW - 1)
+      try {
+        const activeGw = normalizedContext.gameweek - 1;
+        if (activeGw > 0) {
+          const liveRes = await fetch(
+            `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/api/live?event=${activeGw}`,
+            { headers: getSupabaseFunctionHeaders() }
+          );
+          if (liveRes.ok) {
+            const liveData = await liveRes.json();
+            const pts: Record<number, number> = {};
+            (liveData?.elements || []).forEach((el: any) => {
+              const id = el?.id ?? el?.element_id;
+              if (id) {
+                pts[Number(id)] =
+                  el?.stats?.total_points ?? el?.total_points ?? 0;
+              }
+            });
+            setLivePoints(pts);
+          }
+        }
+      } catch {
+        // non-fatal
+      }
       setCaptainId(normalizedCaptainId);
       setViceCaptainId(normalizedViceCaptainId);
       if (normalizedViceCaptainId && !payload.selected_vice_captain_name) {
@@ -178,7 +205,7 @@ export default function PickCaptain() {
     player_name: p.name,
     player_image_url: p.image_url || null,
     position: p.position || 3,
-    raw_points: 0,
+    raw_points: livePoints[p.id] ?? 0,
     effective_points: 0,
     is_captain: p.id === captainId,
     is_vice_captain: p.id === viceCaptainId,
@@ -322,6 +349,19 @@ export default function PickCaptain() {
       <Card className="p-6">
         <h2 className="text-lg font-semibold mb-4">Your Team</h2>
         <FootballPitch players={pitchPlayers} onPlayerClick={handlePlayerClick} showCaptain={true} />
+
+        {(context?.players || []).length > 0 && (
+          <div className="mt-4 space-y-1 text-sm">
+            {(context?.players || []).map((player) => (
+              <div key={player.id} className="flex items-center justify-between">
+                <span>{player.name}</span>
+                <span className="text-sm text-muted-foreground ml-2">
+                  {livePoints[player.id] != null ? `${livePoints[player.id]} pts` : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
 
         <div className="mt-5 flex items-center gap-2">
           <Button onClick={handleSave} disabled={saving || !captainId || !viceCaptainId || captainId === viceCaptainId}>
