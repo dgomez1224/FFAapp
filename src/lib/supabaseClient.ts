@@ -9,10 +9,13 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-export function getSupabaseFunctionHeaders() {
+export function getSupabaseFunctionHeaders(): Record<string, string> {
   if (!supabaseAnonKey) return {};
+
+  const key = String(supabaseAnonKey);
+
   return {
-    Authorization: `Bearer ${supabaseAnonKey}`,
-    apikey: supabaseAnonKey,
+    Authorization: `Bearer ${key}`,
+    apikey: key,
   };
 }

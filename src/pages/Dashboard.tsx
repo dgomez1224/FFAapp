@@ -10,9 +10,9 @@ import LeagueStandings from "../components/LeagueStandings";
 import GobletStandings from "../components/GobletStandings";
 import { ThisWeekMatchups } from "../components/ThisWeekMatchups";
 import SeasonStatLeaders from "../components/SeasonStatLeaders";
+import CupGroupStage from "../components/CupGroupStage";
 import { ThisWeeksWaivers } from "../components/ThisWeeksWaivers";
 import LivePlayerUpdates from "../components/LivePlayerUpdates";
-import CupGroupStage from "../components/CupGroupStage";
 import { BracketView } from "../components/BracketView";
 
 export default function DashboardPage() {
@@ -25,17 +25,15 @@ export default function DashboardPage() {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <LeagueStandings />
-        <LivePlayerUpdates />
-        <GobletStandings />
-        <SeasonStatLeaders />
-      </div>
-
+      <LeagueStandings />
+      <GobletStandings />
+      <LivePlayerUpdates />
       <ThisWeekMatchups />
-      <ThisWeeksWaivers />
-      <CupGroupStage />
+      <SeasonStatLeaders />
+
       <BracketView showLegacySelector={false} />
+      <ThisWeeksWaivers />
+      
     </div>
   );
 }

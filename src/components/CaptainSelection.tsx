@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { fplApi } from "../lib/fpl-api-client";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
+import { getCaptainSessionToken } from "../lib/captainSession";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
-import { supabase, supabaseUrl } from "../lib/supabaseClient";
+import { supabase } from "../lib/supabaseClient";
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
 import { RadioGroup, RadioGroupItem } from "./ui/radio-group";
@@ -64,23 +64,27 @@ export function CaptainSelection() {
       setLoading(true);
       setError(null);
 
-      const [squadRes, bootstrapRes] = await Promise.all([
-        fplApi.getSquad<SquadResponse>(entryId, currentGameweek),
-        fplApi.getBootstrapStatic<BootstrapResponse>(),
-      ]);
-
-      if (!squadRes.ok || !bootstrapRes.ok || !squadRes.data || !bootstrapRes.data) {
-        setError(
-          "Unable to load your squad from the FPL API. Please check your configuration and try again.",
-        );
+      const token = getCaptainSessionToken();
+      if (!token) {
+        setError("Not signed in");
         setLoading(false);
         return;
       }
 
-      const pickIds = new Set(squadRes.data.picks.map((p) => p.element));
-      const squadPlayers = bootstrapRes.data.elements.filter((p) =>
-        pickIds.has(p.id),
+      const ctxRes = await fetch(
+        `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/captain/context?token=${encodeURIComponent(
+          token,
+        )}`,
+        { headers: getSupabaseFunctionHeaders() }
       );
+      const ctxData = ctxRes.ok ? await ctxRes.json() : null;
+      if (!ctxRes.ok || !ctxData) {
+        setError("Failed to load captain data");
+        setLoading(false);
+        return;
+      }
+
+      const squadPlayers = Array.isArray(ctxData.players) ? ctxData.players : [];
       setPlayers(squadPlayers);
       setLoading(false);
     }

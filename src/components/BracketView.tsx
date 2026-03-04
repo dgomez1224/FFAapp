@@ -130,7 +130,7 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
       try {
         const functionsBase = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}`;
         const res = await fetch(`${functionsBase}/bracket`, {
-          headers: getSupabaseFunctionHeaders(),
+          headers: getSupabaseFunctionHeaders() as HeadersInit,
         });
         const payload: BracketResponse = await res.json();
 
@@ -166,7 +166,7 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
         <div className="space-y-2">
           <div className="text-center text-[11px] font-semibold uppercase">Quarter-finals</div>
           {quarterfinals.map((n) => (
-            <div key={`qf-${n}`} className="w-48 rounded-md border bg-muted/40 p-2">
+            <div key={`qf-${n}`} className="w-48 rounded-md border bg-background/80 p-2">
               <div className="mb-1 text-[10px] uppercase tracking-wide">Match {n}</div>
               <div className="space-y-1">
                 <div className="flex items-center justify-between gap-2">
@@ -185,7 +185,7 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
         <div className="space-y-2">
           <div className="text-center text-[11px] font-semibold uppercase">Semi-finals</div>
           {semifinals.map((n) => (
-            <div key={`sf-${n}`} className="w-48 rounded-md border bg-muted/40 p-2">
+            <div key={`sf-${n}`} className="w-48 rounded-md border bg-background/80 p-2">
               <div className="mb-1 text-[10px] uppercase tracking-wide">Semi {n}</div>
               <div className="space-y-1">
                 <div className="flex items-center justify-between gap-2">
@@ -203,7 +203,7 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
 
         <div className="space-y-2">
           <div className="text-center text-[11px] font-semibold uppercase">Final</div>
-          <div className="w-48 rounded-md border bg-muted/40 p-2">
+          <div className="w-48 rounded-md border bg-background/80 p-2">
             <div className="mb-1 text-[10px] uppercase tracking-wide">Final</div>
             <div className="space-y-1">
               <div className="flex items-center justify-between gap-2">
@@ -286,7 +286,7 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold">Knockout bracket</h1>
+          <h1 className="text-2xl font-semibold">FFA Bench Boost Cup</h1>
           <p className="text-sm text-muted-foreground">
             Two-leg ties with automatic progression based on aggregate score.
           </p>

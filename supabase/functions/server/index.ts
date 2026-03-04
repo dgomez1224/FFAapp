@@ -198,11 +198,21 @@ function extractDraftLeagues(entry: any) {
   return leagues;
 }
 
-function formatDraftManagerName(entry: any) {
-  const first = entry?.player_first_name ?? entry?.player?.first_name ?? "";
-  const last = entry?.player_last_name ?? entry?.player?.last_name ?? "";
-  const combined = `${first} ${last}`.trim();
-  return combined || entry?.manager_name || entry?.player_name || "Manager";
+const FIRST_NAME_TO_CANONICAL: Record<string, string> = {
+  "matthew": "MATT",
+  "max": "MAX",
+  "patrick": "PATRICK",
+  "david": "DAVID",
+  "benji": "BENJI",
+  "ian": "IAN",
+  "marco": "MARCO",
+  "henri": "HENRI",
+  "lennart": "LENNART",
+  "chris": "CHRIS",
+};
+function formatDraftManagerName(entry: any): string {
+  const first = String(entry?.player_first_name || "").trim().toLowerCase();
+  return FIRST_NAME_TO_CANONICAL[first] ?? first.toUpperCase();
 }
 
 function formatDraftTeamName(entry: any) {
@@ -328,14 +338,25 @@ async function resolveCupTargetGameweek(
   supabase: ReturnType<typeof getSupabaseAdmin>,
 ) {
   let currentGameweek: number | null = null;
+  let isOngoing = false;
   try {
-    const bootstrap = await fetchDraftBootstrap();
-    currentGameweek = extractDraftCurrentEventId(bootstrap);
+    const game = await fetchJSON<any>(`${DRAFT_BASE_URL}/game`);
+    currentGameweek = game?.current_event ?? null;
+    // current_event_finished: false = GW is ongoing, lock it
+    // current_event_finished: true = GW finished, pick for current
+    isOngoing = game?.current_event_finished === false;
   } catch {
     currentGameweek = null;
+    isOngoing = false;
   }
-
-  return Math.max(CUP_START_GAMEWEEK, currentGameweek || CUP_START_GAMEWEEK);
+  const base = Math.max(
+    CUP_START_GAMEWEEK,
+    currentGameweek || CUP_START_GAMEWEEK
+  );
+  // If GW is ongoing, lock it — captains pick for next GW
+  if (isOngoing) return base + 1;
+  // GW finished or unknown — pick for current GW
+  return base;
 }
 
 async function fetchDraftSquadForEntries(entryIds: string[], preferredEvent: number) {
@@ -2113,6 +2134,16 @@ function computeManagerRating(
 
 const leagueStandings = new Hono();
 
+const bootstrapStaticRoute = new Hono();
+bootstrapStaticRoute.get("/", async (c) => {
+  try {
+    const bootstrap = await fetchDraftBootstrap();
+    return c.json(bootstrap);
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to fetch bootstrap");
+  }
+});
+
 leagueStandings.get("/", async (c) => {
   try {
     // DB-first: if current-season data is already persisted, use it.
@@ -2233,6 +2264,19 @@ leagueStandings.get("/", async (c) => {
     }
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to fetch league standings");
+  }
+});
+
+leagueStandings.get("/matches", async (c) => {
+  try {
+    const details = await fetchJSON<any>(
+      `${DRAFT_BASE_URL}/league/${DEFAULT_DRAFT_LEAGUE_ID}/details`
+    );
+    const matches = normalizeDraftList<any>(details?.matches ?? []);
+    const entries = normalizeDraftList<any>(details?.league_entries ?? []);
+    return c.json({ matches, league_entries: entries });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to fetch matches");
   }
 });
 
@@ -2388,12 +2432,24 @@ cupGroupStage.get("/", async (c) => {
         }
       });
 
+      // Resolve Supabase team UUIDs by matching entry_id to teams table
+      const supabase = getSupabaseAdmin();
+      const { data: dbTeams } = await supabase
+        .from("teams")
+        .select("id, entry_id");
+      const uuidByEntryId: Record<string, string> = {};
+      (dbTeams || []).forEach((t: any) => {
+        uuidByEntryId[String(t.entry_id)] = t.id;
+      });
+
       const standings = entries
         .map((entry: any) => {
           const id = entry.id ?? entry.league_entry_id ?? entry.entry_id ?? entry.entry;
+          const entryId = entry.entry_id ?? entry.entry ?? entry.id;
+          const supabaseUuid = uuidByEntryId[String(entryId)] ?? null;
           const stats = statsByEntry[String(id)] || { wins: 0, draws: 0, losses: 0, plus: 0, played: 0 };
           return {
-            team_id: id,
+            team_id: supabaseUuid ?? String(id),
             entry_name: formatDraftTeamName(entry),
             manager_name: formatDraftManagerName(entry),
             manager_short_name: entry.short_name ?? null,
@@ -3421,13 +3477,10 @@ playerInsights.get("/", async (c) => {
         const managerName = formatDraftManagerName(entry);
         const ownerLabel = String(managerName || "").trim();
         if (!ownerLabel) return;
-        const keys = [
-          entry?.entry_id,
-          entry?.entry,
-          entry?.id,
-          entry?.league_entry_id,
-        ].map((v) => parsePositiveInt(v)).filter((id): id is number => id != null);
-        keys.forEach((id) => { ownerLabelByOwnerId[id] = ownerLabel; });
+        // Ownership is keyed strictly by platform entry_id (FPL team id).
+        const key = parsePositiveInt(entry?.entry_id ?? entry?.entry);
+        if (!key) return;
+        ownerLabelByOwnerId[key] = ownerLabel;
       });
       ownershipDebug.team_lookup_sample = {
         league_id: leagueId,
@@ -3449,12 +3502,7 @@ playerInsights.get("/", async (c) => {
       elementStatusRows.forEach((row: any) => {
         const playerId = parsePositiveInt(row?.element ?? row?.element_id ?? row?.player_id);
         if (!playerId) return;
-        const ownerKey =
-          parsePositiveInt(row?.owner) ??
-          parsePositiveInt(row?.entry) ??
-          parsePositiveInt(row?.entry_id) ??
-          parsePositiveInt(row?.id) ??
-          parsePositiveInt(row?.league_entry_id);
+        const ownerKey = parsePositiveInt(row?.owner);
         if (ownerKey == null) return;
         ownerIdsSeen.add(ownerKey);
         const ownerLabel = ownerLabelByOwnerId[ownerKey] || null;
@@ -3712,7 +3760,7 @@ playerInsights.get("/", async (c) => {
 
     const fullInsightsFromBootstrap = Object.values(byPlayerFromBootstrap)
       .map((p: any) => {
-        const ownerLabel = resolveOwnerLabel(coerceNumber(p.player_id, 0), String(p.player_name || ""));
+        const ownerLabel = resolveOwnerLabel(coerceNumber(p.player_id, 0), p.player_name);
         return {
           ...p,
           owned_by: ownerLabel ? [ownerLabel] : [],
@@ -5564,7 +5612,7 @@ liveH2H.get("/", async (c) => {
     } catch (err) {
       // Fallback to database
       const context = await resolveLeagueContextFromDb(supabase);
-      leagueId = context.leagueId ? Number.parseInt(context.leagueId, 10) : null;
+      leagueId = context.leagueId || null;
     }
 
     if (!leagueId) {
@@ -7749,6 +7797,8 @@ app.route("/fixtures", fixturesHub);
 
 // Compatibility: allow routes with "/server" prefix if Supabase passes full path
 app.route("/server/league-standings", leagueStandings);
+app.route("/bootstrap-static", bootstrapStaticRoute);
+app.route("/server/bootstrap-static", bootstrapStaticRoute);
 app.route("/server/cup-group-stage", cupGroupStage);
 app.route("/server/goblet-standings", gobletStandings);
 app.route("/server/manager-insights", managerInsights);

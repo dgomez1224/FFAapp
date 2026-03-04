@@ -5,12 +5,14 @@
  * automatically registered. No user registration required.
  */
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { Card } from "./ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import { useManagerCrestMap } from "../lib/useManagerCrestMap";
+import { getCaptainSessionToken } from "../lib/captainSession";
 
 interface CupStanding {
   team_id: string;
@@ -33,13 +35,55 @@ interface CupGroupStageResponse {
   autoRegistered: boolean;
 }
 
+interface LineupPlayer {
+  player_id: number;
+  player_name: string;
+  position: number;
+  is_captain: boolean;
+  is_vice_captain: boolean;
+  is_cup_captain: boolean;
+  raw_points: number;
+  multiplier: number;
+  effective_points: number;
+}
+
+interface LineupPayload {
+  gameweek: number;
+  total_points: number;
+  team: { id: string; entry_name: string | null; manager_name: string | null };
+  lineup: LineupPlayer[];
+}
+
+const POSITION_LABELS: Record<number, string> = {
+  1: "GKP",
+  2: "DEF",
+  3: "MID",
+  4: "FWD",
+};
+
 const REFRESH_INTERVAL = 30_000; // 30 seconds
 
 export default function CupGroupStage() {
   const [data, setData] = useState<CupGroupStageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [fixtureGameweek, setFixtureGameweek] = useState<number | null>(null);
+  const [groupStageStart, setGroupStageStart] = useState<number | null>(null);
+  const [groupStageEnd, setGroupStageEnd] = useState<number | null>(null);
+  const [lineupsByTeam, setLineupsByTeam] = useState<Record<string, LineupPayload>>({});
+  const [fixturesLoading, setFixturesLoading] = useState(false);
+  const [currentGw, setCurrentGw] = useState<number | null>(null);
   const { getCrest } = useManagerCrestMap();
+
+  useEffect(() => {
+    fetch(
+      `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/current-gameweek`,
+      { headers: getSupabaseFunctionHeaders() }
+    )
+      .then((r) => r.json())
+      .then((d) => setCurrentGw(d?.current_gameweek ?? null))
+      .catch(() => {});
+  }, []);
 
   const fetchStandings = async () => {
     try {
@@ -66,6 +110,90 @@ export default function CupGroupStage() {
     const interval = setInterval(fetchStandings, REFRESH_INTERVAL);
     return () => clearInterval(interval);
   }, []);
+
+  // Resolve current cup gameweek from captain context and bracket group range
+  useEffect(() => {
+    const token = getCaptainSessionToken();
+    if (!token) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const ctxRes = await fetch(
+          `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/captain/context?token=${encodeURIComponent(token)}`,
+          { headers: getSupabaseFunctionHeaders() }
+        );
+        if (cancelled || !ctxRes.ok) return;
+        const ctxData = await ctxRes.json();
+        if (ctxData?.gameweek != null) setFixtureGameweek(Number(ctxData.gameweek));
+      } catch {
+        // ignore
+      }
+    })();
+
+    (async () => {
+      try {
+        const bracketRes = await fetch(
+          `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/bracket`,
+          { headers: getSupabaseFunctionHeaders() }
+        );
+        if (cancelled || !bracketRes.ok) return;
+        const bracketData = await bracketRes.json();
+        const group = bracketData?.group;
+        if (group?.start_gameweek != null) setGroupStageStart(Number(group.start_gameweek));
+        if (group?.end_gameweek != null) setGroupStageEnd(Number(group.end_gameweek));
+      } catch {
+        // ignore
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Fetch lineups for current GW when in group stage
+  const isGroupStageGw =
+    fixtureGameweek != null &&
+    groupStageStart != null &&
+    groupStageEnd != null &&
+    fixtureGameweek >= groupStageStart &&
+    fixtureGameweek <= groupStageEnd;
+
+  useEffect(() => {
+    if (!isGroupStageGw || !data?.standings?.length) return;
+
+    const teamIds = data.standings.map((s) => s.team_id);
+    setFixturesLoading(true);
+    setLineupsByTeam({});
+
+    let cancelled = false;
+    (async () => {
+      const gw = fixtureGameweek!;
+      const next: Record<string, LineupPayload> = {};
+      await Promise.all(
+        teamIds.map(async (teamId) => {
+          if (cancelled) return;
+          try {
+            const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/fixtures/lineup?team=${encodeURIComponent(teamId)}&gameweek=${gw}&type=cup`;
+            const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
+            const payload = await res.json();
+            if (!cancelled && res.ok && !payload?.error) next[teamId] = payload as LineupPayload;
+          } catch {
+            // skip this team
+          }
+        })
+      );
+      if (!cancelled) {
+        setLineupsByTeam(next);
+      }
+      if (!cancelled) setFixturesLoading(false);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isGroupStageGw, fixtureGameweek, data?.standings]);
 
   // Determine advancing threshold (top 80%)
   const advancingCount = data && data.standings.length > 0 ? Math.ceil(data.standings.length * 0.8) : 0;
@@ -133,7 +261,16 @@ export default function CupGroupStage() {
                               className="h-4 w-4 rounded object-cover border"
                             />
                           ) : null}
-                          <span>{team.entry_name || "-"}</span>
+                          {currentGw ? (
+                            <Link
+                              to={`/lineup/cup/${currentGw}/${team.team_id}`}
+                              className="hover:underline text-primary"
+                            >
+                              {team.entry_name || team.manager_name || "—"}
+                            </Link>
+                          ) : (
+                            <span>{team.entry_name || team.manager_name || "—"}</span>
+                          )}
                         </div>
                       </TableCell>
                       <TableCell>{team.manager_name}</TableCell>
@@ -171,6 +308,60 @@ export default function CupGroupStage() {
           </Table>
         )}
       </Card>
+
+      {isGroupStageGw && fixtureGameweek != null && (
+        <Card className="p-4">
+          <h2 className="text-lg font-semibold mb-4">GW{fixtureGameweek} Fixtures</h2>
+          {fixturesLoading && Object.keys(lineupsByTeam).length === 0 ? (
+            <p className="text-sm text-muted-foreground py-4">Loading lineups…</p>
+          ) : (
+            <div className="space-y-6">
+              {standings.map((team) => {
+                const lineup = lineupsByTeam[team.team_id];
+                return (
+                  <div key={team.team_id || team.manager_name} className="border rounded-lg p-4 space-y-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {getCrest(team.manager_name) ? (
+                        <img
+                          src={getCrest(team.manager_name)!}
+                          alt=""
+                          className="h-5 w-5 rounded object-cover border"
+                        />
+                      ) : null}
+                      <span className="font-medium">{team.entry_name || team.manager_name}</span>
+                      <span className="text-muted-foreground text-sm">{team.manager_name}</span>
+                      {lineup != null && (
+                        <span className="text-sm font-semibold ml-auto">
+                          Total: {Math.round(lineup.total_points)} pts
+                        </span>
+                      )}
+                    </div>
+                    {lineup?.lineup?.length ? (
+                      <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-1 text-sm">
+                        {lineup.lineup.map((p) => (
+                          <li key={p.player_id} className="flex items-center justify-between gap-2">
+                            <span className="text-muted-foreground w-8">{POSITION_LABELS[p.position] ?? p.position}</span>
+                            <span className="truncate">
+                              {p.player_name}
+                              {p.is_cup_captain && " (C)"}
+                              {p.is_vice_captain && !p.is_cup_captain && " (VC)"}
+                            </span>
+                            <span className="font-medium tabular-nums">{Math.round(p.effective_points)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : lineup ? (
+                      <p className="text-sm text-muted-foreground">No lineup data for this gameweek.</p>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">Loading…</p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Card>
+      )}
     </div>
   );
 }

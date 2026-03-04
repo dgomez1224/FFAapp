@@ -7,7 +7,8 @@
  * 3) Try multiple known image URL patterns and return the first loadable one.
  * 4) Cache successful and failed lookups to avoid repeated network work.
  */
-
+import { supabaseUrl, getSupabaseFunctionHeaders } from "./supabaseClient";
+import { EDGE_FUNCTIONS_BASE } from "./constants";
 interface ImageCache {
   [playerName: string]: string | null;
 }
@@ -131,36 +132,29 @@ function indexPlayer(raw: any) {
 
 async function loadIndex() {
   if (indexReady) return;
-
   indexById = {};
   idsByName = {};
-
-  const endpoints = [
-    "https://draft.premierleague.com/api/bootstrap-static",
-    "https://fantasy.premierleague.com/api/bootstrap-static/",
-  ];
-
-  await Promise.all(
-    endpoints.map(async (url) => {
-      try {
-        const res = await fetch(url);
-        if (!res.ok) return;
-        const payload = await res.json();
-        const players = normalizeList<any>(payload?.elements?.data ?? payload?.elements ?? payload?.players);
-        players.forEach(indexPlayer);
-      } catch {
-        // Non-fatal: keep whatever data we can gather.
-      }
-    }),
-  );
-
+  try {
+    const res = await fetch(
+      `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/bootstrap-static`,
+      { headers: getSupabaseFunctionHeaders() }
+    );
+    if (res.ok) {
+      const payload = await res.json();
+      const players = normalizeList<any>(
+        payload?.elements?.data ?? payload?.elements ?? payload?.players
+      );
+      players.forEach(indexPlayer);
+    }
+  } catch {
+    // Non-fatal
+  }
   Object.values(indexById).forEach((player) => {
     player.names.forEach((name) => {
       if (!idsByName[name]) idsByName[name] = [];
       if (!idsByName[name].includes(player.id)) idsByName[name].push(player.id);
     });
   });
-
   indexReady = true;
 }
 

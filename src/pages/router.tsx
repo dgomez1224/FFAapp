@@ -248,6 +248,9 @@ function Shell() {
             <Link to="/goblet" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               Goblet
             </Link>
+            <Link to="/bracket" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
+              FFA Cup
+            </Link>
             <Link to="/managers" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               Managers
             </Link>
@@ -265,9 +268,6 @@ function Shell() {
             </Link>
             <Link to="/standings-by-gameweek" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               GW Standings
-            </Link>
-            <Link to="/bracket" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-              FFA Cup
             </Link>
             {token ? (
               <button type="button" onClick={handleHeaderSignOut} className="text-foreground/90 transition-colors hover:text-foreground hover:underline">

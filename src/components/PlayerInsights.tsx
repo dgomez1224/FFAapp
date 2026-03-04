@@ -72,25 +72,19 @@ function normalizeManagerNameForMatch(name: string): string {
     .toLowerCase();
 }
 
-/**
- * Canonical form used elsewhere (e.g. teams.manager_name): uppercase, first token.
- * "David Gomez" -> "DAVID", so dropdown "DAVID" can match table "David Gomez".
- */
+const FIRST_NAME_OVERRIDES: Record<string, string> = { MATTHEW: "MATT" };
 function canonicalManagerFromFullName(name: string): string {
   const upper = String(name || "").trim().toUpperCase();
   const first = upper.split(/[^A-Z]+/).filter(Boolean)[0] || "";
-  return first || upper;
+  return FIRST_NAME_OVERRIDES[first] ?? (first || upper);
 }
 
-/** True when owner is the same person: full name match OR canonical match (e.g. DAVID === David Gomez). */
+/** True when owner matches selected filter based on lowercase ownership column names. */
 function ownerMatchesFilter(owner: string, selectedFilter: string): boolean {
-  const o = String(owner || "").trim();
-  const f = String(selectedFilter || "").trim();
+  const o = String(owner || "").trim().toLowerCase();
+  const f = String(selectedFilter || "").trim().toLowerCase();
   if (!o || !f) return false;
-  if (normalizeManagerNameForMatch(o) === normalizeManagerNameForMatch(f)) return true;
-  const ownerCanonical = canonicalManagerFromFullName(o);
-  const filterCanonical = f.toUpperCase();
-  return ownerCanonical !== "" && filterCanonical !== "" && ownerCanonical === filterCanonical;
+  return o === f;
 }
 
 export default function PlayerInsights() {
@@ -135,7 +129,7 @@ export default function PlayerInsights() {
         setLoading(true);
         setError(null);
         const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/player-insights`;
-        const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
+        const res = await fetch(url, { headers: getSupabaseFunctionHeaders() as HeadersInit });
         const payload: PlayerInsightsResponse = await res.json();
 
         if (!res.ok || (payload as any)?.error) {
@@ -174,9 +168,7 @@ export default function PlayerInsights() {
       if (filterOwnership === "free_agent" || filterOwnership === "unowned") {
         rows = rows.filter((p) => !(p.owned_by || []).length);
       } else {
-        rows = rows.filter((p) =>
-          (p.owned_by || []).some((o) => ownerMatchesFilter(String(o || ""), filterOwnership))
-        );
+        rows = rows.filter((p) => ownerMatchesFilter(String(p.owner_team || ""), filterOwnership));
       }
     }
     const minAvg = Number(filterMinAvgMinutes);
