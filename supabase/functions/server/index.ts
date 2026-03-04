@@ -2337,6 +2337,11 @@ cupGroupStage.get("/", async (c) => {
           .gte("gameweek", startGW)
           .lte("gameweek", endGW);
 
+        const hasRealScores = (scores || []).some((s: any) => (s.total_points || 0) > 0);
+        if (!scores || scores.length === 0 || !hasRealScores) {
+          throw new Error("No real cup scores in DB, falling through to API");
+        }
+
         const map: Record<string, any> = {};
         (teams || []).forEach((t: any) => {
           const override =
@@ -2397,13 +2402,15 @@ cupGroupStage.get("/", async (c) => {
       const entries = details?.league_entries || [];
       const matches = details?.matches || [];
 
-      const statsByEntry: Record<string, { wins: number; draws: number; losses: number; plus: number; played: number }> = {};
+      const statsByEntry: Record<string, { wins: number; draws: number; losses: number; plus: number; played: number; points_for: number }> = {};
       entries.forEach((entry: any) => {
         const id = entry.id ?? entry.league_entry_id ?? entry.entry_id ?? entry.entry;
-        if (id) statsByEntry[String(id)] = { wins: 0, draws: 0, losses: 0, plus: 0, played: 0 };
+        if (id) statsByEntry[String(id)] = { wins: 0, draws: 0, losses: 0, plus: 0, played: 0, points_for: 0 };
       });
 
       matches.forEach((m: any) => {
+        const matchEvent = coerceNumber(m.event ?? m.gameweek);
+        if (matchEvent < CUP_START_GAMEWEEK || matchEvent > CUP_START_GAMEWEEK + 3) return;
         const entry1 = m.league_entry_1 ?? m.entry_1 ?? m.home;
         const entry2 = m.league_entry_2 ?? m.entry_2 ?? m.away;
         const points1 = m.league_entry_1_points ?? m.score_1 ?? m.home_score;
@@ -2419,6 +2426,8 @@ cupGroupStage.get("/", async (c) => {
         s2.played += 1;
         s1.plus += p1 - p2;
         s2.plus += p2 - p1;
+        s1.points_for = (s1.points_for || 0) + p1;
+        s2.points_for = (s2.points_for || 0) + p2;
 
         if (p1 > p2) {
           s1.wins += 1;
@@ -2453,7 +2462,7 @@ cupGroupStage.get("/", async (c) => {
             entry_name: formatDraftTeamName(entry),
             manager_name: formatDraftManagerName(entry),
             manager_short_name: entry.short_name ?? null,
-            total_points: coerceNumber(entry.event_total ?? entry.event_points),
+            total_points: coerceNumber(stats.points_for ?? 0),
             captain_points: 0,
             played: stats.played,
             wins: stats.wins,

@@ -5,7 +5,7 @@
  * Shows all managers, teams, and points in a public table.
  */
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { Card } from "./ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
@@ -155,6 +155,7 @@ export default function LeagueStandings() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { getCrest } = useManagerCrestMap();
+  const baselineRanksRef = useRef<Record<string, number> | null>(null);
 
   const baselineStandings = data?.standings || [];
   const baselineById = useMemo(() => {
@@ -176,8 +177,16 @@ export default function LeagueStandings() {
         const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
         const payload: LeagueStandingsResponse = await res.json();
 
-        if (!res.ok || payload?.error) {
+        if (!res.ok || (payload as any)?.error) {
           throw new Error(payload?.error?.message || "Failed to fetch league standings");
+        }
+
+        if (!baselineRanksRef.current && payload?.standings?.length) {
+          const initial: Record<string, number> = {};
+          payload.standings.forEach((s, index) => {
+            initial[s.team_id] = index + 1;
+          });
+          baselineRanksRef.current = initial;
         }
 
         setData(payload);
@@ -213,7 +222,7 @@ export default function LeagueStandings() {
             matches.some(
               (m: any) =>
                 Number(m?.event) === currentGw &&
-                m?.started === null &&
+                m?.started === true &&
                 m?.finished === false
             );
 
@@ -297,22 +306,23 @@ export default function LeagueStandings() {
               </TableRow>
             </TableHeader>
             <TableBody className="fpl-table-body">
-              {rowsToRender.map((standing) => {
+              {rowsToRender.map((standing, index) => {
                 const baseline = baselineById[standing.team_id];
-                const baselineRank = baseline?.rank ?? null;
-                const liveRank = standing.rank;
-                const delta =
-                  baselineRank != null ? baselineRank - liveRank : 0;
+                const baselineRank =
+                  baselineRanksRef.current?.[standing.team_id] ?? null;
+                const currentRank = standing.rank;
+                const moved =
+                  baselineRank != null ? baselineRank - currentRank : 0;
 
                 let deltaSymbol = "—";
                 let deltaClass = "text-muted-foreground";
                 if (isLiveGameweek && baselineRank != null) {
-                  if (delta > 0) {
-                    deltaSymbol = "↑";
-                    deltaClass = "text-emerald-500";
-                  } else if (delta < 0) {
-                    deltaSymbol = "↓";
-                    deltaClass = "text-red-500";
+                  if (moved > 0) {
+                    deltaSymbol = `↑${moved}`;
+                    deltaClass = "text-emerald-500 font-semibold";
+                  } else if (moved < 0) {
+                    deltaSymbol = `↓${Math.abs(moved)}`;
+                    deltaClass = "text-red-500 font-semibold";
                   } else {
                     deltaSymbol = "—";
                     deltaClass = "text-muted-foreground";

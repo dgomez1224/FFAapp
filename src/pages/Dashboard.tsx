@@ -26,12 +26,13 @@ export default function DashboardPage() {
       </div>
 
       <LeagueStandings />
+      <BracketView showLegacySelector={false} />
       <GobletStandings />
       <LivePlayerUpdates />
       <ThisWeekMatchups />
       <SeasonStatLeaders />
 
-      <BracketView showLegacySelector={false} />
+      
       <ThisWeeksWaivers />
       
     </div>

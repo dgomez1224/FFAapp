@@ -12,7 +12,6 @@ import { Card } from "./ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import { useManagerCrestMap } from "../lib/useManagerCrestMap";
-import { getCaptainSessionToken } from "../lib/captainSession";
 
 interface CupStanding {
   team_id: string;
@@ -111,45 +110,23 @@ export default function CupGroupStage() {
     return () => clearInterval(interval);
   }, []);
 
-  // Resolve current cup gameweek from captain context and bracket group range
   useEffect(() => {
-    const token = getCaptainSessionToken();
-    if (!token) return;
+    fetch(
+      `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/current-gameweek`,
+      { headers: getSupabaseFunctionHeaders() }
+    )
+      .then((r) => r.json())
+      .then((d) => {
+        if (d?.current_gameweek != null) {
+          setFixtureGameweek(Number(d.current_gameweek));
+        }
+      })
+      .catch(() => {});
+  }, []);
 
-    let cancelled = false;
-    (async () => {
-      try {
-        const ctxRes = await fetch(
-          `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/captain/context?token=${encodeURIComponent(token)}`,
-          { headers: getSupabaseFunctionHeaders() }
-        );
-        if (cancelled || !ctxRes.ok) return;
-        const ctxData = await ctxRes.json();
-        if (ctxData?.gameweek != null) setFixtureGameweek(Number(ctxData.gameweek));
-      } catch {
-        // ignore
-      }
-    })();
-
-    (async () => {
-      try {
-        const bracketRes = await fetch(
-          `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/bracket`,
-          { headers: getSupabaseFunctionHeaders() }
-        );
-        if (cancelled || !bracketRes.ok) return;
-        const bracketData = await bracketRes.json();
-        const group = bracketData?.group;
-        if (group?.start_gameweek != null) setGroupStageStart(Number(group.start_gameweek));
-        if (group?.end_gameweek != null) setGroupStageEnd(Number(group.end_gameweek));
-      } catch {
-        // ignore
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
+  useEffect(() => {
+    setGroupStageStart(29);
+    setGroupStageEnd(32);
   }, []);
 
   // Fetch lineups for current GW when in group stage

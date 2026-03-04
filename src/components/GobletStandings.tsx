@@ -5,7 +5,7 @@
  * with aggregate leaderboard tracking.
  */
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { Card } from "./ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
@@ -31,6 +31,7 @@ export default function GobletStandings() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { getCrest } = useManagerCrestMap();
+  const baselineRanksRef = useRef<Record<string, number> | null>(null);
 
   useEffect(() => {
     async function fetchStandings() {
@@ -42,8 +43,19 @@ export default function GobletStandings() {
         const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
         const payload: GobletStandingsResponse = await res.json();
 
-        if (!res.ok || payload?.error) {
+        if (!res.ok || (payload as any)?.error) {
           throw new Error(payload?.error?.message || "Failed to fetch goblet standings");
+        }
+
+        const standings = payload?.standings || [];
+        if (!baselineRanksRef.current && standings.length > 0) {
+          const initial: Record<string, number> = {};
+          standings.forEach((s, index) => {
+            if (s.manager_name) {
+              initial[s.manager_name] = index + 1;
+            }
+          });
+          baselineRanksRef.current = initial;
         }
 
         setData(payload);
@@ -98,16 +110,40 @@ export default function GobletStandings() {
           <Table>
             <TableHeader>
               <TableRow className="fpl-table-header">
-              <TableHead className="w-12">Rank</TableHead>
-              <TableHead>Team</TableHead>
-              <TableHead>Manager</TableHead>
-              <TableHead className="text-right">Points For</TableHead>
+                <TableHead className="w-12">Rank</TableHead>
+                <TableHead className="w-10 text-center">±</TableHead>
+                <TableHead>Team</TableHead>
+                <TableHead>Manager</TableHead>
+                <TableHead className="text-right">Points For</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody className="fpl-table-body">
-              {data.standings.map((standing) => (
-                <TableRow key={standing.team_id}>
-                  <TableCell className="fpl-rank text-center">{standing.rank}</TableCell>
+              {data.standings.map((standing, index) => {
+                const managerKey = standing.manager_name ?? "";
+                const baselineRank =
+                  managerKey && baselineRanksRef.current
+                    ? baselineRanksRef.current[managerKey]
+                    : undefined;
+                const currentRank = index + 1;
+                const moved =
+                  baselineRank != null ? baselineRank - currentRank : 0;
+                const arrow =
+                  moved > 0
+                    ? `↑${moved}`
+                    : moved < 0
+                    ? `↓${Math.abs(moved)}`
+                    : "—";
+                const arrowColor =
+                  moved > 0
+                    ? "text-emerald-500 font-semibold"
+                    : moved < 0
+                    ? "text-red-500 font-semibold"
+                    : "text-muted-foreground";
+
+                return (
+                  <TableRow key={standing.team_id}>
+                    <TableCell className="fpl-rank text-center">{standing.rank}</TableCell>
+                    <TableCell className={`text-center ${arrowColor}`}>{arrow}</TableCell>
                   <TableCell className="fpl-manager-name">
                     <div className="flex items-center gap-2">
                       {getCrest(standing.manager_name) ? (
@@ -122,8 +158,9 @@ export default function GobletStandings() {
                   </TableCell>
                   <TableCell className="fpl-manager-name">{standing.manager_name || "–"}</TableCell>
                   <TableCell className="fpl-points">{standing.points_for ?? standing.total_points}</TableCell>
-                </TableRow>
-              ))}
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </div>
