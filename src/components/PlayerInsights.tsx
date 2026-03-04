@@ -99,9 +99,9 @@ export default function PlayerInsights() {
   const [filterAvailability, setFilterAvailability] = useState<string>("");
   const [filterOwnership, setFilterOwnership] = useState<string>("all");
   const [pendingMinAvgMinutes, setPendingMinAvgMinutes] = useState<number>(0);
-  const [pendingMaxAvgMinutes, setPendingMaxAvgMinutes] = useState<number>(90);
+  const [pendingMaxAvgMinutes, setPendingMaxAvgMinutes] = useState<number>(9999);
   const [filterMinAvgMinutes, setFilterMinAvgMinutes] = useState<number>(0);
-  const [filterMaxAvgMinutes, setFilterMaxAvgMinutes] = useState<number>(90);
+  const [filterMaxAvgMinutes, setFilterMaxAvgMinutes] = useState<number>(9999);
   const [pendingSearch, setPendingSearch] = useState<string>("");
   const [filterSearch, setFilterSearch] = useState<string>("");
 
