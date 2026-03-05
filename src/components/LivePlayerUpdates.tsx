@@ -17,6 +17,8 @@ type StatKey =
 interface MatchupRow {
   team_1_id: string;
   team_2_id: string;
+  team_1_entry_id?: string | null;
+  team_2_entry_id?: string | null;
   gameweek?: number;
 }
 
@@ -303,8 +305,8 @@ export default function LivePlayerUpdates() {
           const params = new URLSearchParams({
             type: "league",
             gameweek: String(m.gameweek || matchupsPayload.gameweek),
-            team1: String(m.team_1_id),
-            team2: String(m.team_2_id),
+            team1: String(m.team_1_entry_id || m.team_1_id),
+            team2: String(m.team_2_entry_id || m.team_2_id),
           });
           const detailUrl = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/fixtures/matchup?${params.toString()}`;
           const detailRes = await fetch(detailUrl, { headers: getSupabaseFunctionHeaders() });

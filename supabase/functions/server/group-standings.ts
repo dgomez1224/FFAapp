@@ -64,7 +64,7 @@ declare const Deno: {
         return jsonError(c, 404, "No teams found for this tournament");
       }
   
-      // 2️⃣ Fetch all gameweek_scores for group stage (assuming start_gameweek + 3)
+      // 2️⃣ Fetch all cup_gameweek_scores for group stage (assuming start_gameweek + 3)
       const { data: tournamentData } = await supabase
         .from("tournaments")
         .select("start_gameweek, group_stage_gameweeks")
@@ -79,14 +79,14 @@ declare const Deno: {
       const endGW = startGW + tournamentData.group_stage_gameweeks - 1;
   
       const { data: scores, error: scoresError } = await supabase
-        .from("gameweek_scores")
+        .from("cup_gameweek_scores")
         .select("team_id, total_points, captain_points, gameweek")
         .in("team_id", teamIds)
         .gte("gameweek", startGW)
         .lte("gameweek", endGW);
   
       if (scoresError) {
-        return jsonError(c, 500, "Failed to fetch gameweek_scores", scoresError.message);
+        return jsonError(c, 500, "Failed to fetch cup_gameweek_scores", scoresError.message);
       }
   
       // 3️⃣ Aggregate scores per team

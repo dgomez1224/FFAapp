@@ -36,48 +36,37 @@ interface LeagueStandingsResponse {
 function computeLiveStandingsFromMatches(
   baseline: Standing[],
   matches: any[],
-  currentGameweek: number
+  currentGameweek: number,
+  entryIdToTeamId: Record<string, string>
 ): Standing[] {
   if (!baseline.length || !matches.length || !currentGameweek) {
     return baseline;
   }
-
-  // Only process entries that exist in baseline
-  const baselineIds = new Set(
-    baseline
-      .map((s: any) =>
-        String(
-          (s as any).league_entry ??
-            (s as any).entry_id ??
-            (s as any).id ??
-            ""
-        )
-      )
-      .filter((id) => id)
-  );
 
   const byId: Record<string, Standing> = {};
   baseline.forEach((row) => {
     byId[row.team_id] = { ...row };
   });
 
+  const baselineIds = new Set(Object.keys(byId));
+
   const currentMatches = matches.filter(
     (m: any) => Number(m?.event) === currentGameweek
   );
 
   currentMatches.forEach((m: any) => {
-    const team1Id = m?.league_entry_1 ?? m?.entry_1 ?? m?.home;
-    const team2Id = m?.league_entry_2 ?? m?.entry_2 ?? m?.away;
-    if (team1Id == null || team2Id == null) return;
+    const rawTeam1 = m?.league_entry_1 ?? m?.entry_1 ?? m?.home;
+    const rawTeam2 = m?.league_entry_2 ?? m?.entry_2 ?? m?.away;
+    if (rawTeam1 == null || rawTeam2 == null) return;
 
-    const entry1Id = String(team1Id);
-    const entry2Id = String(team2Id);
+    const entry1Id = String(rawTeam1);
+    const entry2Id = String(rawTeam2);
+
+    const key1 = entryIdToTeamId[entry1Id] ?? entry1Id;
+    const key2 = entryIdToTeamId[entry2Id] ?? entry2Id;
 
     // Skip any match entry not in baseline
-    if (!baselineIds.has(entry1Id) && !baselineIds.has(entry2Id)) return;
-
-    const key1 = entry1Id;
-    const key2 = entry2Id;
+    if (!baselineIds.has(key1) && !baselineIds.has(key2)) return;
 
     if (!byId[key1]) {
       byId[key1] = {
@@ -201,6 +190,17 @@ export default function LeagueStandings() {
           throw new Error(payload?.error?.message || "Failed to fetch league standings");
         }
 
+        let entryIdToTeamId: Record<string, string> = {};
+        if (Array.isArray(payload.standings)) {
+          payload.standings.forEach((s: any) => {
+            const entryId = (s as any).entry_id;
+            const teamId = (s as any).team_id;
+            if (entryId != null && teamId) {
+              entryIdToTeamId[String(entryId)] = String(teamId);
+            }
+          });
+        }
+
         if (!baselineRanksRef.current && payload?.standings?.length) {
           const initial: Record<string, number> = {};
           payload.standings.forEach((s, index) => {
@@ -237,6 +237,27 @@ export default function LeagueStandings() {
           } catch {
             matches = [];
           }
+
+          // If standings payload did not include entry_id mapping, derive it from league_entries.
+          if (!Object.keys(entryIdToTeamId).length && Array.isArray(leagueEntries)) {
+            try {
+              const teamsRes = await fetch(
+                `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/league-standings`,
+                { headers: getSupabaseFunctionHeaders() }
+              );
+              const teamsJson: any = teamsRes.ok ? await teamsRes.json() : null;
+              const teams = Array.isArray(teamsJson?.teams) ? teamsJson.teams : [];
+              teams.forEach((t: any) => {
+                const entryId = t.entry_id ?? t.entry ?? null;
+                const teamId = t.id ?? t.team_id ?? null;
+                if (entryId != null && teamId) {
+                  entryIdToTeamId[String(entryId)] = String(teamId);
+                }
+              });
+            } catch {
+              // Non-fatal; live standings will fall back to baseline.
+            }
+          }
           const hasLiveMatch =
             currentGw &&
             matches.some(
@@ -253,7 +274,8 @@ export default function LeagueStandings() {
             const live = computeLiveStandingsFromMatches(
               payload.standings,
               matches,
-              currentGw
+              currentGw,
+              entryIdToTeamId
             );
             setIsLiveGameweek(true);
             setLiveStandings(live);

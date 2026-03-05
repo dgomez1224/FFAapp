@@ -85,7 +85,7 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_tournaments_entry_id ON tournaments(entry_id);
 CREATE INDEX IF NOT EXISTS idx_tournaments_is_active ON tournaments(is_active);
 
-CREATE TABLE IF NOT EXISTS gameweek_scores (
+CREATE TABLE IF NOT EXISTS cup_gameweek_scores (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   team_id UUID NOT NULL REFERENCES teams(id),
   tournament_id UUID REFERENCES tournaments(id),
@@ -99,9 +99,9 @@ CREATE TABLE IF NOT EXISTS gameweek_scores (
   UNIQUE(team_id, gameweek, tournament_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_gameweek_scores_team_id ON gameweek_scores(team_id);
-CREATE INDEX IF NOT EXISTS idx_gameweek_scores_gameweek ON gameweek_scores(gameweek);
-CREATE INDEX IF NOT EXISTS idx_gameweek_scores_tournament_id ON gameweek_scores(tournament_id);
+CREATE INDEX IF NOT EXISTS idx_cup_gameweek_scores_team_id ON cup_gameweek_scores(team_id);
+CREATE INDEX IF NOT EXISTS idx_cup_gameweek_scores_gameweek ON cup_gameweek_scores(gameweek);
+CREATE INDEX IF NOT EXISTS idx_cup_gameweek_scores_tournament_id ON cup_gameweek_scores(tournament_id);
 
 CREATE TABLE IF NOT EXISTS matchups (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -466,10 +466,10 @@ BEGIN
   DROP POLICY IF EXISTS "Public read access" ON tournaments;
   CREATE POLICY "Public read access" ON tournaments FOR SELECT USING (true);
 
-  -- gameweek_scores
-  ALTER TABLE gameweek_scores ENABLE ROW LEVEL SECURITY;
-  DROP POLICY IF EXISTS "Public read access" ON gameweek_scores;
-  CREATE POLICY "Public read access" ON gameweek_scores FOR SELECT USING (true);
+  -- cup_gameweek_scores
+  ALTER TABLE cup_gameweek_scores ENABLE ROW LEVEL SECURITY;
+  DROP POLICY IF EXISTS "Public read access" ON cup_gameweek_scores;
+  CREATE POLICY "Public read access" ON cup_gameweek_scores FOR SELECT USING (true);
 
   -- matchups
   ALTER TABLE matchups ENABLE ROW LEVEL SECURITY;

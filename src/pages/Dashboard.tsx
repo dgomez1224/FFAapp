@@ -27,7 +27,7 @@ export default function DashboardPage() {
       
       <LivePlayerUpdates />
       <LeagueStandings />
-      <BracketView showLegacySelector={false} />``
+      <BracketView showLegacySelector={false} />
       <GobletStandings />
       
       <ThisWeekMatchups />

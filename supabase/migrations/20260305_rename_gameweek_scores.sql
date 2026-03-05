@@ -1,0 +1,5 @@
+ALTER TABLE gameweek_scores RENAME TO cup_gameweek_scores;
+ALTER INDEX idx_gameweek_scores_team_id RENAME TO idx_cup_gameweek_scores_team_id;
+ALTER INDEX idx_gameweek_scores_gameweek RENAME TO idx_cup_gameweek_scores_gameweek;
+ALTER INDEX idx_gameweek_scores_tournament_id RENAME TO idx_cup_gameweek_scores_tournament_id;
+

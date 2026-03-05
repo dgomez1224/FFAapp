@@ -16,6 +16,8 @@ interface MatchupRow {
   fixture_id?: string;
   team_1_id: string;
   team_2_id: string;
+  team_1_entry_id?: string | null;
+  team_2_entry_id?: string | null;
   gameweek?: number;
   team_1_points: number;
   team_2_points: number;
@@ -117,8 +119,8 @@ export function ThisWeekMatchups() {
           const params = new URLSearchParams({
             type: "league",
             gameweek: String(m.gameweek || payload.gameweek),
-            team1: String(m.team_1_id),
-            team2: String(m.team_2_id),
+            team1: String(m.team_1_entry_id || m.team_1_id),
+            team2: String(m.team_2_entry_id || m.team_2_id),
           });
           const detailUrl = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/fixtures/matchup?${params.toString()}`;
           const detailRes = await fetch(detailUrl, { headers: getSupabaseFunctionHeaders() });
@@ -253,7 +255,7 @@ export function ThisWeekMatchups() {
       </div>
       <div className="space-y-3">
         {data.matchups.map((m, idx) => {
-          const href = `/matchup/league/${m.gameweek || data.gameweek}/${m.team_1_id}/${m.team_2_id}`;
+          const href = `/matchup/league/${m.gameweek || data.gameweek}/${m.team_1_entry_id || m.team_1_id}/${m.team_2_entry_id || m.team_2_id}`;
           const rivalry = (m as any).rivalry;
           const team1Form = ((rivalry?.recent_form_1 || []) as FormResult[]).slice(-5);
           const team2Form = ((rivalry?.recent_form_2 || []) as FormResult[]).slice(-5);

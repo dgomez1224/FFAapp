@@ -1,6 +1,6 @@
 -- Optional seed data for local UI rendering (no FPL API required)
 -- This inserts placeholder manager_aliases, teams, a tournament, season_state,
--- and zeroed gameweek_scores for GW1 if tables are empty.
+-- and zeroed cup_gameweek_scores for GW1 if tables are empty.
 
 DO $$
 BEGIN
@@ -177,7 +177,7 @@ BEGIN
       ON CONFLICT (season) DO NOTHING;
     END IF;
 
-    INSERT INTO gameweek_scores (team_id, tournament_id, gameweek, total_points, captain_points, bench_points, raw_data)
+    INSERT INTO cup_gameweek_scores (team_id, tournament_id, gameweek, total_points, captain_points, bench_points, raw_data)
     SELECT
       teams.id,
       teams.tournament_id,
