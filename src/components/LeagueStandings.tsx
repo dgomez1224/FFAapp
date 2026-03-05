@@ -333,7 +333,7 @@ export default function LeagueStandings() {
     fetchStandings();
     const interval = setInterval(() => {
       fetchStandings();
-    }, 60_000);
+    }, 300_000);
     return () => clearInterval(interval);
   }, []);
 

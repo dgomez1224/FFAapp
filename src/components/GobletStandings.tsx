@@ -137,19 +137,23 @@ export default function GobletStandings() {
             if (Array.isArray(payload.standings) && payload.standings.length) {
               const liveRows = (payload.standings as any[])
                 .map((s) => {
-                  const gwPoints = livePointsThisGw[String(s.team_id)] ?? 0;
-                  const base =
+                  // Use live GW points for sort key only — do not add to stored points_for,
+                  // which already includes the current GW from the last DB refresh.
+                  const liveGwPts = livePointsThisGw[String(s.team_id)] ?? 0;
+                  const storedPts =
                     (typeof s.points_for === "number" ? s.points_for :
                       typeof s.total_points === "number" ? s.total_points :
                         0);
                   return {
                     ...s,
-                    points_for: base + gwPoints,
+                    _sort_points: storedPts + liveGwPts,
+                    points_for: s.points_for,
+                    total_points: s.total_points,
                   };
                 })
                 .sort((a: any, b: any) =>
-                  (b.points_for ?? b.total_points ?? 0) -
-                  (a.points_for ?? a.total_points ?? 0),
+                  (b._sort_points ?? 0) -
+                  (a._sort_points ?? 0),
                 )
                 .map((s: any, index: number) => ({
                   ...s,
@@ -176,7 +180,7 @@ export default function GobletStandings() {
     fetchStandings();
     const interval = setInterval(() => {
       fetchStandings();
-    }, 60_000);
+    }, 300_000);
     return () => clearInterval(interval);
   }, []);
 
