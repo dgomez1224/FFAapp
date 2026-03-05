@@ -143,6 +143,50 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
           setGroup(payload.group ?? { registeredCount: 0, standings: [], autoRegistered: true, start_gameweek: null, end_gameweek: null });
           setRounds(payload.rounds ?? []);
         }
+
+        // Overlay real names from h2h-matchups to replace any stale DB names.
+        try {
+          const matchupsRes = await fetch(
+            `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-matchups`,
+            { headers: getSupabaseFunctionHeaders() as HeadersInit },
+          );
+          if (matchupsRes.ok) {
+            const matchupsJson: any = await matchupsRes.json();
+            const nameByTeamId: Record<string, { entry_name: string; manager_name: string }> = {};
+            (matchupsJson?.matchups || []).forEach((m: any) => {
+              // Primary: nested team objects when available
+              if (m.team_1_id && m.team_1?.entry_name) {
+                nameByTeamId[String(m.team_1_id)] = {
+                  entry_name: m.team_1.entry_name,
+                  manager_name: m.team_1.manager_name || m.team_1.entry_name,
+                };
+              }
+              if (m.team_2_id && m.team_2?.entry_name) {
+                nameByTeamId[String(m.team_2_id)] = {
+                  entry_name: m.team_2.entry_name,
+                  manager_name: m.team_2.manager_name || m.team_2.entry_name,
+                };
+              }
+              // Fallback from flat fields (team_1_entry_id) would require entry_id→team_id mapping,
+              // which isn't available here, so we skip that for now.
+            });
+
+            if (Object.keys(nameByTeamId).length > 0) {
+              setGroup((prev) => {
+                if (!prev) return prev;
+                return {
+                  ...prev,
+                  standings: prev.standings.map((s) => {
+                    const names = nameByTeamId[String(s.team_id)];
+                    return names ? { ...s, ...names } : s;
+                  }),
+                };
+              });
+            }
+          }
+        } catch {
+          // Non-fatal: fall back to DB names.
+        }
       } catch (err: any) {
         console.error("Bracket load error:", err);
         // Set empty state instead of error - allow UI to render

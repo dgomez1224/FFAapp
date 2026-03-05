@@ -238,7 +238,36 @@ export default function LeagueStandings() {
             matches = [];
           }
 
-          // If standings payload did not include entry_id mapping, derive it from league_entries.
+          // Overlay real names from draft API league entries when available.
+          try {
+            if (Array.isArray(leagueEntries) && leagueEntries.length && Array.isArray(payload.standings) && payload.standings.length) {
+              const nameByEntryId: Record<string, { entry_name: string; manager_name: string }> = {};
+              leagueEntries.forEach((e: any) => {
+                const fplId = String(e.entry_id ?? e.entry ?? "").trim();
+                if (!fplId) return;
+                const firstName = String(e.player_first_name ?? "").trim();
+                const lastName = String(e.player_last_name ?? "").trim();
+                nameByEntryId[fplId] = {
+                  entry_name: String(e.entry_name ?? "").trim() || fplId,
+                  manager_name: [firstName, lastName].filter(Boolean).join(" ") || fplId,
+                };
+              });
+
+              if (Object.keys(nameByEntryId).length > 0) {
+                payload.standings = payload.standings.map((s: any) => {
+                  const fplId = String((s as any).entry_id ?? "");
+                  const names = fplId ? nameByEntryId[fplId] : null;
+                  return names ? { ...s, ...names } : s;
+                });
+                // Re-set data with updated names for display and live overlays.
+                setData({ ...payload });
+              }
+            }
+          } catch {
+            // Non-fatal: fall back to database names.
+          }
+
+          // If standings payload did not include entry_id mapping, derive it from league_entries/teams.
           if (!Object.keys(entryIdToTeamId).length && Array.isArray(leagueEntries)) {
             try {
               const teamsRes = await fetch(
@@ -258,16 +287,26 @@ export default function LeagueStandings() {
               // Non-fatal; live standings will fall back to baseline.
             }
           }
-          const hasLiveMatch =
-            currentGw &&
-            matches.some(
-              (m: any) =>
-                Number(m?.event) === currentGw &&
-                m?.started === true &&
-                m?.finished === false
-            );
 
-          if (!(gwData?.current_gameweek || 0) || !hasLiveMatch || !payload.standings?.length) {
+          // Also map internal draft league_entry ids -> team UUIDs using league_entries.
+          if (Array.isArray(leagueEntries) && leagueEntries.length && Object.keys(entryIdToTeamId).length) {
+            const internalIdToTeamId: Record<string, string> = {};
+            leagueEntries.forEach((e: any) => {
+              const internalId = String(e.id ?? e.league_entry_id ?? "").trim();
+              const fplId = String(e.entry_id ?? e.entry ?? "").trim();
+              const teamId = fplId ? entryIdToTeamId[fplId] : undefined;
+              if (internalId && teamId) {
+                internalIdToTeamId[internalId] = teamId;
+              }
+            });
+            Object.assign(entryIdToTeamId, internalIdToTeamId);
+          }
+          // Show live standings for the entire current gameweek (pre-match, live, or post-match)
+          const hasCurrentGwMatches =
+            currentGw > 0 &&
+            matches.some((m: any) => Number(m?.event) === currentGw);
+
+          if (!currentGw || !hasCurrentGwMatches || !payload.standings?.length) {
             setIsLiveGameweek(false);
             setLiveStandings(null);
           } else {
@@ -374,7 +413,7 @@ export default function LeagueStandings() {
                 const winsChanged =
                   isLiveGameweek && baseline && standing.wins > baseline.wins;
                 const drawsChanged =
-                  isLiveGameweek && baseline && standing.draws !== baseline.draws;
+                  isLiveGameweek && baseline && standing.draws > baseline.draws;
                 const lossesChanged =
                   isLiveGameweek && baseline && standing.losses > baseline.losses;
                 const pointsChanged =

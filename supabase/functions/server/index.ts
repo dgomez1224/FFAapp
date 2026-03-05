@@ -4242,6 +4242,35 @@ h2hStandings.get("/", async (c) => {
           .sort((a: any, b: any) => b.points - a.points || b.points_for - a.points_for)
           .map((row: any, idx: number) => ({ ...row, rank: idx + 1 }));
 
+        // Overlay real names from Draft league entries using FPL entry_id.
+        try {
+          const leagueId = await resolveLeagueId();
+          const { details } = await resolveDraftLeagueDetails(String(leagueId), leagueId);
+          const draftEntries = normalizeDraftList<any>(details?.league_entries ?? []);
+          const nameByEntryId: Record<string, { entry_name: string; manager_name: string }> = {};
+          draftEntries.forEach((entry: any) => {
+            const fplId = String(entry.entry_id ?? entry.entry ?? "").trim();
+            if (!fplId) return;
+            nameByEntryId[fplId] = {
+              entry_name: String(entry.entry_name ?? "").trim() || formatDraftTeamName(entry),
+              manager_name: formatDraftManagerName(entry),
+            };
+          });
+
+          if (Object.keys(nameByEntryId).length > 0) {
+            standings.forEach((row: any) => {
+              const fplId = String(row.entry_id ?? "").trim();
+              const names = fplId ? nameByEntryId[fplId] : null;
+              if (names) {
+                row.entry_name = names.entry_name;
+                row.manager_name = names.manager_name;
+              }
+            });
+          }
+        } catch {
+          // Non-fatal: fall back to DB/team names.
+        }
+
         return c.json({ standings, source: "database" });
       }
     }
@@ -4434,16 +4463,52 @@ h2hMatchups.get("/", async (c) => {
       const teamMap: Record<string, any> = {};
       (teams || []).forEach((t: any) => { teamMap[t.id] = t; });
 
-      let formatted = (dbMatchups || []).map((m: any) => ({
-        ...m,
-        fixture_id: `league-${gameweek}-${m.team_1_id}-${m.team_2_id}`,
-        team_1: teamMap[m.team_1_id] || null,
-        team_2: teamMap[m.team_2_id] || null,
-        team_1_entry_id: teamMap[m.team_1_id]?.entry_id ?? null,
-        team_2_entry_id: teamMap[m.team_2_id]?.entry_id ?? null,
-        team_1_rank: rankMap[String(m.team_1_id)] || null,
-        team_2_rank: rankMap[String(m.team_2_id)] || null,
-      }));
+      // Attempt to overlay real names from Draft league entries using entry_id.
+      const draftNameByEntryId: Record<string, { entry_name: string; manager_name: string }> = {};
+      try {
+        const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
+        const draftEntries = normalizeDraftList<any>(details?.league_entries ?? []);
+        draftEntries.forEach((entry: any) => {
+          const fplId = String(entry.entry_id ?? entry.entry ?? "").trim();
+          if (!fplId) return;
+          draftNameByEntryId[fplId] = {
+            entry_name: formatDraftTeamName(entry),
+            manager_name: formatDraftManagerName(entry),
+          };
+        });
+      } catch {
+        // Non-fatal: fall back to teams table names when draft overlay is unavailable.
+      }
+
+      let formatted = (dbMatchups || []).map((m: any) => {
+        const team1 = teamMap[m.team_1_id] || null;
+        const team2 = teamMap[m.team_2_id] || null;
+        const team1EntryId = team1?.entry_id != null ? String(team1.entry_id) : "";
+        const team2EntryId = team2?.entry_id != null ? String(team2.entry_id) : "";
+        const draft1 = team1EntryId ? draftNameByEntryId[team1EntryId] : undefined;
+        const draft2 = team2EntryId ? draftNameByEntryId[team2EntryId] : undefined;
+
+        return {
+          ...m,
+          fixture_id: `league-${gameweek}-${m.team_1_id}-${m.team_2_id}`,
+          team_1: team1
+            ? {
+                entry_name: draft1?.entry_name ?? team1.entry_name,
+                manager_name: draft1?.manager_name ?? team1.manager_name,
+              }
+            : null,
+          team_2: team2
+            ? {
+                entry_name: draft2?.entry_name ?? team2.entry_name,
+                manager_name: draft2?.manager_name ?? team2.manager_name,
+              }
+            : null,
+          team_1_entry_id: team1EntryId || null,
+          team_2_entry_id: team2EntryId || null,
+          team_1_rank: rankMap[String(m.team_1_id)] || null,
+          team_2_rank: rankMap[String(m.team_2_id)] || null,
+        };
+      });
 
       if (currentGw != null && gameweek === currentGw) {
         try {
@@ -4453,10 +4518,14 @@ h2hMatchups.get("/", async (c) => {
             const t2 = teamMap[m.team_2_id];
             const p1 = t1?.entry_id != null ? livePoints[String(t1.entry_id)] : undefined;
             const p2 = t2?.entry_id != null ? livePoints[String(t2.entry_id)] : undefined;
+            const live1 = p1 !== undefined ? p1 : m.team_1_points;
+            const live2 = p2 !== undefined ? p2 : m.team_2_points;
             return {
               ...m,
-              team_1_points: p1 !== undefined ? p1 : m.team_1_points,
-              team_2_points: p2 !== undefined ? p2 : m.team_2_points,
+              team_1_points: live1,
+              team_2_points: live2,
+              live_team_1_points: live1,
+              live_team_2_points: live2,
             };
           });
         } catch {
@@ -4479,8 +4548,15 @@ h2hMatchups.get("/", async (c) => {
 
       const entryMap: Record<string, any> = {};
       entries.forEach((entry: any) => {
-        const id = entry.id ?? entry.league_entry_id ?? entry.entry_id ?? entry.entry;
-        if (id) entryMap[String(id)] = entry;
+        const ids = [
+          entry.id,
+          entry.league_entry_id,
+          entry.entry_id,
+          entry.entry,
+        ].filter((v) => v !== null && v !== undefined);
+        ids.forEach((id: any) => {
+          entryMap[String(id)] = entry;
+        });
       });
 
       let formatted = matches.map((m: any) => {
@@ -4497,13 +4573,13 @@ h2hMatchups.get("/", async (c) => {
           winner_id: null,
           team_1: entryMap[String(entry1Id)]
             ? {
-                entry_name: entryMap[String(entry1Id)].entry_name ?? entryMap[String(entry1Id)].name,
+                entry_name: formatDraftTeamName(entryMap[String(entry1Id)]),
                 manager_name: formatDraftManagerName(entryMap[String(entry1Id)]),
               }
             : null,
           team_2: entryMap[String(entry2Id)]
             ? {
-                entry_name: entryMap[String(entry2Id)].entry_name ?? entryMap[String(entry2Id)].name,
+                entry_name: formatDraftTeamName(entryMap[String(entry2Id)]),
                 manager_name: formatDraftManagerName(entryMap[String(entry2Id)]),
               }
             : null,
@@ -4523,11 +4599,19 @@ h2hMatchups.get("/", async (c) => {
       if (currentGw != null && gameweek === currentGw) {
         try {
           const livePoints = await computeLiveEntryPoints(gameweek);
-          formatted = formatted.map((m: any) => ({
-            ...m,
-            team_1_points: livePoints[String(m.team_1_id)] !== undefined ? livePoints[String(m.team_1_id)] : m.team_1_points,
-            team_2_points: livePoints[String(m.team_2_id)] !== undefined ? livePoints[String(m.team_2_id)] : m.team_2_points,
-          }));
+          formatted = formatted.map((m: any) => {
+            const p1 = livePoints[String(m.team_1_id)];
+            const p2 = livePoints[String(m.team_2_id)];
+            const live1 = p1 !== undefined ? p1 : m.team_1_points;
+            const live2 = p2 !== undefined ? p2 : m.team_2_points;
+            return {
+              ...m,
+              team_1_points: live1,
+              team_2_points: live2,
+              live_team_1_points: live1,
+              live_team_2_points: live2,
+            };
+          });
         } catch {
           // keep existing points
         }
@@ -6849,6 +6933,10 @@ fixturesHub.get("/", async (c) => {
         const key = canonicalManagerKey(row.manager_name);
         if (!key) return;
         crestByManager[key] = row.club_crest || null;
+        const firstToken = key.split(/[\s_]+/)[0];
+        if (firstToken && firstToken !== key) {
+          crestByManager[firstToken] = row.club_crest || null;
+        }
       });
     } catch {
       // non-fatal
@@ -7422,6 +7510,10 @@ fixturesHub.get("/matchup", async (c) => {
         const key = canonicalManagerKey(row.manager_name);
         if (!key) return;
         crestByManager[key] = row.club_crest || null;
+        const firstToken = key.split(/[\s_]+/)[0];
+        if (firstToken && firstToken !== key) {
+          crestByManager[firstToken] = row.club_crest || null;
+        }
       });
     } catch {
       // non-fatal
@@ -7482,16 +7574,31 @@ fixturesHub.get("/matchup", async (c) => {
 
       const entryMap: Record<string, any> = {};
       entries.forEach((entry: any) => {
-        const ids = [
+        [
           entry.id,
           entry.league_entry_id,
           entry.entry_id,
           entry.entry,
-        ].filter((v) => v !== null && v !== undefined);
-        ids.forEach((id: any) => {
-          entryMap[String(id)] = entry;
-        });
+        ]
+          .filter((v) => v !== null && v !== undefined)
+          .forEach((v) => {
+            entryMap[String(v)] = entry;
+          });
       });
+
+      const internalToFplId: Record<string, string> = {};
+      entries.forEach((entry: any) => {
+        const internalId = String(entry.id ?? entry.league_entry_id ?? "");
+        const fplId = String(entry.entry_id ?? entry.entry ?? "");
+        if (internalId && fplId) {
+          internalToFplId[internalId] = fplId;
+        }
+      });
+
+      const toFplId = (raw: any): string => {
+        const s = String(raw ?? "");
+        return internalToFplId[s] ?? s;
+      };
 
       const resolveEntryId = async (candidate: string) => {
         let key = candidate;
@@ -7549,9 +7656,17 @@ fixturesHub.get("/matchup", async (c) => {
       const matchupLiveEntryPoints =
         currentGw != null && currentGw > 0 ? await computeLiveEntryPoints(currentGw) : {};
       rankMap = buildDraftRankMapWithLive(matches, currentGw, matchupLiveEntryPoints);
+      const normalizedRankMap: Record<string, number> = {};
+      Object.entries(rankMap).forEach(([k, v]) => {
+        normalizedRankMap[k] = v;
+        const fpl = internalToFplId[k];
+        if (fpl) normalizedRankMap[fpl] = v;
+      });
+      rankMap = normalizedRankMap;
+
       leagueRow = matches.find((m: any) => {
-        const left = String(m.league_entry_1 ?? m.entry_1 ?? m.home ?? "");
-        const right = String(m.league_entry_2 ?? m.entry_2 ?? m.away ?? "");
+        const left = toFplId(m?.league_entry_1 ?? m?.entry_1 ?? m?.home ?? "");
+        const right = toFplId(m?.league_entry_2 ?? m?.entry_2 ?? m?.away ?? "");
         const samePair =
           (left === resolvedTeam1Id && right === resolvedTeam2Id) ||
           (left === resolvedTeam2Id && right === resolvedTeam1Id);

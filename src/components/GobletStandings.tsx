@@ -5,7 +5,7 @@
  * with aggregate leaderboard tracking.
  */
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { Card } from "./ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
@@ -26,12 +26,12 @@ interface GobletStandingsResponse {
   source: "database" | "derived" | "draft";
 }
 
-const BASELINE_KEY = "goblet_baseline_ranks";
-
 export default function GobletStandings() {
   const [data, setData] = useState<GobletStandingsResponse | null>(null);
+  const [liveStandings, setLiveStandings] = useState<GobletStanding[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const baselineRanksRef = useRef<Record<string, number> | null>(null);
   const { getCrest } = useManagerCrestMap();
 
   useEffect(() => {
@@ -42,26 +42,127 @@ export default function GobletStandings() {
 
         const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/goblet-standings`;
         const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
-        const payload: GobletStandingsResponse = await res.json();
+        let payload: GobletStandingsResponse = await res.json();
 
         if (!res.ok || (payload as any)?.error) {
-          throw new Error(payload?.error?.message || "Failed to fetch goblet standings");
+          const errPayload = (payload as any)?.error;
+          throw new Error(errPayload?.message || "Failed to fetch goblet standings");
         }
 
-        const standings = payload?.standings || [];
+        // Capture baseline ranks once per session from the DB-ordered standings.
+        if (!baselineRanksRef.current && payload?.standings?.length) {
+          const initial: Record<string, number> = {};
+          payload.standings.forEach((s: any, index: number) => {
+            const key = String(s.entry_id ?? s.team_id ?? "");
+            if (!key) return;
+            const baselineRank = typeof s.rank === "number" ? s.rank : index + 1;
+            initial[key] = baselineRank;
+          });
+          baselineRanksRef.current = initial;
+        }
+
+        // Overlay real names and compute live standings from h2h-matchups league entries / teams.
         try {
-          const stored = sessionStorage.getItem(BASELINE_KEY);
-          if (!stored && standings.length > 0) {
-            const initial: Record<string, number> = {};
-            standings.forEach((s, index) => {
-              if (s.manager_name) {
-                initial[s.manager_name] = index + 1;
+          const matchupsRes = await fetch(
+            `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-matchups`,
+            { headers: getSupabaseFunctionHeaders() },
+          );
+          if (matchupsRes.ok) {
+            const matchupsJson: any = await matchupsRes.json();
+            const matchups: any[] = Array.isArray(matchupsJson?.matchups)
+              ? matchupsJson.matchups
+              : [];
+
+            const nameByTeamId: Record<string, { entry_name: string; manager_name: string }> = {};
+            const nameByEntryId: Record<string, { entry_name: string; manager_name: string }> = {};
+            const livePointsThisGw: Record<string, number> = {};
+
+            matchups.forEach((m: any) => {
+              const t1 = m.team_1 || null;
+              const t2 = m.team_2 || null;
+              const team1Id = String(m.team_1_id ?? "");
+              const team2Id = String(m.team_2_id ?? "");
+              const team1EntryId = String(m.team_1_entry_id ?? "").trim();
+              const team2EntryId = String(m.team_2_entry_id ?? "").trim();
+
+              if (team1Id && t1) {
+                nameByTeamId[team1Id] = {
+                  entry_name: t1.entry_name ?? team1Id,
+                  manager_name: t1.manager_name ?? team1Id,
+                };
+              }
+              if (team2Id && t2) {
+                nameByTeamId[team2Id] = {
+                  entry_name: t2.entry_name ?? team2Id,
+                  manager_name: t2.manager_name ?? team2Id,
+                };
+              }
+              if (team1EntryId && t1) {
+                nameByEntryId[team1EntryId] = {
+                  entry_name: t1.entry_name ?? team1EntryId,
+                  manager_name: t1.manager_name ?? team1EntryId,
+                };
+              }
+              if (team2EntryId && t2) {
+                nameByEntryId[team2EntryId] = {
+                  entry_name: t2.entry_name ?? team2EntryId,
+                  manager_name: t2.manager_name ?? team2EntryId,
+                };
+              }
+              if (team1Id && m.live_team_1_points != null) {
+                livePointsThisGw[team1Id] = Number(m.live_team_1_points);
+              }
+              if (team2Id && m.live_team_2_points != null) {
+                livePointsThisGw[team2Id] = Number(m.live_team_2_points);
               }
             });
-            sessionStorage.setItem(BASELINE_KEY, JSON.stringify(initial));
+
+            if (
+              (Object.keys(nameByEntryId).length > 0 ||
+                Object.keys(nameByTeamId).length > 0) &&
+              Array.isArray(payload.standings) &&
+              payload.standings.length
+            ) {
+              const overlaid = (payload.standings || []).map((s: any) => {
+                const teamId = String(s.team_id ?? "");
+                const entryId = String(s.entry_id ?? "");
+                const fromEntry = entryId ? nameByEntryId[entryId] : undefined;
+                const fromTeam = teamId ? nameByTeamId[teamId] : undefined;
+                const names = fromEntry || fromTeam || null;
+                return names ? { ...s, ...names } : s;
+              });
+              payload = { ...payload, standings: overlaid };
+            }
+
+            if (Array.isArray(payload.standings) && payload.standings.length) {
+              const liveRows = (payload.standings as any[])
+                .map((s) => {
+                  const gwPoints = livePointsThisGw[String(s.team_id)] ?? 0;
+                  const base =
+                    (typeof s.points_for === "number" ? s.points_for :
+                      typeof s.total_points === "number" ? s.total_points :
+                        0);
+                  return {
+                    ...s,
+                    points_for: base + gwPoints,
+                  };
+                })
+                .sort((a: any, b: any) =>
+                  (b.points_for ?? b.total_points ?? 0) -
+                  (a.points_for ?? a.total_points ?? 0),
+                )
+                .map((s: any, index: number) => ({
+                  ...s,
+                  rank: index + 1,
+                }));
+              setLiveStandings(liveRows as GobletStanding[]);
+            } else {
+              setLiveStandings(null);
+            }
           }
         } catch {
-          // Ignore sessionStorage errors (e.g. unavailable environment)
+          // Non-fatal: fall back to database names and baseline-only view.
+          setLiveStandings(null);
         }
 
         setData(payload);
@@ -73,6 +174,10 @@ export default function GobletStandings() {
     }
 
     fetchStandings();
+    const interval = setInterval(() => {
+      fetchStandings();
+    }, 60_000);
+    return () => clearInterval(interval);
   }, []);
 
   if (loading) {
@@ -102,13 +207,8 @@ export default function GobletStandings() {
     );
   }
 
-  let baselineRanks: Record<string, number> = {};
-  try {
-    const stored = sessionStorage.getItem(BASELINE_KEY);
-    baselineRanks = stored ? JSON.parse(stored) : {};
-  } catch {
-    baselineRanks = {};
-  }
+  const baselineRanks = baselineRanksRef.current ?? {};
+  const rowsToRender = liveStandings ?? data.standings;
 
   return (
     <div className="space-y-4">
@@ -132,13 +232,11 @@ export default function GobletStandings() {
               </TableRow>
             </TableHeader>
             <TableBody className="fpl-table-body">
-              {data.standings.map((standing, index) => {
-                const managerKey = standing.manager_name ?? "";
+              {rowsToRender.map((standing, index) => {
+                const stableKey = String((standing as any).entry_id ?? standing.team_id ?? "");
                 const baselineRank =
-                  managerKey && baselineRanks
-                    ? baselineRanks[managerKey]
-                    : undefined;
-                const currentRank = index + 1;
+                  stableKey && baselineRanks ? baselineRanks[stableKey] : undefined;
+                const currentRank = standing.rank;
                 const moved =
                   baselineRank != null ? baselineRank - currentRank : 0;
                 const arrow =
