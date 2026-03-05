@@ -117,12 +117,15 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
   const [error, setError] = useState<string | null>(null);
   const [selectedSeason, setSelectedSeason] = useState<string>("current");
 
-  const loadBracket = async () => {
-    // Only load current season bracket if we're showing current season
+  useEffect(() => {
     if (contextLoading || (showLegacySelector && selectedSeason !== "current")) {
       return;
     }
 
+    let cancelled = false;
+
+    async function loadBracket() {
+      if (cancelled) return;
       setLoading(true);
       setError(null);
 
@@ -133,104 +136,77 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
         });
         const payload: BracketResponse = await res.json();
 
+        if (cancelled) return;
+
         if (!res.ok || payload?.error) {
-          // Don't throw error - just set empty state
-          console.warn("Bracket load warning:", payload?.error?.message || "Unable to load bracket");
+          console.warn("Bracket load warning:", payload?.error?.message);
           setGroup({ registeredCount: 0, standings: [], autoRegistered: true, start_gameweek: null, end_gameweek: null });
           setRounds([]);
         } else {
-          console.log("bracket group[0]:", payload.group?.standings?.[0]);
           setGroup(payload.group ?? { registeredCount: 0, standings: [], autoRegistered: true, start_gameweek: null, end_gameweek: null });
           setRounds(payload.rounds ?? []);
         }
 
-        // Overlay live GW points and real names from h2h-matchups.
+        // Overlay names and live points from h2h-matchups
         try {
-          const matchupsRes = await fetch(
+          const mRes = await fetch(
             `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-matchups`,
-            { headers: getSupabaseFunctionHeaders() as HeadersInit },
+            { headers: getSupabaseFunctionHeaders() as HeadersInit }
           );
-          if (matchupsRes.ok) {
-            const mJson: any = await matchupsRes.json();
-
-            const liveByTeamId: Record<string, number> = {};
+          if (mRes.ok && !cancelled) {
+            const mJson = await mRes.json();
             const nameByTeamId: Record<string, { entry_name: string; manager_name: string }> = {};
 
             (mJson?.matchups || []).forEach((m: any) => {
-              if (m.team_1_id) {
-                const key = String(m.team_1_id);
-                if (m.live_team_1_points != null) {
-                  liveByTeamId[key] = Number(m.live_team_1_points);
-                }
-                if (m.team_1?.entry_name) {
-                  nameByTeamId[key] = {
-                    entry_name: m.team_1.entry_name,
-                    manager_name: m.team_1.manager_name || m.team_1.entry_name,
-                  };
-                }
+              if (m.team_1_id && m.team_1?.entry_name) {
+                nameByTeamId[String(m.team_1_id)] = {
+                  entry_name: m.team_1.entry_name,
+                  manager_name: m.team_1.manager_name || m.team_1.entry_name,
+                };
               }
-              if (m.team_2_id) {
-                const key = String(m.team_2_id);
-                if (m.live_team_2_points != null) {
-                  liveByTeamId[key] = Number(m.live_team_2_points);
-                }
-                if (m.team_2?.entry_name) {
-                  nameByTeamId[key] = {
-                    entry_name: m.team_2.entry_name,
-                    manager_name: m.team_2.manager_name || m.team_2.entry_name,
-                  };
-                }
+              if (m.team_2_id && m.team_2?.entry_name) {
+                nameByTeamId[String(m.team_2_id)] = {
+                  entry_name: m.team_2.entry_name,
+                  manager_name: m.team_2.manager_name || m.team_2.entry_name,
+                };
               }
             });
 
-            setGroup((prev) => {
-              if (!prev) return prev;
-              const updated = prev.standings.map((s) => {
-                const key = String(s.team_id);
-                const liveGw = liveByTeamId[key] ?? 0;
-                const names = nameByTeamId[key];
-                const stored = typeof s.total_points === "number" ? s.total_points : 0;
+            if (Object.keys(nameByTeamId).length > 0 && !cancelled) {
+              setGroup((prev) => {
+                if (!prev) return prev;
                 return {
-                  ...s,
-                  ...(names || {}),
-                  _sort_points: stored + liveGw,
+                  ...prev,
+                  standings: prev.standings.map((s) => {
+                    const names = nameByTeamId[String(s.team_id)];
+                    return names ? { ...s, ...names } : s;
+                  }),
                 };
               });
-              const sorted = [...updated]
-                .sort(
-                  (a: any, b: any) =>
-                    (b._sort_points ?? b.total_points ?? 0) -
-                    (a._sort_points ?? a.total_points ?? 0),
-                )
-                .map((s: any, index: number) => {
-                  const { _sort_points, ...rest } = s;
-                  return { ...rest, rank: index + 1 };
-                });
-              return { ...prev, standings: sorted };
-            });
+            }
           }
         } catch {
-          // Non-fatal: fall back to DB names only.
+          // Non-fatal
         }
-      } catch (err: any) {
-        console.error("Bracket load error:", err);
-        // Set empty state instead of error - allow UI to render
-        setGroup({ registeredCount: 0, standings: [], autoRegistered: true, start_gameweek: null, end_gameweek: null });
-        setRounds([]);
-      } finally {
-        setLoading(false);
-      }
-  };
 
-  useEffect(() => {
-    if (contextLoading || (showLegacySelector && selectedSeason !== "current")) {
-      return;
+      } catch (err: any) {
+        if (!cancelled) {
+          setGroup({ registeredCount: 0, standings: [], autoRegistered: true, start_gameweek: null, end_gameweek: null });
+          setRounds([]);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     }
 
     loadBracket();
     const interval = setInterval(loadBracket, 300_000);
-    return () => clearInterval(interval);
-  }, [contextLoading, showLegacySelector, selectedSeason, loadBracket]);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [contextLoading, showLegacySelector, selectedSeason]);
 
   const renderEmptyBracket = () => {
     // Simple 8-team knockout skeleton: 4 quarter-finals, 2 semis, 1 final.
