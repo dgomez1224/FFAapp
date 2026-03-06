@@ -161,6 +161,8 @@ export default function LeagueStandings() {
   const [data, setData] = useState<LeagueStandingsResponse | null>(null);
   const [liveStandings, setLiveStandings] = useState<Standing[] | null>(null);
   const [isLiveGameweek, setIsLiveGameweek] = useState(false);
+  const [showLiveColumns, setShowLiveColumns] = useState(false);
+  const [gwPhase, setGwPhase] = useState<"pre" | "live" | "post" | "settled">("pre");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { getCrest } = useManagerCrestMap();
@@ -176,8 +178,11 @@ export default function LeagueStandings() {
   }, [baselineStandings]);
   const rowsToRender = isLiveGameweek && liveStandings ? liveStandings : baselineStandings;
 
+  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   useEffect(() => {
-    async function fetchStandings() {
+    let eventFinished = true;
+    async function fetchStandings(): Promise<boolean> {
       try {
         setLoading(true);
         setError(null);
@@ -187,7 +192,7 @@ export default function LeagueStandings() {
         const payload: LeagueStandingsResponse = await res.json();
 
         if (!res.ok || (payload as any)?.error) {
-          throw new Error(payload?.error?.message || "Failed to fetch league standings");
+          throw new Error((payload as any)?.error?.message || "Failed to fetch league standings");
         }
 
         let entryIdToTeamId: Record<string, string> = {};
@@ -201,17 +206,9 @@ export default function LeagueStandings() {
           });
         }
 
-        if (!baselineRanksRef.current && payload?.standings?.length) {
-          const initial: Record<string, number> = {};
-          payload.standings.forEach((s, index) => {
-            initial[s.team_id] = index + 1;
-          });
-          baselineRanksRef.current = initial;
-        }
-
         setData(payload);
 
-        // Determine whether the current gameweek is live using league details
+        // Determine GW phase and standings using current-gameweek + league-standings/matches
         try {
           const gwRes = await fetch(
             `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/current-gameweek`,
@@ -301,26 +298,89 @@ export default function LeagueStandings() {
             });
             Object.assign(entryIdToTeamId, internalIdToTeamId);
           }
-          // Show live standings for the entire current gameweek (pre-match, live, or post-match)
-          const hasCurrentGwMatches =
-            currentGw > 0 &&
-            matches.some((m: any) => Number(m?.event) === currentGw);
+          // --- Step 1: Determine GW phase ---
+          const gwMatches = matches.filter((m: any) => Number(m?.event) === currentGw);
+          const hasCurrentGwMatches = currentGw > 0 && gwMatches.length > 0;
 
-          if (!currentGw || !hasCurrentGwMatches || !payload.standings?.length) {
-            setIsLiveGameweek(false);
-            setLiveStandings(null);
+          const gwStarted = gwMatches.some((m: any) => m?.started === true);
+          const gwFullyFinished =
+            gwMatches.length > 0 && gwMatches.every((m: any) => m?.finished === true);
+          const gwInProgress = gwStarted && !gwFullyFinished;
+
+          eventFinished = gwData?.current_event_finished === true;
+
+          let phase: "pre" | "live" | "post" | "settled";
+          if (!gwStarted) {
+            phase = "pre";
+          } else if (gwInProgress) {
+            phase = "live";
+          } else if (gwFullyFinished && !eventFinished) {
+            phase = "post";
           } else {
-            const live = computeLiveStandingsFromMatches(
-              payload.standings,
-              matches,
-              currentGw,
-              entryIdToTeamId
-            );
-            setIsLiveGameweek(true);
-            setLiveStandings(live);
+            phase = "settled";
+          }
+          setGwPhase(phase);
+
+          // --- Step 2: Compute and set standings based on phase ---
+          if (!currentGw || !hasCurrentGwMatches || !payload.standings?.length) {
+            setGwPhase("pre");
+            setLiveStandings(null);
+            setIsLiveGameweek(false);
+            setShowLiveColumns(false);
+          } else {
+            switch (phase) {
+              case "pre":
+                setLiveStandings(null);
+                setIsLiveGameweek(false);
+                setShowLiveColumns(false);
+                if (!baselineRanksRef.current && payload.standings?.length) {
+                  const initial: Record<string, number> = {};
+                  payload.standings.forEach((s: Standing) => {
+                    initial[s.team_id] = s.rank;
+                  });
+                  baselineRanksRef.current = initial;
+                }
+                break;
+              case "live":
+                if (!baselineRanksRef.current && payload.standings?.length) {
+                  const initial: Record<string, number> = {};
+                  payload.standings.forEach((s: Standing) => {
+                    initial[s.team_id] = s.rank;
+                  });
+                  baselineRanksRef.current = initial;
+                }
+                const live = computeLiveStandingsFromMatches(
+                  payload.standings,
+                  matches,
+                  currentGw,
+                  entryIdToTeamId
+                );
+                setLiveStandings(live);
+                setIsLiveGameweek(true);
+                setShowLiveColumns(true);
+                break;
+              case "post":
+                const livePost = computeLiveStandingsFromMatches(
+                  payload.standings,
+                  matches,
+                  currentGw,
+                  entryIdToTeamId
+                );
+                setLiveStandings(livePost);
+                setIsLiveGameweek(true);
+                setShowLiveColumns(false);
+                break;
+              case "settled":
+                setLiveStandings(null);
+                setIsLiveGameweek(true);
+                setShowLiveColumns(false);
+                break;
+            }
           }
         } catch {
+          setGwPhase("pre");
           setIsLiveGameweek(false);
+          setShowLiveColumns(false);
           setLiveStandings(null);
         }
       } catch (err: any) {
@@ -328,13 +388,20 @@ export default function LeagueStandings() {
       } finally {
         setLoading(false);
       }
+      return eventFinished;
     }
 
-    fetchStandings();
-    const interval = setInterval(() => {
-      fetchStandings();
-    }, 300_000);
-    return () => clearInterval(interval);
+    fetchStandings().then((eventFinished) => {
+      if (!eventFinished) {
+        pollingIntervalRef.current = setInterval(fetchStandings, 300_000);
+      }
+    });
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+    };
   }, []);
 
   if (loading) {
@@ -411,19 +478,19 @@ export default function LeagueStandings() {
                 }
 
                 const winsChanged =
-                  isLiveGameweek && baseline && standing.wins > baseline.wins;
+                  showLiveColumns && baseline && standing.wins > baseline.wins;
                 const drawsChanged =
-                  isLiveGameweek && baseline && standing.draws > baseline.draws;
+                  showLiveColumns && baseline && standing.draws > baseline.draws;
                 const lossesChanged =
-                  isLiveGameweek && baseline && standing.losses > baseline.losses;
+                  showLiveColumns && baseline && standing.losses > baseline.losses;
                 const pointsChanged =
-                  isLiveGameweek && baseline && standing.points > baseline.points;
+                  showLiveColumns && baseline && standing.points > baseline.points;
                 const forChanged =
-                  isLiveGameweek &&
+                  showLiveColumns &&
                   baseline &&
                   standing.points_for > baseline.points_for;
                 const againstChanged =
-                  isLiveGameweek &&
+                  showLiveColumns &&
                   baseline &&
                   standing.points_against > baseline.points_against;
 

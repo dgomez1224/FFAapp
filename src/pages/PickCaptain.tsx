@@ -83,9 +83,9 @@ export default function PickCaptain() {
 
       setContext(normalizedContext);
 
-      // Fetch live points for the current active GW (target GW - 1)
+      // Fetch points for the current cup gameweek: live when GW is active, final when event_finished
       try {
-        const activeGw = normalizedContext.gameweek - 1;
+        const activeGw = normalizedContext.gameweek;
         if (activeGw > 0) {
           const liveRes = await fetch(
             `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/api/live?event=${activeGw}`,

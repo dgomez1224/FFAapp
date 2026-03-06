@@ -32,10 +32,12 @@ export default function GobletStandings() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const baselineRanksRef = useRef<Record<string, number> | null>(null);
+  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const { getCrest } = useManagerCrestMap();
 
   useEffect(() => {
-    async function fetchStandings() {
+    let eventFinished = true;
+    async function fetchStandings(): Promise<boolean> {
       try {
         setLoading(true);
         setError(null);
@@ -135,31 +137,41 @@ export default function GobletStandings() {
             }
 
             if (Array.isArray(payload.standings) && payload.standings.length) {
-              const liveRows = (payload.standings as any[])
-                .map((s) => {
-                  // Use live GW points for sort key only — do not add to stored points_for,
-                  // which already includes the current GW from the last DB refresh.
-                  const liveGwPts = livePointsThisGw[String(s.team_id)] ?? 0;
-                  const storedPts =
-                    (typeof s.points_for === "number" ? s.points_for :
-                      typeof s.total_points === "number" ? s.total_points :
-                        0);
-                  return {
+              const hasAnyLivePoints = Object.values(livePointsThisGw).some(v => v > 0);
+              const allTeamsHaveLive = payload.standings.every(
+                (s: any) => livePointsThisGw[String(s.team_id)] != null
+              );
+              // Only re-sort when we have full coverage AND no "mixed" state: either all live
+              // values are 0 (no live yet) or all are non-zero (everyone has live). Avoid
+              // re-sorting when some teams have live and others 0 (partial data) — that
+              // scrambles the correct server order.
+              const liveValues = (payload.standings as any[]).map(
+                (s: any) => livePointsThisGw[String(s.team_id)] ?? 0
+              );
+              const allLiveZero = liveValues.every((v) => v === 0);
+              const allLiveNonZero = liveValues.every((v) => v > 0);
+              const safeToResort = allTeamsHaveLive && (allLiveZero || allLiveNonZero);
+
+              if (hasAnyLivePoints && safeToResort) {
+                const liveRows = (payload.standings as any[])
+                  .map((s: any) => {
+                    const liveGwPts = livePointsThisGw[String(s.team_id)] ?? 0;
+                    const storedPts = typeof s.points_for === "number" ? s.points_for
+                      : typeof s.total_points === "number" ? s.total_points : 0;
+                    return { ...s, points_for: storedPts, _sort_key: storedPts + liveGwPts };
+                  })
+                  .sort((a: any, b: any) => b._sort_key - a._sort_key)
+                  .map((s: any, i: number) => ({ ...s, rank: i + 1 }));
+                setLiveStandings(liveRows as GobletStanding[]);
+              } else {
+                // Partial live data or no live — use server order as-is
+                setLiveStandings(
+                  (payload.standings as any[]).map((s: any, i: number) => ({
                     ...s,
-                    _sort_points: storedPts + liveGwPts,
-                    points_for: s.points_for,
-                    total_points: s.total_points,
-                  };
-                })
-                .sort((a: any, b: any) =>
-                  (b._sort_points ?? 0) -
-                  (a._sort_points ?? 0),
-                )
-                .map((s: any, index: number) => ({
-                  ...s,
-                  rank: index + 1,
-                }));
-              setLiveStandings(liveRows as GobletStanding[]);
+                    rank: typeof s.rank === "number" ? s.rank : i + 1,
+                  })) as GobletStanding[]
+                );
+              }
             } else {
               setLiveStandings(null);
             }
@@ -170,18 +182,36 @@ export default function GobletStandings() {
         }
 
         setData(payload);
+
+        try {
+          const gwRes = await fetch(
+            `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/current-gameweek`,
+            { headers: getSupabaseFunctionHeaders() }
+          );
+          const gwData = gwRes.ok ? await gwRes.json() : null;
+          eventFinished = gwData?.event_finished === true || gwData?.current_event_finished === true;
+        } catch {
+          // default eventFinished stays true (no polling)
+        }
       } catch (err: any) {
         setError(err.message || "Failed to load goblet standings");
       } finally {
         setLoading(false);
       }
+      return eventFinished;
     }
 
-    fetchStandings();
-    const interval = setInterval(() => {
-      fetchStandings();
-    }, 300_000);
-    return () => clearInterval(interval);
+    fetchStandings().then((eventFinished) => {
+      if (!eventFinished) {
+        pollingIntervalRef.current = setInterval(fetchStandings, 300_000);
+      }
+    });
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+    };
   }, []);
 
   if (loading) {

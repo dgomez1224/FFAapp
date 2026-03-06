@@ -116,6 +116,7 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedSeason, setSelectedSeason] = useState<string>("current");
+  const pollingIntervalRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     if (contextLoading || (showLegacySelector && selectedSeason !== "current")) {
@@ -124,8 +125,20 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
 
     let cancelled = false;
 
-    async function loadBracket() {
-      if (cancelled) return;
+    async function loadBracket(): Promise<boolean> {
+      if (cancelled) return true;
+      let eventFinished = true;
+      try {
+        const gwRes = await fetch(
+          `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/current-gameweek`,
+          { headers: getSupabaseFunctionHeaders() as HeadersInit }
+        );
+        const gwData = gwRes.ok ? await gwRes.json() : null;
+        eventFinished = gwData?.event_finished === true || gwData?.current_event_finished === true;
+      } catch {
+        // default eventFinished stays true (no polling)
+      }
+      if (cancelled) return true;
       setLoading(true);
       setError(null);
 
@@ -136,7 +149,7 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
         });
         const payload: BracketResponse = await res.json();
 
-        if (cancelled) return;
+        if (cancelled) return true;
 
         if (!res.ok || payload?.error) {
           console.warn("Bracket load warning:", payload?.error?.message);
@@ -147,7 +160,7 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
           setRounds(payload.rounds ?? []);
         }
 
-        // Overlay names and live points from h2h-matchups
+        // Overlay names only from h2h-matchups (live scores come from /bracket server-side)
         try {
           const mRes = await fetch(
             `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-matchups`,
@@ -197,14 +210,20 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
       } finally {
         if (!cancelled) setLoading(false);
       }
+      return eventFinished;
     }
 
-    loadBracket();
-    const interval = setInterval(loadBracket, 300_000);
-
+    loadBracket().then((eventFinished) => {
+      if (!eventFinished) {
+        pollingIntervalRef.current = setInterval(loadBracket, 300_000);
+      }
+    });
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
     };
   }, [contextLoading, showLegacySelector, selectedSeason]);
 
@@ -434,7 +453,7 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
                         <TableCell className="text-right font-medium">
                           {team.total_points}
                         </TableCell>
-                        <TableCell className="text-right">{team.captain_points}</TableCell>
+                        <TableCell className="text-right">{(team.captain_points ?? 0) * 2}</TableCell>
                         <TableCell className="text-right">{team.played}</TableCell>
                         <TableCell className="text-center">
                           {advancing ? (

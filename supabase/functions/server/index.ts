@@ -361,24 +361,18 @@ async function resolveCupTargetGameweek(
   supabase: ReturnType<typeof getSupabaseAdmin>,
 ) {
   let currentGameweek: number | null = null;
-  let isOngoing = false;
   try {
     const game = await fetchJSON<any>(`${DRAFT_BASE_URL}/game`);
     currentGameweek = game?.current_event ?? null;
-    // current_event_finished: false = GW is ongoing, lock it
-    // current_event_finished: true = GW finished, pick for current
-    isOngoing = game?.current_event_finished === false;
   } catch {
     currentGameweek = null;
-    isOngoing = false;
   }
   const base = Math.max(
     CUP_START_GAMEWEEK,
     currentGameweek || CUP_START_GAMEWEEK
   );
-  // If GW is ongoing, lock it — captains pick for next GW
-  if (isOngoing) return base + 1;
-  // GW finished or unknown — pick for current GW
+  // Return current FPL gameweek (e.g. 29) so PickCaptain uses it for live points
+  // and as the target gameweek for captain selection. Do not return base + 1.
   return base;
 }
 
@@ -2413,8 +2407,10 @@ cupGroupStage.get("/", async (c) => {
         });
         (scores || []).forEach((s: any) => {
           if (!map[s.team_id]) return;
-          map[s.team_id].total_points += s.total_points || 0;
-          map[s.team_id].captain_points += s.captain_points || 0;
+          const rowTotal = s.total_points || 0;
+          const rowCaptain = s.captain_points || 0;
+          map[s.team_id].total_points += rowTotal + rowCaptain;
+          map[s.team_id].captain_points += rowCaptain;
           map[s.team_id].played += 1;
         });
         standings = Object.values(map)
@@ -5155,6 +5151,7 @@ currentGameweek.get("/", async (c) => {
     return c.json({
       current_gameweek: currentEventId,
       current_event_finished: game?.current_event_finished ?? false,
+      event_finished: currentEvent?.finished ?? game?.current_event_finished ?? false,
       deadline_time: currentEvent?.deadline_time || null,
       hasSeasonState: false,
       source: "draft",
@@ -5500,12 +5497,20 @@ bracket.get("/", async (c) => {
       endGW = startGW + (tournament.group_stage_gameweeks || 4) - 1;
 
       if (teamIds.length > 0) {
-        const { data: scores } = await supabase
-          .from("cup_gameweek_scores")
-          .select("team_id, total_points, captain_points, gameweek, raw_data")
+        const currentGw = await resolveCurrentGameweek();
+
+        // Captain selections by team_id (UUID) and gameweek
+        const { data: captainRows } = await supabase
+          .from("cup_captain_selections")
+          .select("team_id, gameweek, captain_player_id")
           .in("team_id", teamIds)
           .gte("gameweek", startGW)
           .lte("gameweek", endGW);
+        const captainByTeamGw: Record<string, Record<number, number>> = {};
+        (captainRows || []).forEach((r: any) => {
+          if (!captainByTeamGw[r.team_id]) captainByTeamGw[r.team_id] = {};
+          captainByTeamGw[r.team_id][coerceNumber(r.gameweek)] = coerceNumber(r.captain_player_id);
+        });
 
         const standingsMap: Record<string, any> = {};
         registeredTeams.forEach((t) => {
@@ -5520,19 +5525,53 @@ bracket.get("/", async (c) => {
           };
         });
 
-        (scores || []).forEach((s) => {
-          if (standingsMap[s.team_id]) {
-            standingsMap[s.team_id].total_points += s.total_points || 0;
-            standingsMap[s.team_id].captain_points += s.captain_points || 0;
-            const hasLivePayload =
-              (s.total_points || 0) !== 0 ||
-              (s.captain_points || 0) !== 0 ||
-              (s.raw_data && typeof s.raw_data === "object" && Object.keys(s.raw_data).length > 0);
-            if (hasLivePayload) {
-              standingsMap[s.team_id].played += 1;
+        for (let gw = startGW; gw <= endGW; gw++) {
+          let pointsMap: Record<number, number> = {};
+          if (currentGw != null && gw === currentGw) {
+            try {
+              const livePayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${gw}/live`);
+              pointsMap = extractLivePointsMap(livePayload);
+            } catch {
+              // use pick.points below
             }
           }
-        });
+
+          await Promise.all(
+            registeredTeams.map(async (team: any) => {
+              const entryId = String(team.entry_id ?? "").trim();
+              if (!entryId) return;
+              let picks: any[] = [];
+              try {
+                const picksRes = await fetchJSON<any>(`${DRAFT_BASE_URL}/entry/${entryId}/event/${gw}`);
+                picks = normalizeDraftList<any>(picksRes?.picks ?? []);
+              } catch {
+                return;
+              }
+              if (!picks.length) return;
+
+              const captainPlayerId = captainByTeamGw[team.id]?.[gw] ?? 0;
+              let totalPoints = 0;
+              let captainRaw = 0;
+              for (const pick of picks) {
+                const elementId = coerceNumber(pick?.element ?? pick?.element_id ?? pick?.player_id);
+                const basePoints =
+                  Object.prototype.hasOwnProperty.call(pointsMap, elementId)
+                    ? coerceNumber(pointsMap[elementId], 0)
+                    : coerceNumber(pick?.points ?? pick?.total_points ?? 0, 0);
+                const isCaptain = captainPlayerId > 0 && elementId === captainPlayerId;
+                totalPoints += basePoints;
+                if (isCaptain) {
+                  captainRaw = basePoints;
+                  totalPoints += basePoints;
+                }
+              }
+              if (!standingsMap[team.id]) return;
+              standingsMap[team.id].total_points += totalPoints;
+              standingsMap[team.id].captain_points += captainRaw;
+              standingsMap[team.id].played += 1;
+            }),
+          );
+        }
 
         groupStandings = Object.values(standingsMap)
           .sort((a, b) => {

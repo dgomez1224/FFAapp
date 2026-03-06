@@ -258,7 +258,7 @@ export default function CupGroupStage() {
                       <TableCell className="text-right font-medium">
                         {team.total_points}
                       </TableCell>
-                      <TableCell className="text-right">{team.captain_points}</TableCell>
+                      <TableCell className="text-right">{(team.captain_points ?? 0) * 2}</TableCell>
                       <TableCell className="text-right">{team.played}</TableCell>
                       <TableCell className="text-center">
                         {hasStandings ? (

@@ -98,7 +98,7 @@ export default function GroupStageTable({ tournamentId }: Props) {
                 </td>
                 <td className="px-4 py-2">{team.manager_name}</td>
                 <td className="px-4 py-2 text-right">{team.total_points}</td>
-                <td className="px-4 py-2 text-right">{team.captain_points}</td>
+                <td className="px-4 py-2 text-right">{(team.captain_points ?? 0) * 2}</td>
                 <td className="px-4 py-2 text-center">
                   {advancing ? "Advancing" : "Eliminated"}
                 </td>

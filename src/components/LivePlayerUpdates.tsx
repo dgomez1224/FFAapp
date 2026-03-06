@@ -274,8 +274,10 @@ export default function LivePlayerUpdates() {
   const [gameweek, setGameweek] = useState<number | null>(null);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const previousRef = useRef<Record<string, PlayerSnapshot>>({});
+  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const load = useCallback(async (silent = false) => {
+  const load = useCallback(async (silent = false): Promise<boolean> => {
+    let eventFinished = true;
     if (!silent) {
       setLoading(true);
       setError(null);
@@ -459,6 +461,17 @@ export default function LivePlayerUpdates() {
       previousRef.current = current;
       setLastUpdated(now);
       setError(null);
+
+      try {
+        const gwRes = await fetch(
+          `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/current-gameweek`,
+          { headers: getSupabaseFunctionHeaders() }
+        );
+        const gwData = gwRes.ok ? await gwRes.json() : null;
+        eventFinished = gwData?.event_finished === true || gwData?.current_event_finished === true;
+      } catch {
+        // default eventFinished stays true (no polling)
+      }
     } catch (err: any) {
       if (!silent) {
         setError(err?.message || "Failed to load live updates");
@@ -468,24 +481,29 @@ export default function LivePlayerUpdates() {
         setLoading(false);
       }
     }
+    return eventFinished;
   }, []);
 
   useEffect(() => {
     let mounted = true;
 
-    const run = async (silent = false) => {
-      if (!mounted) return;
-      await load(silent);
+    const run = (silent = false) => {
+      if (!mounted) return Promise.resolve(true);
+      return load(silent);
     };
 
-    run(false);
-    const timer = window.setInterval(() => {
-      run(true);
-    }, POLL_INTERVAL_MS);
+    run(false).then((eventFinished) => {
+      if (!eventFinished && mounted) {
+        pollingIntervalRef.current = window.setInterval(() => run(true), POLL_INTERVAL_MS);
+      }
+    });
 
     return () => {
       mounted = false;
-      window.clearInterval(timer);
+      if (pollingIntervalRef.current) {
+        window.clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
     };
   }, [load]);
 

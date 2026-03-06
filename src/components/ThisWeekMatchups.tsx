@@ -2,7 +2,7 @@
  * This Week's Matchups - Public Read-Only
  */
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
@@ -75,9 +75,11 @@ export function ThisWeekMatchups() {
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const { getCrest } = useManagerCrestMap();
 
-  const loadMatchups = useCallback(async (silent = false) => {
+  const loadMatchups = useCallback(async (silent = false): Promise<boolean> => {
+    let eventFinished = true;
     try {
       if (silent) {
         setRefreshing(true);
@@ -186,6 +188,17 @@ export function ThisWeekMatchups() {
 
       setData(merged);
       setLastUpdated(Date.now());
+
+      try {
+        const gwRes = await fetch(
+          `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/current-gameweek`,
+          { headers: getSupabaseFunctionHeaders() }
+        );
+        const gwData = gwRes.ok ? await gwRes.json() : null;
+        eventFinished = gwData?.event_finished === true || gwData?.current_event_finished === true;
+      } catch {
+        // default eventFinished stays true (no polling)
+      }
     } catch (err: any) {
       setError(err.message || "Failed to load matchups");
     } finally {
@@ -195,22 +208,29 @@ export function ThisWeekMatchups() {
         setLoading(false);
       }
     }
+    return eventFinished;
   }, []);
 
   useEffect(() => {
     let mounted = true;
 
-    const run = async (silent = false) => {
-      if (!mounted) return;
-      await loadMatchups(silent);
+    const run = (silent = false) => {
+      if (!mounted) return Promise.resolve(true);
+      return loadMatchups(silent);
     };
 
-    run(false);
-    const timer = window.setInterval(() => run(true), POLL_INTERVAL_MS);
+    run(false).then((eventFinished) => {
+      if (!eventFinished && mounted) {
+        pollingIntervalRef.current = window.setInterval(() => run(true), POLL_INTERVAL_MS);
+      }
+    });
 
     return () => {
       mounted = false;
-      window.clearInterval(timer);
+      if (pollingIntervalRef.current) {
+        window.clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
     };
   }, [loadMatchups]);
 
