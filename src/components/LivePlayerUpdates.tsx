@@ -298,8 +298,10 @@ export default function LivePlayerUpdates() {
       const liveRes = await fetch(liveUrl, { headers: getSupabaseFunctionHeaders() });
       const livePayload: LiveDataResponse | null = liveRes.ok ? await liveRes.json() : null;
       const startsByPlayerId: Record<number, number> = {};
-      (livePayload?.elements || []).forEach((el) => {
-        startsByPlayerId[el.element] = Number(el.stats?.starts || 0);
+      const elementsObj = livePayload?.elements ?? {};
+      Object.entries(elementsObj).forEach(([key, el]: [string, any]) => {
+        const id = Number(key);
+        if (id) startsByPlayerId[id] = Number(el?.stats?.starts ?? 0);
       });
 
       const detailPayloads = await Promise.all(

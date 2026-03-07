@@ -20,6 +20,8 @@ export interface PlayerStats {
   goals_scored?: number;
   assists?: number;
   minutes?: number;
+  bonus?: number;
+  saves?: number;
   defensive_contributions?: number;
   /** DEF 10+ or MID/FWD 12+ = defensive return (already in API score) */
   defensive_return?: boolean;
@@ -38,8 +40,13 @@ export interface PlayerStats {
     minutes?: number;
     clean_sheets?: number;
     goals_conceded?: number;
+    bonus?: number;
+    saves?: number;
+    yellow_cards?: number;
+    red_cards?: number;
     penalties_saved?: number;
     penalties_missed?: number;
+    defensive_contributions?: number;
     fixture_difficulty?: number | null;
     is_upcoming?: boolean;
     opponent_team_name?: string | null;
@@ -149,6 +156,18 @@ export function PlayerStatsModal({
                 <div className="p-2 bg-muted rounded">
                   <p className="text-muted-foreground text-xs">Minutes</p>
                   <p className="text-lg font-bold">{player.minutes}</p>
+                </div>
+              )}
+              {(player.bonus ?? 0) >= 1 && (
+                <div className="p-2 bg-muted rounded">
+                  <p className="text-muted-foreground text-xs">Bonus</p>
+                  <p className="text-lg font-bold">{player.bonus}</p>
+                </div>
+              )}
+              {(player.saves ?? 0) >= 1 && (
+                <div className="p-2 bg-muted rounded">
+                  <p className="text-muted-foreground text-xs">Saves</p>
+                  <p className="text-lg font-bold">{player.saves}</p>
                 </div>
               )}
               {(player.defensive_contributions ?? 0) >= 1 && (
