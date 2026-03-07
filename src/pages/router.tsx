@@ -394,13 +394,9 @@ function Shell() {
   );
 }
 
-const routerBasename = (typeof import.meta.env.BASE_URL === "string" && import.meta.env.BASE_URL !== "/")
-  ? import.meta.env.BASE_URL.replace(/\/$/, "")
-  : undefined;
-
 export default function App() {
   return (
-    <BrowserRouter basename={routerBasename}>
+    <BrowserRouter basename={import.meta.env.BASE_URL}>
       <Shell />
     </BrowserRouter>
   );
