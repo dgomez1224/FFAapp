@@ -110,7 +110,6 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
   const navigate = useNavigate();
   const { loading: contextLoading } = useTournamentContext();
   const { getCrest } = useManagerCrestMap();
-  const navigate = useNavigate();
   const [currentGw, setCurrentGw] = useState<number>(0);
   const [group, setGroup] = useState<BracketResponse["group"] | null>({
     registeredCount: 0,
