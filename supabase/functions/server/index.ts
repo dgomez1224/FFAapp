@@ -8313,17 +8313,56 @@ legacyStats.get("/manager/:managerName", async (c) => {
     const allTimeRows = await computeAllTimeManagerStats(supabase);
     const allTimeStats = allTimeRows.find((row: any) => row.manager_name === managerName) || null;
 
-    // Fetch season standings
-    const { data: seasonStandingsRaw } = await supabase
+    // Fetch season standings from legacy_season_standings (final_rank is stored in table)
+    const { data: seasonStandingsRows } = await supabase
       .from("legacy_season_standings")
-      .select("season, manager_name, entry_id, entry_name, final_rank, total_points, wins, draws, losses, points_for, points_against, competition_type")
-      .in("manager_name", managerVariants)
-      .order("season", { ascending: false })
-      .limit(80);
-    const seasonStandings = (seasonStandingsRaw || []).map((row: any) => ({
-      ...row,
+      .select("season, final_rank, wins, draws, losses, points, points_for, competition_type")
+      .eq("manager_name", managerName)
+      .order("season", { ascending: false });
+    const seasonStandings = (seasonStandingsRows ?? []).map((s: any) => ({
+      season: s.season,
       manager_name: managerName,
+      final_rank: Number(s.final_rank),
+      wins: Number(s.wins ?? 0),
+      draws: Number(s.draws ?? 0),
+      losses: Number(s.losses ?? 0),
+      points: Number(s.points ?? 0),
+      points_for: Number(s.points_for ?? 0),
+      competition_type: s.competition_type ?? "league",
     }));
+
+    // Append current season (2025/26) row from Draft API live standings
+    try {
+      const leagueId = await resolveLeagueId();
+      const draftRes = await fetch(
+        `${DRAFT_BASE_URL}/league/${leagueId}/details`
+      );
+      const draftData = draftRes.ok ? await draftRes.json() : null;
+      const leagueEntries = normalizeDraftList<any>(draftData?.league_entries ?? []);
+      const standings = Array.isArray(draftData?.standings) ? draftData.standings : [];
+      const entry = leagueEntries.find((e: any) =>
+        toCanonicalManagerName(formatDraftManagerName(e)) === managerName ||
+        (e.short_name && String(e.short_name).toUpperCase() === managerName)
+      );
+      const entryStanding = entry
+        ? standings.find((s: any) => Number(s.league_entry) === Number(entry.id ?? entry.league_entry_id ?? entry.entry_id ?? entry.entry))
+        : null;
+      if (entryStanding) {
+        seasonStandings.unshift({
+          season: CURRENT_SEASON,
+          manager_name: managerName,
+          final_rank: coerceNumber(entryStanding.rank),
+          wins: coerceNumber(entryStanding.matches_won ?? 0),
+          draws: coerceNumber(entryStanding.matches_drawn ?? 0),
+          losses: coerceNumber(entryStanding.matches_lost ?? 0),
+          points: coerceNumber(entryStanding.total ?? entryStanding.points ?? 0),
+          points_for: coerceNumber(entryStanding.points_for ?? 0),
+          competition_type: "league",
+        });
+      }
+    } catch {
+      // Non-fatal: omit current season row if Draft API fails
+    }
 
     // Fetch unified H2H stats (all-time = legacy + current season)
     const h2hAllTime = await fetchUnifiedAllTimeH2H(supabase, managerName);
