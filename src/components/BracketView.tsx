@@ -5,7 +5,8 @@
  * No authentication required - uses static entry ID to resolve tournament context.
  */
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { Card } from "./ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
@@ -105,6 +106,8 @@ const LEGACY_BRACKETS: Array<{ season: string; src: string }> = [
 export function BracketView({ showLegacySelector = true }: BracketViewProps) {
   const { loading: contextLoading } = useTournamentContext();
   const { getCrest } = useManagerCrestMap();
+  const navigate = useNavigate();
+  const [currentGw, setCurrentGw] = useState<number>(0);
   const [group, setGroup] = useState<BracketResponse["group"] | null>({
     registeredCount: 0,
     standings: [],
@@ -134,6 +137,9 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
           { headers: getSupabaseFunctionHeaders() as HeadersInit }
         );
         const gwData = gwRes.ok ? await gwRes.json() : null;
+        if (gwData?.current_gameweek && !cancelled) {
+          setCurrentGw(gwData.current_gameweek);
+        }
         eventFinished = gwData?.event_finished === true || gwData?.current_event_finished === true;
       } catch {
         // default eventFinished stays true (no polling)
@@ -431,10 +437,19 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
                   {group.standings.map((team) => {
                     const advancingCount = Math.ceil(group.standings.length * 0.8);
                     const advancing = team.rank <= advancingCount;
+                    const cupStartGw = group?.start_gameweek ?? currentGw;
+                    const cupEndGw = group?.end_gameweek ?? currentGw;
+                    const linkGw = (currentGw >= cupStartGw && currentGw <= cupEndGw && currentGw > 0)
+                      ? currentGw
+                      : cupStartGw;
+                    const fixtureHref = linkGw && team.team_id
+                      ? `/lineup/cup/${linkGw}/${team.team_id}`
+                      : null;
                     return (
                       <TableRow
                         key={team.team_id}
-                        className={advancing ? "bg-green-50 dark:bg-green-950/40 font-semibold" : ""}
+                        className={`${advancing ? "bg-green-50 dark:bg-green-950/40 font-semibold" : ""} cursor-pointer hover:bg-muted/60 transition-colors`}
+                        onClick={() => { if (fixtureHref) navigate(fixtureHref); }}
                       >
                         <TableCell>{team.rank}</TableCell>
                         <TableCell>
