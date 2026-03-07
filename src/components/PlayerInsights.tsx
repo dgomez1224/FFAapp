@@ -19,6 +19,10 @@ interface PlayerInsight {
   assists?: number;
   defensive_contribution_returns?: number;
   defensive_contributions?: number;
+  bonus?: number;
+  expected_goals?: number;
+  expected_assists?: number;
+  expected_goal_involvements?: number;
   points_per_game_played?: number;
   minutes_per_game_played?: number;
   points_per_minute_played?: number;
@@ -354,6 +358,18 @@ export default function PlayerInsights() {
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("total_minutes")}>Total Min{sortLabel("total_minutes")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("defensive_contribution_returns")}>Def Returns{sortLabel("defensive_contribution_returns")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("defensive_contributions")}>Def Contrib{sortLabel("defensive_contributions")}</TableHead>
+                <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("bonus")}>
+                  Bonus{sortLabel("bonus")}
+                </TableHead>
+                <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("expected_goals")}>
+                  xG{sortLabel("expected_goals")}
+                </TableHead>
+                <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("expected_assists")}>
+                  xA{sortLabel("expected_assists")}
+                </TableHead>
+                <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("expected_goal_involvements")}>
+                  xG+A{sortLabel("expected_goal_involvements")}
+                </TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("points_per_game_played")}>Pts/Game{sortLabel("points_per_game_played")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("minutes_per_game_played")}>Min/Game{sortLabel("minutes_per_game_played")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("points_per_90_played")}>Pts/90{sortLabel("points_per_90_played")}</TableHead>
@@ -380,6 +396,18 @@ export default function PlayerInsights() {
                   <TableCell className="text-right">{p.total_minutes ?? 0}</TableCell>
                   <TableCell className="text-right">{p.defensive_contribution_returns ?? 0}</TableCell>
                   <TableCell className="text-right">{p.defensive_contributions ?? 0}</TableCell>
+                  <TableCell className="text-right">{p.bonus ?? 0}</TableCell>
+                  <TableCell className="text-right">
+                    {p.expected_goals != null ? Number(p.expected_goals).toFixed(2) : "0.00"}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {p.expected_assists != null ? Number(p.expected_assists).toFixed(2) : "0.00"}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {p.expected_goal_involvements != null
+                      ? Number(p.expected_goal_involvements).toFixed(2)
+                      : "0.00"}
+                  </TableCell>
                   <TableCell className="text-right">{(p.points_per_game_played ?? 0).toFixed(2)}</TableCell>
                   <TableCell className="text-right">{(p.minutes_per_game_played ?? 0).toFixed(1)}</TableCell>
                   <TableCell className="text-right">{(p.points_per_90_played ?? 0).toFixed(2)}</TableCell>

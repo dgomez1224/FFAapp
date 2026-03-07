@@ -527,6 +527,34 @@ function resolvePlayerImageUrl(player: any): string | null {
   return `https://resources.premierleague.com/premierleague/photos/players/110x140/p${code}.png`;
 }
 
+function buildImageUrlFromPhoto(photo: string): string | null {
+  const raw = String(photo ?? "").trim();
+  if (!raw) return null;
+  const code = raw
+    .replace(/\.(jpg|jpeg|png|webp)$/i, "")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .trim();
+  if (!code) return null;
+  return `https://resources.premierleague.com/premierleague/photos/players/110x140/p${code}.png`;
+}
+
+function enrichPlayerMapWithFplPhotos(
+  map: Record<number, { id: number; name: string; team: number | null; position: number | null; image_url: string | null }>,
+  fplBootstrap: any,
+): void {
+  if (!fplBootstrap) return;
+  const elements = normalizeDraftList<any>(fplBootstrap?.elements ?? []);
+  elements.forEach((el: any) => {
+    const id = parsePositiveInt(el?.id);
+    const photo = String(el?.photo ?? "").trim();
+    if (!id || !photo) return;
+    const entry = map[id];
+    if (!entry || entry.image_url != null) return;
+    const url = buildImageUrlFromPhoto(photo);
+    if (url) entry.image_url = url;
+  });
+}
+
 function extractDraftPlayerMap(bootstrap: any) {
   const rawElements = normalizeDraftList<any>(
     bootstrap?.elements?.data ??
@@ -3778,7 +3806,10 @@ playerInsights.get("/", async (c) => {
       teamMap[id] = t?.name || t?.short_name || String(t?.id);
     });
 
-    const resolveSummaryDerived = async (playerIds: number[]) => {
+    const resolveSummaryDerived = async (
+      playerIds: number[],
+      positionByPlayerId?: Record<number, number>,
+    ) => {
       const out: Record<number, {
         games_played: number;
         average_points_home: number | null;
@@ -3787,6 +3818,12 @@ playerInsights.get("/", async (c) => {
         away_games: number;
         home_points: number;
         away_points: number;
+        bonus: number;
+        expected_goals: number;
+        expected_assists: number;
+        expected_goal_involvements: number;
+        defensive_contributions: number;
+        defensive_contribution_returns: number;
       }> = {};
       const ids = Array.from(new Set(playerIds.filter((id) => Number.isInteger(id) && id > 0)));
       const batchSize = 16;
@@ -3802,6 +3839,27 @@ playerInsights.get("/", async (c) => {
               const away = history.filter((h: any) => h?.was_home === false && coerceNumber(h?.minutes, 0) > 1);
               const homePointsTotal = home.reduce((sum: number, h: any) => sum + coerceNumber(h?.total_points, 0), 0);
               const awayPointsTotal = away.reduce((sum: number, h: any) => sum + coerceNumber(h?.total_points, 0), 0);
+              const bonus = history.reduce((sum: number, h: any) => sum + coerceNumber(h?.bonus, 0), 0);
+              const expected_goals = history.reduce((sum: number, h: any) => sum + coerceNumber(h?.expected_goals, 0), 0);
+              const expected_assists = history.reduce((sum: number, h: any) => sum + coerceNumber(h?.expected_assists, 0), 0);
+              const expected_goal_involvements = history.reduce(
+                (sum: number, h: any) => sum + coerceNumber(h?.expected_goal_involvements, 0),
+                0,
+              );
+              const defensive_contributions = history.reduce(
+                (sum: number, h: any) =>
+                  sum + coerceNumber(h?.defensive_contributions ?? h?.defensive_contribution, 0),
+                0,
+              );
+              const position = positionByPlayerId?.[playerId];
+              const threshold = position === 2 ? 10 : position === 3 || position === 4 ? 12 : 0;
+              const defensive_contribution_returns =
+                threshold > 0
+                  ? history.filter(
+                      (h: any) =>
+                        coerceNumber(h?.defensive_contributions ?? h?.defensive_contribution, 0) >= threshold,
+                    ).length
+                  : 0;
               out[playerId] = {
                 games_played: gamesPlayed,
                 average_points_home: home.length > 0 ? homePointsTotal / home.length : null,
@@ -3810,6 +3868,12 @@ playerInsights.get("/", async (c) => {
                 away_games: away.length,
                 home_points: homePointsTotal,
                 away_points: awayPointsTotal,
+                bonus,
+                expected_goals,
+                expected_assists,
+                expected_goal_involvements,
+                defensive_contributions,
+                defensive_contribution_returns,
               };
             } catch {
               // Keep fallback value when summary fetch fails.
@@ -3866,24 +3930,38 @@ playerInsights.get("/", async (c) => {
 
     if (!selections || selections.length === 0) {
       const allPlayerIds = fullInsightsFromBootstrap.map((row: any) => coerceNumber(row.player_id)).filter((id: number) => id > 0);
-      const summaryDerived = await resolveSummaryDerived(allPlayerIds);
+      const positionByPlayerId = Object.fromEntries(
+        fullInsightsFromBootstrap.map((row: any) => [coerceNumber(row.player_id), coerceNumber(row.position)]),
+      );
+      const summaryDerived = await resolveSummaryDerived(allPlayerIds, positionByPlayerId);
       const adjusted = fullInsightsFromBootstrap.map((row: any) => {
         const derived = summaryDerived[coerceNumber(row.player_id)];
         const games = derived?.games_played;
-        if (!Number.isInteger(games)) return row;
         const totalPoints = coerceNumber(row.total_points, 0);
         const totalMinutes = coerceNumber(row.total_minutes ?? row.minutes_played, 0);
+        const base =
+          !Number.isInteger(games)
+            ? row
+            : {
+                ...row,
+                games_played: games,
+                home_games: derived?.home_games ?? row.home_games ?? 0,
+                away_games: derived?.away_games ?? row.away_games ?? 0,
+                home_points: derived?.home_points ?? row.home_points ?? 0,
+                away_points: derived?.away_points ?? row.away_points ?? 0,
+                points_per_game_played: games > 0 ? totalPoints / games : 0,
+                minutes_per_game_played: games > 0 ? totalMinutes / games : 0,
+                average_points_home: derived?.average_points_home ?? row.average_points_home ?? null,
+                average_points_away: derived?.average_points_away ?? row.average_points_away ?? null,
+              };
         return {
-          ...row,
-          games_played: games,
-          home_games: derived?.home_games ?? row.home_games ?? 0,
-          away_games: derived?.away_games ?? row.away_games ?? 0,
-          home_points: derived?.home_points ?? row.home_points ?? 0,
-          away_points: derived?.away_points ?? row.away_points ?? 0,
-          points_per_game_played: games > 0 ? totalPoints / games : 0,
-          minutes_per_game_played: games > 0 ? totalMinutes / games : 0,
-          average_points_home: derived?.average_points_home ?? row.average_points_home ?? null,
-          average_points_away: derived?.average_points_away ?? row.average_points_away ?? null,
+          ...base,
+          bonus: derived?.bonus ?? base.bonus ?? 0,
+          expected_goals: derived?.expected_goals ?? base.expected_goals ?? 0,
+          expected_assists: derived?.expected_assists ?? base.expected_assists ?? 0,
+          expected_goal_involvements: derived?.expected_goal_involvements ?? base.expected_goal_involvements ?? 0,
+          defensive_contributions: derived?.defensive_contributions ?? base.defensive_contributions ?? 0,
+          defensive_contribution_returns: derived?.defensive_contribution_returns ?? base.defensive_contribution_returns ?? 0,
         };
       });
 
@@ -3964,24 +4042,38 @@ playerInsights.get("/", async (c) => {
     });
 
     const allPlayerIds = insights.map((row: any) => coerceNumber(row.player_id)).filter((id: number) => id > 0);
-    const summaryDerived = await resolveSummaryDerived(allPlayerIds);
+    const positionByPlayerId = Object.fromEntries(
+      insights.map((row: any) => [coerceNumber(row.player_id), coerceNumber(row.position)]),
+    );
+    const summaryDerived = await resolveSummaryDerived(allPlayerIds, positionByPlayerId);
     const adjusted = insights.map((row: any) => {
       const derived = summaryDerived[coerceNumber(row.player_id)];
       const games = derived?.games_played;
-      if (!Number.isInteger(games)) return row;
       const totalPoints = coerceNumber(row.total_points ?? row.points, 0);
       const totalMinutes = coerceNumber(row.total_minutes ?? row.minutes_played, 0);
+      const base =
+        !Number.isInteger(games)
+          ? row
+          : {
+              ...row,
+              games_played: games,
+              home_games: derived?.home_games ?? row.home_games ?? 0,
+              away_games: derived?.away_games ?? row.away_games ?? 0,
+              home_points: derived?.home_points ?? row.home_points ?? 0,
+              away_points: derived?.away_points ?? row.away_points ?? 0,
+              points_per_game_played: games > 0 ? totalPoints / games : 0,
+              minutes_per_game_played: games > 0 ? totalMinutes / games : 0,
+              average_points_home: derived?.average_points_home ?? row.average_points_home ?? null,
+              average_points_away: derived?.average_points_away ?? row.average_points_away ?? null,
+            };
       return {
-        ...row,
-        games_played: games,
-        home_games: derived?.home_games ?? row.home_games ?? 0,
-        away_games: derived?.away_games ?? row.away_games ?? 0,
-        home_points: derived?.home_points ?? row.home_points ?? 0,
-        away_points: derived?.away_points ?? row.away_points ?? 0,
-        points_per_game_played: games > 0 ? totalPoints / games : 0,
-        minutes_per_game_played: games > 0 ? totalMinutes / games : 0,
-        average_points_home: derived?.average_points_home ?? row.average_points_home ?? null,
-        average_points_away: derived?.average_points_away ?? row.average_points_away ?? null,
+        ...base,
+        bonus: derived?.bonus ?? base.bonus ?? 0,
+        expected_goals: derived?.expected_goals ?? base.expected_goals ?? 0,
+        expected_assists: derived?.expected_assists ?? base.expected_assists ?? 0,
+        expected_goal_involvements: derived?.expected_goal_involvements ?? base.expected_goal_involvements ?? 0,
+        defensive_contributions: derived?.defensive_contributions ?? base.defensive_contributions ?? 0,
+        defensive_contribution_returns: derived?.defensive_contribution_returns ?? base.defensive_contribution_returns ?? 0,
       };
     });
 
@@ -6693,6 +6785,12 @@ captainPicks.get("/context", async (c) => {
 
     const bootstrap = await fetchDraftBootstrap();
     const playersById = extractDraftPlayerMap(bootstrap);
+    try {
+      const fplBootstrap = await fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`);
+      enrichPlayerMapWithFplPhotos(playersById, fplBootstrap);
+    } catch {
+      // keep Draft-only image_url when FPL unavailable
+    }
     const players = squad.picks
       .map((pick: any) => {
         const playerId = Number(pick.element);
@@ -7738,6 +7836,12 @@ fixturesHub.get("/matchup", async (c) => {
       }
     }
     const playerMap = extractDraftPlayerMap(bootstrap || {});
+    try {
+      const fplBootstrap = await fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`);
+      enrichPlayerMapWithFplPhotos(playerMap, fplBootstrap);
+    } catch {
+      // keep existing image_url when FPL unavailable
+    }
     let liveMap: Record<number, number> = {};
     let liveStatsMap: Record<number, any> = {};
     let liveFixtures: any[] = [];
@@ -7965,6 +8069,12 @@ fixturesHub.get("/lineup", async (c) => {
       }
     }
     const playerMap = extractDraftPlayerMap(bootstrap);
+    try {
+      const fplBootstrap = await fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`);
+      enrichPlayerMapWithFplPhotos(playerMap, fplBootstrap);
+    } catch {
+      // keep existing image_url when FPL unavailable
+    }
     let liveMap: Record<number, number> = {};
     let liveStatsMap: Record<number, any> = {};
     try {
