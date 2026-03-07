@@ -9,6 +9,7 @@ import {
   getCaptainSessionToken,
 } from "../lib/captainSession";
 import { FootballPitch, PitchPlayer } from "../components/FootballPitch";
+import PlayerStatsTable from "../components/PlayerStatsTable";
 import { PlayerStatsModal, PlayerStats } from "../components/PlayerStatsModal";
 
 type CaptainPlayer = {
@@ -42,6 +43,7 @@ export default function PickCaptain() {
   const [selectedPlayer, setSelectedPlayer] = useState<PlayerStats | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [livePoints, setLivePoints] = useState<Record<number, number>>({});
+  const [liveStats, setLiveStats] = useState<Record<number, any>>({});
 
   const token = useMemo(() => getCaptainSessionToken(), []);
   const toPositiveIntOrNull = (value: unknown): number | null => {
@@ -85,7 +87,12 @@ export default function PickCaptain() {
 
       // Fetch points for the current cup gameweek: live when GW is active, final when event_finished
       try {
-        const activeGw = normalizedContext.gameweek;
+        const gwRes = await fetch(
+          `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/current-gameweek`,
+          { headers: getSupabaseFunctionHeaders() }
+        );
+        const gwData = gwRes.ok ? await gwRes.json() : null;
+        const activeGw = gwData?.current_gameweek ?? normalizedContext.gameweek;
         if (activeGw > 0) {
           const liveRes = await fetch(
             `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/api/live?event=${activeGw}`,
@@ -94,14 +101,17 @@ export default function PickCaptain() {
           if (liveRes.ok) {
             const liveData = await liveRes.json();
             const pts: Record<number, number> = {};
-            (liveData?.elements || []).forEach((el: any) => {
-              const id = el?.id ?? el?.element_id;
-              if (id) {
-                pts[Number(id)] =
-                  el?.stats?.total_points ?? el?.total_points ?? 0;
-              }
+            const stats: Record<number, any> = {};
+            const elements = liveData?.elements ?? {};
+            Object.entries(elements).forEach(([key, el]: [string, any]) => {
+              const id = Number(key);
+              if (!id) return;
+              const p = el?.stats?.total_points ?? el?.total_points ?? el?.points ?? 0;
+              pts[id] = p;
+              if (el?.stats) stats[id] = el.stats;
             });
             setLivePoints(pts);
+            setLiveStats(stats);
           }
         }
       } catch {
@@ -227,25 +237,48 @@ export default function PickCaptain() {
         throw new Error(payload?.error?.message || "Failed to fetch player history");
       }
 
+      const s = liveStats[player.player_id];
+      const pos = player.position; // 1=GK, 2=DEF, 3=MID, 4=FWD
+      const livePts = livePoints[player.player_id] ?? 0;
+
       const stats: PlayerStats = {
         player_id: player.player_id,
         player_name: player.player_name,
         position: player.position,
-        raw_points: 0,
-        effective_points: 0,
+        raw_points: livePts,
+        effective_points: player.is_captain ? livePts * 2 : livePts,
         is_captain: player.is_captain,
         is_vice_captain: player.is_vice_captain,
         is_cup_captain: player.is_cup_captain,
         multiplier: player.multiplier,
-        goals_scored: (payload.history || [])[0]?.goals ?? 0,
-        assists: (payload.history || [])[0]?.assists ?? 0,
-        minutes: (payload.history || [])[0]?.minutes ?? 0,
+        goals_scored: s?.goals_scored ?? 0,
+        assists: s?.assists ?? 0,
+        minutes: s?.minutes ?? 0,
+        bonus: s?.bonus ?? 0,
+        // Position exclusions for modal Gameweek Statistics: GK hide DefCon; DEF/MID hide saves; FWD hide clean_sheets
+        defensive_contributions: pos !== 1 ? (s?.defensive_contribution ?? 0) : undefined,
+        clean_sheets: pos !== 4 ? (s?.clean_sheets ?? 0) : undefined,
+        saves: pos === 1 ? (s?.saves ?? 0) : undefined,
+        yellow_cards: s?.yellow_cards ?? 0,
+        red_cards: s?.red_cards ?? 0,
+        goals_conceded: s?.goals_conceded ?? 0,
+        penalties_saved: s?.penalties_saved ?? 0,
+        penalties_missed: s?.penalties_missed ?? 0,
         history: (payload.history || []).map((h: any) => ({
           gameweek: h.gameweek,
           points: h.points ?? 0,
           goals: h.goals ?? 0,
           assists: h.assists ?? 0,
           minutes: h.minutes ?? 0,
+          clean_sheets: h.clean_sheets ?? 0,
+          goals_conceded: h.goals_conceded ?? 0,
+          bonus: h.bonus ?? 0,
+          saves: h.saves ?? 0,
+          yellow_cards: h.yellow_cards ?? 0,
+          red_cards: h.red_cards ?? 0,
+          penalties_saved: h.penalties_saved ?? 0,
+          penalties_missed: h.penalties_missed ?? 0,
+          defensive_contributions: h.defensive_contribution ?? h.defensive_contributions ?? 0,
           opponent_team_name: h.opponent_team_name ?? null,
           was_home: h.was_home,
           fixture: h.fixture ?? null,
@@ -351,16 +384,19 @@ export default function PickCaptain() {
         <FootballPitch players={pitchPlayers} onPlayerClick={handlePlayerClick} showCaptain={true} />
 
         {(context?.players || []).length > 0 && (
-          <div className="mt-4 space-y-1 text-sm">
-            {(context?.players || []).map((player) => (
-              <div key={player.id} className="flex items-center justify-between">
-                <span>{player.name}</span>
-                <span className="text-sm text-muted-foreground ml-2">
-                  {livePoints[player.id] != null ? `${livePoints[player.id]} pts` : ""}
-                </span>
-              </div>
-            ))}
-          </div>
+          <PlayerStatsTable
+            players={(context.players || []).map((p) => ({
+              id: p.id,
+              name: p.name,
+              image_url: p.image_url,
+              position: p.position,
+            }))}
+            livePoints={livePoints}
+            liveStats={liveStats}
+            captainId={captainId}
+            viceCaptainId={viceCaptainId}
+            gameweek={context.gameweek}
+          />
         )}
 
         <div className="mt-5 flex items-center gap-2">

@@ -4,6 +4,7 @@ import { Card } from "../components/ui/card";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { FootballPitch, PitchPlayer } from "../components/FootballPitch";
+import PlayerStatsTable from "../components/PlayerStatsTable";
 import { PlayerStatsModal, PlayerStats } from "../components/PlayerStatsModal";
 
 type LineupPlayer = {
@@ -62,10 +63,16 @@ function TeamPitchDisplay({
   team,
   matchupType,
   showGameweekStats = true,
+  gameweek,
+  livePoints,
+  liveStats,
 }: {
   team: TeamDetail;
   matchupType: "league" | "cup";
   showGameweekStats?: boolean;
+  gameweek: number;
+  livePoints: Record<number, number>;
+  liveStats: Record<number, any>;
 }) {
   const [selectedPlayer, setSelectedPlayer] = useState<PlayerStats | null>(null);
 
@@ -152,6 +159,20 @@ function TeamPitchDisplay({
         <FootballPitch players={pitchPlayers} onPlayerClick={handlePlayerClick} showCaptain={true} />
       </div>
 
+      <PlayerStatsTable
+        players={(team.lineup || []).map((p) => ({
+          id: p.player_id,
+          name: p.player_name,
+          image_url: p.player_image_url ?? null,
+          position: p.position,
+        }))}
+        livePoints={livePoints}
+        liveStats={liveStats}
+        captainId={team.lineup.find((p) => p.is_cup_captain || p.is_captain)?.player_id ?? null}
+        viceCaptainId={team.lineup.find((p) => p.is_vice_captain)?.player_id ?? null}
+        gameweek={gameweek}
+      />
+
       <PlayerStatsModal
         player={selectedPlayer!}
         isOpen={!!selectedPlayer}
@@ -214,17 +235,34 @@ export default function MatchupDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  const [livePoints, setLivePoints] = useState<Record<number, number>>({});
+  const [liveStats, setLiveStats] = useState<Record<number, any>>({});
 
   useEffect(() => {
     let mounted = true;
+    let timer: ReturnType<typeof setInterval> | null = null;
 
-    async function load(silent = false) {
-      if (!type || !gameweek || !team1 || !team2) return;
+    async function load(silent = false): Promise<boolean> {
+      if (!type || !gameweek || !team1 || !team2) return false;
+
+      let shouldPoll = false;
+      try {
+        const gwRes = await fetch(
+          `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/current-gameweek`,
+          { headers: getSupabaseFunctionHeaders() as HeadersInit }
+        );
+        const gwData = gwRes.ok ? await gwRes.json() : null;
+        const currentGw = gwData?.current_gameweek ?? 0;
+        const eventFinished =
+          gwData?.current_event_finished === true || gwData?.event_finished === true;
+        shouldPoll = Number(gameweek) === currentGw && !eventFinished;
+      } catch {
+        shouldPoll = false;
+      }
+
       try {
         if (!silent) {
           setLoading(true);
-        }
-        if (!silent || !data) {
           setError(null);
         }
         const params = new URLSearchParams({
@@ -242,30 +280,57 @@ export default function MatchupDetailPage() {
         if (!res.ok || payload?.error) {
           throw new Error(payload?.error?.message || "Failed to load matchup detail");
         }
-        if (!mounted) return;
+        if (!mounted) return false;
         setData(payload);
         setLastUpdated(Date.now());
+
+        try {
+          const gwNum = Number(gameweek);
+          const liveRes = await fetch(
+            `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/api/live?event=${gwNum}`,
+            { headers: getSupabaseFunctionHeaders() as HeadersInit }
+          );
+          if (liveRes.ok) {
+            const liveData = await liveRes.json();
+            const pts: Record<number, number> = {};
+            const stats: Record<number, any> = {};
+            const elementsObj = liveData?.elements ?? {};
+            Object.entries(elementsObj).forEach(([key, el]: [string, any]) => {
+              const id = Number(key);
+              if (!id) return;
+              pts[id] = el?.stats?.total_points ?? 0;
+              if (el?.stats) stats[id] = el.stats;
+            });
+            setLivePoints(pts);
+            setLiveStats(stats);
+          }
+        } catch {
+          // non-fatal
+        }
       } catch (err: any) {
-        if (!mounted) return;
+        if (!mounted) return false;
         if (!silent) {
           setError(err.message || "Failed to load matchup detail");
         }
       } finally {
-        if (!mounted) return;
+        if (!mounted) return false;
         if (!silent) {
           setLoading(false);
         }
       }
+      return shouldPoll;
     }
 
-    load(false);
-    const timer = window.setInterval(() => {
-      load(true);
-    }, 10000);
+    load(false).then((isActive) => {
+      if (!isActive) return;
+      timer = window.setInterval(() => {
+        load(true);
+      }, 10000);
+    });
 
     return () => {
       mounted = false;
-      window.clearInterval(timer);
+      if (timer) window.clearInterval(timer);
     };
   }, [type, gameweek, team1, team2, searchParams]);
 
@@ -324,11 +389,17 @@ export default function MatchupDetailPage() {
           team={data.team_1}
           matchupType={data.type}
           showGameweekStats={data.gameweek <= data.current_gameweek || !!data.matchup?.has_started}
+          gameweek={data.gameweek}
+          livePoints={livePoints}
+          liveStats={liveStats}
         />
         <TeamPitchDisplay
           team={data.team_2}
           matchupType={data.type}
           showGameweekStats={data.gameweek <= data.current_gameweek || !!data.matchup?.has_started}
+          gameweek={data.gameweek}
+          livePoints={livePoints}
+          liveStats={liveStats}
         />
       </div>
     </div>

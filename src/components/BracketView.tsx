@@ -6,6 +6,7 @@
  */
 
 import React, { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { Card } from "./ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
@@ -13,6 +14,9 @@ import { useTournamentContext } from "../lib/tournamentContext";
 import { EDGE_FUNCTIONS_BASE, CURRENT_SEASON } from "../lib/constants";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { useManagerCrestMap } from "../lib/useManagerCrestMap";
+
+/** Cup knockout starts at GW 29; use for lineup links from bracket. */
+const CUP_LINEUP_GAMEWEEK = 29;
 
 interface MatchupTeam {
   id: string;
@@ -103,6 +107,7 @@ const LEGACY_BRACKETS: Array<{ season: string; src: string }> = [
 ];
 
 export function BracketView({ showLegacySelector = true }: BracketViewProps) {
+  const navigate = useNavigate();
   const { loading: contextLoading } = useTournamentContext();
   const { getCrest } = useManagerCrestMap();
   const [group, setGroup] = useState<BracketResponse["group"] | null>({
@@ -434,7 +439,19 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
                     return (
                       <TableRow
                         key={team.team_id}
-                        className={advancing ? "bg-green-50 dark:bg-green-950/40 font-semibold" : ""}
+                        className={
+                          (advancing ? "bg-green-50 dark:bg-green-950/40 font-semibold " : "") +
+                          "cursor-pointer hover:bg-muted/50 transition-colors"
+                        }
+                        onClick={() => navigate(`/lineup/cup/${CUP_LINEUP_GAMEWEEK}/${team.team_id}`)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            navigate(`/lineup/cup/${CUP_LINEUP_GAMEWEEK}/${team.team_id}`);
+                          }
+                        }}
+                        role="button"
+                        tabIndex={0}
                       >
                         <TableCell>{team.rank}</TableCell>
                         <TableCell>

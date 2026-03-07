@@ -516,16 +516,13 @@ function resolvePlayerImageUrl(player: any): string | null {
     }
   }
 
-  const photoRaw = String(player?.photo || "").trim();
-  const codeRaw = photoRaw || String(player?.code || "").trim();
-  if (!codeRaw) return null;
-
-  const code = codeRaw
-    .replace(/^https?:\/\/[^/]+\/.*\/p/i, "")
+  // Use only FPL "photo" field (e.g. "123456.jpg" → code "123456"). Do not use element id/code — it is not the photo code.
+  const photoRaw = String(player?.photo ?? "").trim();
+  if (!photoRaw) return null;
+  const code = photoRaw
     .replace(/\.(jpg|jpeg|png|webp)$/i, "")
     .replace(/[^a-zA-Z0-9]/g, "")
     .trim();
-
   if (!code) return null;
   return `https://resources.premierleague.com/premierleague/photos/players/110x140/p${code}.png`;
 }
@@ -5761,54 +5758,9 @@ liveData.get("/", async (c) => {
       return jsonError(c, 400, "Invalid event parameter");
     }
 
-    // Fetch live data from FPL API
+    // Fetch live data from Draft API; pass through response as-is (elements have id + stats)
     const liveData = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${event}/live`);
-
-    // Transform to our format
-    const elements = normalizeDraftList<any>(liveData.elements).map((el: any) => ({
-      element: el.id ?? el.element,
-      stats: {
-        minutes: el.stats?.minutes || 0,
-        goals_scored: el.stats?.goals_scored || 0,
-        assists: el.stats?.assists || 0,
-        clean_sheets: el.stats?.clean_sheets || 0,
-        goals_conceded: el.stats?.goals_conceded || 0,
-        yellow_cards: el.stats?.yellow_cards || 0,
-        red_cards: el.stats?.red_cards || 0,
-        saves: el.stats?.saves || 0,
-        bonus: el.stats?.bonus || 0,
-        bps: el.stats?.bps || 0,
-        influence: el.stats?.influence || 0,
-        creativity: el.stats?.creativity || 0,
-        threat: el.stats?.threat || 0,
-        ict_index: el.stats?.ict_index || 0,
-        starts: el.stats?.starts || 0,
-        expected_goals: el.stats?.expected_goals || 0,
-        expected_assists: el.stats?.expected_assists || 0,
-        expected_goal_involvements: el.stats?.expected_goal_involvements || 0,
-        expected_goals_conceded: el.stats?.expected_goals_conceded || 0,
-        total_points: el.stats?.total_points || 0,
-      },
-      explain: el.explain || [],
-    }));
-
-    // Fetch fixtures for status (include kickoff_time for event-time sorting)
-    const fixtureStatuses = normalizeDraftList<any>(liveData.fixtures).map((f: any) => ({
-      id: f.id,
-      started: !!f.started,
-      finished: !!(f.finished_provisional || f.finished),
-      elapsed: f.minutes || f.elapsed || 0,
-      team_h: f.team_h,
-      team_a: f.team_a,
-      kickoff_time: f.kickoff_time ?? null,
-    }));
-
-    return c.json({
-      event,
-      elements,
-      fixtures: fixtureStatuses,
-      timestamp: new Date().toISOString(),
-    });
+    return c.json(liveData);
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to fetch live data");
   }
@@ -8031,6 +7983,10 @@ fixturesHub.get("/lineup", async (c) => {
     }
 
     const hasStarted = gameweek < currentGw;
+    const captainMinutes = coerceNumber(liveStatsMap[captainPlayerId]?.minutes, 0);
+    const promotedVice = hasStarted && captainPlayerId > 0 && captainMinutes <= 0 && viceCaptainPlayerId > 0 ? viceCaptainPlayerId : 0;
+    const activeCaptainId = promotedVice || captainPlayerId || viceCaptainPlayerId;
+
     const lineup = (picks.picks || []).map((pick: any) => {
       const playerId = coerceNumber(pick.element);
       const lineupSlot = coerceNumber(pick.position, 0);
@@ -8042,12 +7998,10 @@ fixturesHub.get("/lineup", async (c) => {
       const defensiveContributions = coerceNumber(stats.defensive_contributions, 0);
       const defensiveReturn =
         (position === 2 && defensiveContributions >= 10) || (position >= 3 && position <= 4 && defensiveContributions >= 12);
-      const captainMinutes = coerceNumber(liveStatsMap[captainPlayerId]?.minutes, 0);
-      const promotedVice = captainPlayerId > 0 && captainMinutes <= 0 && viceCaptainPlayerId > 0 ? viceCaptainPlayerId : 0;
-      const activeCaptainId = promotedVice || captainPlayerId || viceCaptainPlayerId;
-      const isCupCaptain = type === "cup" && hasStarted && activeCaptainId > 0 && playerId === activeCaptainId;
+      // Display: show captain badge on effective captain (selected, or promoted vice after GW started)
+      const isCupCaptain = type === "cup" && activeCaptainId > 0 && playerId === activeCaptainId;
       const isCupVice = type === "cup" && viceCaptainPlayerId > 0 && playerId === viceCaptainPlayerId;
-      const effectivePoints = rawPoints * (isCupCaptain ? 2 : 1);
+      const effectivePoints = rawPoints * (type === "cup" && activeCaptainId > 0 && playerId === activeCaptainId ? 2 : 1);
       return {
         player_id: playerId,
         player_name: playerMap[playerId]?.name || `Player ${playerId}`,
@@ -8337,7 +8291,10 @@ legacyStats.get("/manager/:managerName", async (c) => {
       const draftRes = await fetch(
         `${DRAFT_BASE_URL}/league/${leagueId}/details`
       );
-      const draftData = draftRes.ok ? await draftRes.json() : null;
+      const draftData = draftRes.ok ? (await draftRes.json()) as {
+        league_entries?: unknown;
+        standings?: Array<{ league_entry?: unknown; rank?: unknown; matches_won?: unknown; matches_drawn?: unknown; matches_lost?: unknown; total?: unknown; points?: unknown; points_for?: unknown }>;
+      } | null : null;
       const leagueEntries = normalizeDraftList<any>(draftData?.league_entries ?? []);
       const standings = Array.isArray(draftData?.standings) ? draftData.standings : [];
       const entry = leagueEntries.find((e: any) =>
@@ -8345,7 +8302,7 @@ legacyStats.get("/manager/:managerName", async (c) => {
         (e.short_name && String(e.short_name).toUpperCase() === managerName)
       );
       const entryStanding = entry
-        ? standings.find((s: any) => Number(s.league_entry) === Number(entry.id ?? entry.league_entry_id ?? entry.entry_id ?? entry.entry))
+        ? standings.find((s) => Number(s.league_entry) === Number(entry.id ?? entry.league_entry_id ?? entry.entry_id ?? entry.entry))
         : null;
       if (entryStanding) {
         seasonStandings.unshift({

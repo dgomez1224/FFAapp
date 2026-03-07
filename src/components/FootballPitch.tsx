@@ -169,15 +169,21 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
                       src={imageUrl}
                       alt={player.player_name}
                       className="w-full h-full object-cover"
-                      onError={async () => {
-                        const fallbackUrl = await getPlayerImageByIdOrName(player.player_id, player.player_name);
-                        setPlayerImages((prev) => ({
-                          ...prev,
-                          [player.player_id]:
-                            fallbackUrl && fallbackUrl !== imageUrl
-                              ? fallbackUrl
-                              : avatarFallbackUrl(player.player_name),
-                        }));
+                      onError={(e) => {
+                        const target = e.currentTarget;
+                        target.style.display = "none";
+                        const parent = target.parentElement;
+                        if (parent && !parent.querySelector(".img-fallback")) {
+                          const fallback = document.createElement("div");
+                          fallback.className = "img-fallback flex items-center justify-center w-full h-full rounded-full bg-muted text-xs font-bold text-muted-foreground";
+                          fallback.textContent = (player.player_name || (player as any).name || "?")
+                            .split(" ")
+                            .map((w: string) => w[0])
+                            .slice(0, 2)
+                            .join("")
+                            .toUpperCase();
+                          parent.appendChild(fallback);
+                        }
                       }}
                     />
                   ) : (
@@ -185,13 +191,29 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
                       src={avatarFallbackUrl(player.player_name)}
                       alt={player.player_name}
                       className="w-full h-full object-cover"
+                      onError={(e) => {
+                        const target = e.currentTarget;
+                        target.style.display = "none";
+                        const parent = target.parentElement;
+                        if (parent && !parent.querySelector(".img-fallback")) {
+                          const fallback = document.createElement("div");
+                          fallback.className = "img-fallback flex items-center justify-center w-full h-full rounded-full bg-muted text-xs font-bold text-muted-foreground";
+                          fallback.textContent = (player.player_name || (player as any).name || "?")
+                            .split(" ")
+                            .map((w: string) => w[0])
+                            .slice(0, 2)
+                            .join("")
+                            .toUpperCase();
+                          parent.appendChild(fallback);
+                        }
+                      }}
                     />
                   )}
 
                   {/* Captain badge */}
                   {isCaptain && (
                     <div className="absolute -top-1 -right-1 bg-amber-400 text-black text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                      ⚡
+                      C
                     </div>
                   )}
                   {isViceCaptain && (
@@ -201,7 +223,7 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
                   )}
 
                   <div className="absolute inset-x-1 bottom-0.5 rounded bg-black/60 px-1 py-0.5 text-center text-[9px] font-semibold leading-none text-white">
-                    {Math.round(player.effective_points)} pts
+                    <span className="text-xs">{player.raw_points ?? 0} pts</span>
                   </div>
                 </div>
 
@@ -220,7 +242,7 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
       {/* Legend */}
       {hasActiveCaptainOrVice && (
         <div className="absolute bottom-2 left-2 text-xs text-white bg-black/40 rounded px-2 py-1 space-y-0.5">
-          <div>⚡ = Captain</div>
+          <div>C = Captain</div>
           <div>V = Vice Captain</div>
         </div>
       )}
