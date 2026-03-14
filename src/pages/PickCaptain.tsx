@@ -216,7 +216,9 @@ export default function PickCaptain() {
     player_image_url: p.image_url || null,
     position: p.position || 3,
     raw_points: livePoints[p.id] ?? 0,
-    effective_points: 0,
+    effective_points: p.id === captainId
+    ? (livePoints[p.id] ?? 0) * 2
+    : (livePoints[p.id] ?? 0),
     is_captain: p.id === captainId,
     is_vice_captain: p.id === viceCaptainId,
     is_cup_captain: p.id === captainId,

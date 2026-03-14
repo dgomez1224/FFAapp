@@ -3460,6 +3460,65 @@ playerInsights.get("/", async (c) => {
     // Prefer draft bootstrap player list so all players are fetchable; fallback to classic
     const rawPlayers = draftPlayers.length > 0 ? draftPlayers : classicPlayers;
 
+    const positionByPlayerId: Record<number, number> = {};
+    rawPlayers.forEach((p: any) => {
+      const id = parsePositiveInt(p?.id ?? p?.element ?? p?.element_id);
+      if (id) positionByPlayerId[id] = parsePositiveInt(p?.element_type ?? p?.position) ?? 0;
+    });
+
+    const currentGw = extractDraftCurrentEventId(draftBootstrap) ?? 29;
+    const latestCompleted = extractLatestCompletedDraftEventId(draftBootstrap);
+    const endGw = Math.max(currentGw, latestCompleted ?? currentGw, 1);
+    const gwRange = Array.from({ length: endGw }, (_, i) => i + 1);
+    const liveResponses = await Promise.all(
+      gwRange.map((gw) =>
+        fetch(`https://draft.premierleague.com/api/event/${gw}/live`, {
+          headers: { "User-Agent": "Mozilla/5.0" },
+        })
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null)
+      )
+    );
+
+    const playerTotals: Record<number, {
+      games_played: number;
+      defensive_contributions: number;
+      defensive_contribution_returns: number;
+    }> = {};
+
+    for (const liveData of liveResponses) {
+      if (!liveData) continue;
+      const rawElements = liveData.elements ?? {};
+      const entries = Array.isArray(rawElements)
+        ? (rawElements as any[]).map((el: any, i: number) => [
+            String(parsePositiveInt(el?.id ?? el?.element ?? el?.element_id) ?? i),
+            el,
+          ])
+        : Object.entries(rawElements);
+      for (const [key, el] of entries) {
+        const id = parsePositiveInt(key ?? (el as any)?.id ?? (el as any)?.element);
+        if (!id) continue;
+        if (!playerTotals[id]) {
+          playerTotals[id] = {
+            games_played: 0,
+            defensive_contributions: 0,
+            defensive_contribution_returns: 0,
+          };
+        }
+        const stats = (el as any)?.stats ?? (el as any) ?? {};
+        const minutes = Number(stats.minutes ?? 0);
+        const defContrib = Number(stats.defensive_contribution ?? stats.defensive_contributions ?? 0);
+        const pos = positionByPlayerId[id];
+        const threshold = pos === 2 ? 10 : (pos === 3 || pos === 4) ? 12 : 0;
+
+        if (minutes > 0) playerTotals[id].games_played += 1;
+        playerTotals[id].defensive_contributions += defContrib;
+        if (threshold > 0 && defContrib >= threshold) {
+          playerTotals[id].defensive_contribution_returns += 1;
+        }
+      }
+    }
+
     const byPlayerFromBootstrap: Record<number, any> = {};
     rawPlayers.forEach((p: any) => {
       const playerId = parsePositiveInt(p?.id ?? p?.element ?? p?.element_id);
@@ -3482,17 +3541,9 @@ playerInsights.get("/", async (c) => {
       const totalPoints = coerceNumber(merged?.total_points ?? merged?.stats?.total_points);
       const goals = coerceNumber(merged?.goals_scored ?? merged?.stats?.goals_scored);
       const assists = coerceNumber(merged?.assists ?? merged?.stats?.assists);
-      const defensiveContributions = coerceNumber(
-        merged?.defensive_contributions ?? merged?.stats?.defensive_contributions,
-        0,
-      );
-      const threshold = position === 2 ? 10 : position === 3 || position === 4 ? 12 : 0;
-      const defContribReturns = threshold > 0 ? Math.floor(defensiveContributions / threshold) : 0;
-      const gamesPlayedRaw = coerceNumber(
-        merged?.appearances ?? merged?.stats?.appearances ?? merged?.starts ?? merged?.stats?.starts,
-        minutes > 0 ? Math.max(1, Math.round(minutes / 90)) : 0,
-      );
-      const gamesPlayed = Math.max(0, gamesPlayedRaw);
+      const gpRaw = playerTotals[playerId]?.games_played ?? 0;
+      const gamesStartedBootstrap = Number(merged?.starts ?? 0);
+      const gp = Math.max(gpRaw, gamesStartedBootstrap);
       const gamesHome = coerceNumber(merged?.games_home ?? merged?.stats?.games_home ?? merged?.starts_home, 0);
       const gamesAway = coerceNumber(merged?.games_away ?? merged?.stats?.games_away ?? merged?.starts_away, 0);
       const pointsHome = coerceNumber(
@@ -3524,16 +3575,18 @@ playerInsights.get("/", async (c) => {
         total_points: totalPoints,
         goals_scored: goals,
         assists,
-        defensive_contributions: defensiveContributions,
-        defensive_contribution_returns: defContribReturns,
-        games_played: gamesPlayed,
+        defensive_contributions: playerTotals[playerId]?.defensive_contributions ?? 0,
+        defensive_contribution_returns: playerTotals[playerId]?.defensive_contribution_returns ?? 0,
+        games_started: Number(merged?.starts ?? 0),
+        games_played: gp,
+        own_goals: Number(merged?.own_goals ?? 0),
         home_games: gamesHome,
         away_games: gamesAway,
         home_points: pointsHome,
         away_points: pointsAway,
         minutes_played: minutes,
-        points_per_game_played: gamesPlayed > 0 ? totalPoints / gamesPlayed : 0,
-        minutes_per_game_played: gamesPlayed > 0 ? minutes / gamesPlayed : 0,
+        points_per_game_played: gp > 0 ? totalPoints / gp : 0,
+        minutes_per_game_played: gp > 0 ? minutes / gp : 0,
         points_per_minute_played: minutes > 0 ? totalPoints / minutes : 0,
         points_per_90_played: minutes > 0 ? (totalPoints / minutes) * 90 : 0,
         average_points_home: avgPointsHome,
@@ -3930,9 +3983,6 @@ playerInsights.get("/", async (c) => {
 
     if (!selections || selections.length === 0) {
       const allPlayerIds = fullInsightsFromBootstrap.map((row: any) => coerceNumber(row.player_id)).filter((id: number) => id > 0);
-      const positionByPlayerId = Object.fromEntries(
-        fullInsightsFromBootstrap.map((row: any) => [coerceNumber(row.player_id), coerceNumber(row.position)]),
-      );
       const summaryDerived = await resolveSummaryDerived(allPlayerIds, positionByPlayerId);
       const adjusted = fullInsightsFromBootstrap.map((row: any) => {
         const derived = summaryDerived[coerceNumber(row.player_id)];
@@ -4042,9 +4092,6 @@ playerInsights.get("/", async (c) => {
     });
 
     const allPlayerIds = insights.map((row: any) => coerceNumber(row.player_id)).filter((id: number) => id > 0);
-    const positionByPlayerId = Object.fromEntries(
-      insights.map((row: any) => [coerceNumber(row.player_id), coerceNumber(row.position)]),
-    );
     const summaryDerived = await resolveSummaryDerived(allPlayerIds, positionByPlayerId);
     const adjusted = insights.map((row: any) => {
       const derived = summaryDerived[coerceNumber(row.player_id)];
@@ -6805,21 +6852,36 @@ captainPicks.get("/context", async (c) => {
       })
       .filter((p: any) => Number.isInteger(p.id));
 
-    let existingSelection: any = null;
+    let selectionRow: { captain_player_id?: number | null; vice_captain_player_id?: number | null; gameweek?: number | null } | null = null;
     try {
-      const { data, error: selError } = await supabase
+      const { data } = await supabase
         .from("cup_captain_selections")
-        .select("captain_player_id, captain_name, vice_captain_player_id, vice_captain_name, gameweek, updated_at")
+        .select("captain_player_id, vice_captain_player_id, gameweek")
         .eq("team_id", session.team_id)
-        .eq("gameweek", targetGameweek)
+        .order("gameweek", { ascending: false })
+        .limit(1)
         .maybeSingle();
-      if (selError) throw selError;
-      existingSelection = data || null;
+      selectionRow = data || null;
     } catch {
-      existingSelection = null;
+      selectionRow = null;
     }
+    if (!selectionRow) {
+      try {
+        const { data: fallback } = await supabase
+          .from("captain_selections")
+          .select("captain_player_id, vice_captain_player_id, gameweek")
+          .eq("team_id", session.team_id)
+          .order("gameweek", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        selectionRow = fallback || null;
+      } catch {
+        selectionRow = null;
+      }
+    }
+    const existingSelection = selectionRow;
     const vcId = existingSelection?.vice_captain_player_id ?? (existingSelection as any)?.viceCaptainPlayerId ?? null;
-    const vcName = existingSelection?.vice_captain_name ?? (existingSelection as any)?.viceCaptainName ?? null;
+    const vcName = (existingSelection as any)?.vice_captain_name ?? (existingSelection as any)?.viceCaptainName ?? null;
 
     const { data: team } = await supabase
       .from("teams")
@@ -6836,9 +6898,9 @@ captainPicks.get("/context", async (c) => {
       gameweek: targetGameweek,
       squad_source_gameweek: squad.event,
       players,
-      selected_captain_id: existingSelection?.captain_player_id ?? null,
-      selected_captain_name: existingSelection?.captain_name ?? null,
-      selected_vice_captain_id: vcId != null ? coerceNumber(vcId) : null,
+      selected_captain_id: selectionRow?.captain_player_id ?? null,
+      selected_captain_name: (existingSelection as any)?.captain_name ?? null,
+      selected_vice_captain_id: selectionRow?.vice_captain_player_id != null ? coerceNumber(selectionRow.vice_captain_player_id) : null,
       selected_vice_captain_name: vcName ?? null,
       selected_updated_at: existingSelection?.updated_at ?? null,
     });

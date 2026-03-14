@@ -48,7 +48,8 @@ export default function PlayerStatsTable({
                 <th className="py-1 px-1 text-center">Pts</th>
                 <th className="py-1 px-1 text-center">G</th>
                 <th className="py-1 px-1 text-center">A</th>
-                <th className="py-1 px-1 text-center">CS</th>
+                <th className="py-1 px-1 text-center">OG</th>
+                <th className="py-1 px-1 text-center">GC</th>
                 <th className="py-1 px-1 text-center">DefCon</th>
                 <th className="py-1 px-1 text-center">DR</th>
                 <th className="py-1 px-1 text-center">Min</th>
@@ -66,7 +67,6 @@ export default function PlayerStatsTable({
                 const pos = player.position ?? 3;
                 const posLabel = pos === 1 ? "GK" : pos === 2 ? "DEF" : pos === 3 ? "MID" : "FWD";
 
-                const cleanSheets = s?.clean_sheets ?? 0;
                 const saves = s?.saves ?? 0;
                 const defCon = s?.defensive_contribution ?? 0;
 
@@ -107,7 +107,13 @@ export default function PlayerStatsTable({
                     <td className="py-1 px-1 text-center font-semibold">{pts}</td>
                     <td className="py-1 px-1 text-center">{s?.goals_scored ?? 0}</td>
                     <td className="py-1 px-1 text-center">{s?.assists ?? 0}</td>
-                    <td className="py-1 px-1 text-center">{cleanSheets}</td>
+                    <td className="py-1 px-1 text-center">{s?.own_goals ?? 0}</td>
+                    <td className="py-1 px-1 text-center">
+                      {(s?.clean_sheets ?? 0) > 0 && (
+                        <span title="Clean sheet" className="mr-1">🧤</span>
+                      )}
+                      {s?.goals_conceded ?? 0}
+                    </td>
                     <td className="py-1 px-1 text-center">{defCon}</td>
                     <td className="py-1 px-1 text-center">
                       {defensiveReturn ? (
