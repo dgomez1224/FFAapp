@@ -527,6 +527,34 @@ function resolvePlayerImageUrl(player: any): string | null {
   return `https://resources.premierleague.com/premierleague/photos/players/110x140/p${code}.png`;
 }
 
+function buildImageUrlFromPhoto(photo: string): string | null {
+  const raw = String(photo ?? "").trim();
+  if (!raw) return null;
+  const code = raw
+    .replace(/\.(jpg|jpeg|png|webp)$/i, "")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .trim();
+  if (!code) return null;
+  return `https://resources.premierleague.com/premierleague/photos/players/110x140/p${code}.png`;
+}
+
+function enrichPlayerMapWithFplPhotos(
+  map: Record<number, { id: number; name: string; team: number | null; position: number | null; image_url: string | null }>,
+  fplBootstrap: any,
+): void {
+  if (!fplBootstrap) return;
+  const elements = normalizeDraftList<any>(fplBootstrap?.elements ?? []);
+  elements.forEach((el: any) => {
+    const id = parsePositiveInt(el?.id);
+    const photo = String(el?.photo ?? "").trim();
+    if (!id || !photo) return;
+    const entry = map[id];
+    if (!entry || entry.image_url != null) return;
+    const url = buildImageUrlFromPhoto(photo);
+    if (url) entry.image_url = url;
+  });
+}
+
 function extractDraftPlayerMap(bootstrap: any) {
   const rawElements = normalizeDraftList<any>(
     bootstrap?.elements?.data ??
@@ -3432,6 +3460,65 @@ playerInsights.get("/", async (c) => {
     // Prefer draft bootstrap player list so all players are fetchable; fallback to classic
     const rawPlayers = draftPlayers.length > 0 ? draftPlayers : classicPlayers;
 
+    const positionByPlayerId: Record<number, number> = {};
+    rawPlayers.forEach((p: any) => {
+      const id = parsePositiveInt(p?.id ?? p?.element ?? p?.element_id);
+      if (id) positionByPlayerId[id] = parsePositiveInt(p?.element_type ?? p?.position) ?? 0;
+    });
+
+    const currentGw = extractDraftCurrentEventId(draftBootstrap) ?? 29;
+    const latestCompleted = extractLatestCompletedDraftEventId(draftBootstrap);
+    const endGw = Math.max(currentGw, latestCompleted ?? currentGw, 1);
+    const gwRange = Array.from({ length: endGw }, (_, i) => i + 1);
+    const liveResponses = await Promise.all(
+      gwRange.map((gw) =>
+        fetch(`https://draft.premierleague.com/api/event/${gw}/live`, {
+          headers: { "User-Agent": "Mozilla/5.0" },
+        })
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null)
+      )
+    );
+
+    const playerTotals: Record<number, {
+      games_played: number;
+      defensive_contributions: number;
+      defensive_contribution_returns: number;
+    }> = {};
+
+    for (const liveData of liveResponses) {
+      if (!liveData) continue;
+      const rawElements = liveData.elements ?? {};
+      const entries = Array.isArray(rawElements)
+        ? (rawElements as any[]).map((el: any, i: number) => [
+            String(parsePositiveInt(el?.id ?? el?.element ?? el?.element_id) ?? i),
+            el,
+          ])
+        : Object.entries(rawElements);
+      for (const [key, el] of entries) {
+        const id = parsePositiveInt(key ?? (el as any)?.id ?? (el as any)?.element);
+        if (!id) continue;
+        if (!playerTotals[id]) {
+          playerTotals[id] = {
+            games_played: 0,
+            defensive_contributions: 0,
+            defensive_contribution_returns: 0,
+          };
+        }
+        const stats = (el as any)?.stats ?? (el as any) ?? {};
+        const minutes = Number(stats.minutes ?? 0);
+        const defContrib = Number(stats.defensive_contribution ?? stats.defensive_contributions ?? 0);
+        const pos = positionByPlayerId[id];
+        const threshold = pos === 2 ? 10 : (pos === 3 || pos === 4) ? 12 : 0;
+
+        if (minutes > 0) playerTotals[id].games_played += 1;
+        playerTotals[id].defensive_contributions += defContrib;
+        if (threshold > 0 && defContrib >= threshold) {
+          playerTotals[id].defensive_contribution_returns += 1;
+        }
+      }
+    }
+
     const byPlayerFromBootstrap: Record<number, any> = {};
     rawPlayers.forEach((p: any) => {
       const playerId = parsePositiveInt(p?.id ?? p?.element ?? p?.element_id);
@@ -3454,15 +3541,9 @@ playerInsights.get("/", async (c) => {
       const totalPoints = coerceNumber(merged?.total_points ?? merged?.stats?.total_points);
       const goals = coerceNumber(merged?.goals_scored ?? merged?.stats?.goals_scored);
       const assists = coerceNumber(merged?.assists ?? merged?.stats?.assists);
-      const defensiveContributions = coerceNumber(
-        merged?.defensive_contributions ?? merged?.defensive_contribution ?? merged?.stats?.defensive_contributions ?? merged?.stats?.defensive_contribution,
-        0,
-      );
-      const gamesPlayedRaw = coerceNumber(
-        merged?.appearances ?? merged?.stats?.appearances ?? merged?.starts ?? merged?.stats?.starts,
-        minutes > 0 ? Math.max(1, Math.round(minutes / 90)) : 0,
-      );
-      const gamesPlayed = Math.max(0, gamesPlayedRaw);
+      const gpRaw = playerTotals[playerId]?.games_played ?? 0;
+      const gamesStartedBootstrap = Number(merged?.starts ?? 0);
+      const gp = Math.max(gpRaw, gamesStartedBootstrap);
       const gamesHome = coerceNumber(merged?.games_home ?? merged?.stats?.games_home ?? merged?.starts_home, 0);
       const gamesAway = coerceNumber(merged?.games_away ?? merged?.stats?.games_away ?? merged?.starts_away, 0);
       const pointsHome = coerceNumber(
@@ -3494,16 +3575,18 @@ playerInsights.get("/", async (c) => {
         total_points: totalPoints,
         goals_scored: goals,
         assists,
-        defensive_contributions: defensiveContributions,
-        defensive_contribution_returns: 0,
-        games_played: gamesPlayed,
+        defensive_contributions: playerTotals[playerId]?.defensive_contributions ?? 0,
+        defensive_contribution_returns: playerTotals[playerId]?.defensive_contribution_returns ?? 0,
+        games_started: Number(merged?.starts ?? 0),
+        games_played: gp,
+        own_goals: Number(merged?.own_goals ?? 0),
         home_games: gamesHome,
         away_games: gamesAway,
         home_points: pointsHome,
         away_points: pointsAway,
         minutes_played: minutes,
-        points_per_game_played: gamesPlayed > 0 ? totalPoints / gamesPlayed : 0,
-        minutes_per_game_played: gamesPlayed > 0 ? minutes / gamesPlayed : 0,
+        points_per_game_played: gp > 0 ? totalPoints / gp : 0,
+        minutes_per_game_played: gp > 0 ? minutes / gp : 0,
         points_per_minute_played: minutes > 0 ? totalPoints / minutes : 0,
         points_per_90_played: minutes > 0 ? (totalPoints / minutes) * 90 : 0,
         average_points_home: avgPointsHome,
@@ -3776,7 +3859,10 @@ playerInsights.get("/", async (c) => {
       teamMap[id] = t?.name || t?.short_name || String(t?.id);
     });
 
-    const resolveSummaryDerived = async (playerIds: number[]) => {
+    const resolveSummaryDerived = async (
+      playerIds: number[],
+      positionByPlayerId?: Record<number, number>,
+    ) => {
       const out: Record<number, {
         games_played: number;
         average_points_home: number | null;
@@ -3785,6 +3871,12 @@ playerInsights.get("/", async (c) => {
         away_games: number;
         home_points: number;
         away_points: number;
+        bonus: number;
+        expected_goals: number;
+        expected_assists: number;
+        expected_goal_involvements: number;
+        defensive_contributions: number;
+        defensive_contribution_returns: number;
       }> = {};
       const ids = Array.from(new Set(playerIds.filter((id) => Number.isInteger(id) && id > 0)));
       const batchSize = 16;
@@ -3800,6 +3892,27 @@ playerInsights.get("/", async (c) => {
               const away = history.filter((h: any) => h?.was_home === false && coerceNumber(h?.minutes, 0) > 1);
               const homePointsTotal = home.reduce((sum: number, h: any) => sum + coerceNumber(h?.total_points, 0), 0);
               const awayPointsTotal = away.reduce((sum: number, h: any) => sum + coerceNumber(h?.total_points, 0), 0);
+              const bonus = history.reduce((sum: number, h: any) => sum + coerceNumber(h?.bonus, 0), 0);
+              const expected_goals = history.reduce((sum: number, h: any) => sum + coerceNumber(h?.expected_goals, 0), 0);
+              const expected_assists = history.reduce((sum: number, h: any) => sum + coerceNumber(h?.expected_assists, 0), 0);
+              const expected_goal_involvements = history.reduce(
+                (sum: number, h: any) => sum + coerceNumber(h?.expected_goal_involvements, 0),
+                0,
+              );
+              const defensive_contributions = history.reduce(
+                (sum: number, h: any) =>
+                  sum + coerceNumber(h?.defensive_contributions ?? h?.defensive_contribution, 0),
+                0,
+              );
+              const position = positionByPlayerId?.[playerId];
+              const threshold = position === 2 ? 10 : position === 3 || position === 4 ? 12 : 0;
+              const defensive_contribution_returns =
+                threshold > 0
+                  ? history.filter(
+                      (h: any) =>
+                        coerceNumber(h?.defensive_contributions ?? h?.defensive_contribution, 0) >= threshold,
+                    ).length
+                  : 0;
               out[playerId] = {
                 games_played: gamesPlayed,
                 average_points_home: home.length > 0 ? homePointsTotal / home.length : null,
@@ -3808,6 +3921,12 @@ playerInsights.get("/", async (c) => {
                 away_games: away.length,
                 home_points: homePointsTotal,
                 away_points: awayPointsTotal,
+                bonus,
+                expected_goals,
+                expected_assists,
+                expected_goal_involvements,
+                defensive_contributions,
+                defensive_contribution_returns,
               };
             } catch {
               // Keep fallback value when summary fetch fails.
@@ -3840,139 +3959,122 @@ playerInsights.get("/", async (c) => {
         return coerceNumber(b.total_points) - coerceNumber(a.total_points);
       });
 
-    // Aggregate defensive_contribution (sum) and defensive_contribution_returns (count of GWs where player hit threshold) from event/{GW}/live for GW 1 up to current.
-    const getSeasonDefensiveFromLive = async (): Promise<Record<number, { defensive_contributions: number; defensive_contribution_returns: number }>> => {
-      const out: Record<number, { defensive_contributions: number; defensive_contribution_returns: number }> = {};
-      try {
-        const bootstrapRes = await fetch(
-          `${DRAFT_BASE_URL}/bootstrap-static`,
-          { headers: { "User-Agent": "Mozilla/5.0" } }
-        );
-        const bootstrap = bootstrapRes.ok ? await bootstrapRes.json() : null;
-        const events = Array.isArray(bootstrap?.events) ? bootstrap.events : [];
-        const elements = Array.isArray(bootstrap?.elements) ? bootstrap.elements : [];
+    if (!selections || selections.length === 0) {
+      const allPlayerIds = fullInsightsFromBootstrap.map((row: any) => coerceNumber(row.player_id)).filter((id: number) => id > 0);
+      const summaryDerived = await resolveSummaryDerived(allPlayerIds, positionByPlayerId);
+      const adjusted = fullInsightsFromBootstrap.map((row: any) => {
+        const derived = summaryDerived[coerceNumber(row.player_id)];
+        const games = derived?.games_played;
+        const totalPoints = coerceNumber(row.total_points, 0);
+        const totalMinutes = coerceNumber(row.total_minutes ?? row.minutes_played, 0);
+        const base =
+          !Number.isInteger(games)
+            ? row
+            : {
+                ...row,
+                games_played: games,
+                home_games: derived?.home_games ?? row.home_games ?? 0,
+                away_games: derived?.away_games ?? row.away_games ?? 0,
+                home_points: derived?.home_points ?? row.home_points ?? 0,
+                away_points: derived?.away_points ?? row.away_points ?? 0,
+                points_per_game_played: games > 0 ? totalPoints / games : 0,
+                minutes_per_game_played: games > 0 ? totalMinutes / games : 0,
+                average_points_home: derived?.average_points_home ?? row.average_points_home ?? null,
+                average_points_away: derived?.average_points_away ?? row.average_points_away ?? null,
+              };
+        return {
+          ...base,
+          bonus: derived?.bonus ?? base.bonus ?? 0,
+          expected_goals: derived?.expected_goals ?? base.expected_goals ?? 0,
+          expected_assists: derived?.expected_assists ?? base.expected_assists ?? 0,
+          expected_goal_involvements: derived?.expected_goal_involvements ?? base.expected_goal_involvements ?? 0,
+          defensive_contributions: derived?.defensive_contributions ?? base.defensive_contributions ?? 0,
+          defensive_contribution_returns: derived?.defensive_contribution_returns ?? base.defensive_contribution_returns ?? 0,
+        };
+      });
+      const managersList = await (async () => {
+        const { data: teams } = await supabase.from("teams").select("manager_name");
+        const names = (teams || []).map((t: any) => String(t?.manager_name || "").trim()).filter(Boolean);
+        return [...new Set(names)].sort((a, b) => a.localeCompare(b));
+      })();
+      return c.json({
+        insights: adjusted,
+        managers: managersList,
+        source: "fpl_bootstrap",
+        debug: includeDebug ? { ownership: ownershipDebug } : undefined,
+      });
+    }
 
-        const currentGw = events.find((e: any) => e.is_current)?.id
-          ?? events.filter((e: any) => e.finished).pop()?.id
-          ?? 29;
-        if (!currentGw || currentGw < 1) return out;
+    const fallbackTotalPointsByPlayer: Record<number, number> = {};
+    Object.entries(playerGwPoints).forEach(([playerIdRaw, gwPoints]) => {
+      const playerId = coerceNumber(playerIdRaw, 0);
+      const total = Object.values(gwPoints || {}).reduce((sum: number, value: any) => sum + coerceNumber(value, 0), 0);
+      fallbackTotalPointsByPlayer[playerId] = total;
+    });
 
-        // Build position map from elements (element_type: 1=GK, 2=DEF, 3=MID, 4=FWD). Threshold DEF=10, MID/FWD=12.
-        const positionByPlayerId: Record<number, number> = {};
-        for (const el of elements) {
-          const id = Number(el?.id);
-          if (id > 0) positionByPlayerId[id] = Number(el?.element_type ?? el?.position ?? 0);
-        }
-
-        for (let gw = 1; gw <= currentGw; gw++) {
-          try {
-            const liveRes = await fetch(`${DRAFT_BASE_URL}/event/${gw}/live`, {
-              headers: { "User-Agent": "Mozilla/5.0" },
-            });
-            const liveData = liveRes.ok ? await liveRes.json() : null;
-            const elements = liveData?.elements;
-            if (!elements || typeof elements !== "object") continue;
-            const entries = Array.isArray(elements)
-              ? elements.map((el: any, i: number) => [String(el?.id ?? i), el])
-              : Object.entries(elements);
-            for (const [key, value] of entries as [string, any][]) {
-              const id = coerceNumber(key ?? value?.id ?? value?.element, 0);
-              if (!id) continue;
-              const stats = value?.stats ?? value;
-              const contribThisGw = coerceNumber(stats?.defensive_contribution ?? stats?.defensive_contributions, 0);
-              if (!out[id]) out[id] = { defensive_contributions: 0, defensive_contribution_returns: 0 };
-              out[id].defensive_contributions += contribThisGw;
-              // Returns = count of gameweeks where player hit the threshold in that game (not season total / threshold).
-              const position = positionByPlayerId[id] ?? 0;
-              const threshold = position === 2 ? 10 : position === 3 || position === 4 ? 12 : 0;
-              if (threshold > 0 && contribThisGw >= threshold) {
-                out[id].defensive_contribution_returns += 1;
-              }
-            }
-          } catch {
-            // skip this GW
-          }
-        }
-      } catch (e) {
-        console.error("player-insights getSeasonDefensiveFromLive failed:", e);
-      }
-      return out;
-    };
-
-    // Helper: augment rows with advanced stats from Draft bootstrap when available.
-    const augmentWithDraftAdvancedStats = async (rows: any[]): Promise<any[]> => {
-      try {
-        const [draftData, seasonDefensive] = await Promise.all([
-          (async () => {
-            const draftRes = await fetch(`${DRAFT_BASE_URL}/bootstrap-static`);
-            return draftRes.ok ? await draftRes.json() : null;
-          })(),
-          getSeasonDefensiveFromLive(),
-        ]);
-        const draftElements: Record<number, any> = {};
-        (draftData?.elements || []).forEach((el: any) => {
-          const id = coerceNumber(el?.id, 0);
-          if (id > 0) draftElements[id] = el;
-        });
-        return rows.map((row: any) => {
-          const pid = coerceNumber(row.player_id, 0);
-          const draftEl = draftElements[pid] || {};
-          const rowBonus = (row as any).bonus ?? (row as any).total_bonus;
-          const rowXg = (row as any).expected_goals ?? (row as any).xg;
-          const rowXa = (row as any).expected_assists ?? (row as any).xa;
-          const rowXgi = (row as any).expected_goal_involvements ?? (row as any).xgi;
-          const draftBonus = draftEl?.bonus;
-          const draftXg = draftEl?.expected_goals ?? draftEl?.xg;
-          const draftXa = draftEl?.expected_assists ?? draftEl?.xa;
-          const draftXgi = draftEl?.expected_goal_involvements ?? draftEl?.xgi;
-          const agg = seasonDefensive[pid];
-          return {
-            ...row,
-            defensive_contributions: agg?.defensive_contributions ?? Number(
-              (row as any).defensive_contributions ??
-                (row as any).defensive_contribution ??
-                draftEl?.defensive_contributions ??
-                draftEl?.defensive_contribution ??
-                0
-            ),
-            defensive_contribution_returns: agg?.defensive_contribution_returns ?? Number(
-              (row as any).defensive_contribution_returns ?? (row as any).def_contribution_returns ?? 0
-            ),
-            bonus: Number(rowBonus ?? draftBonus ?? 0),
-            expected_goals: parseFloat(String(rowXg ?? draftXg ?? "0")),
-            expected_assists: parseFloat(String(rowXa ?? draftXa ?? "0")),
-            expected_goal_involvements: parseFloat(String(rowXgi ?? draftXgi ?? "0")),
-          };
-        });
-      } catch {
-        return rows;
-      }
-    };
-
-    const allPlayerIds = fullInsightsFromBootstrap
-      .map((row: any) => coerceNumber(row.player_id))
-      .filter((id: number) => id > 0);
-    const summaryDerived = await resolveSummaryDerived(allPlayerIds);
-    const adjustedBase = fullInsightsFromBootstrap.map((row: any) => {
-      const derived = summaryDerived[coerceNumber(row.player_id)];
-      const games = derived?.games_played;
-      if (!Number.isInteger(games)) return row;
-      const totalPoints = coerceNumber(row.total_points, 0);
-      const totalMinutes = coerceNumber(row.total_minutes ?? row.minutes_played, 0);
+    const insights = fullInsightsFromBootstrap.map((row: any) => {
+      const pid = coerceNumber(row.player_id, 0);
+      const sel = playerMap[pid];
+      const bootstrapTotalPoints = coerceNumber(row.total_points, 0);
+      const fallbackTotalPoints = coerceNumber(fallbackTotalPointsByPlayer[pid], 0);
+      const resolvedTotalPoints = bootstrapTotalPoints > 0 ? bootstrapTotalPoints : fallbackTotalPoints;
+      const resolvedTotalMinutes = coerceNumber(row.minutes_played, 0);
+      const resolvedGamesPlayed = Math.max(
+        coerceNumber(row.games_played, 0),
+        Object.keys(playerGwPoints[pid] || {}).length,
+      );
+      const resolvedPointsPerGame = resolvedGamesPlayed > 0 ? resolvedTotalPoints / resolvedGamesPlayed : 0;
+      const resolvedMinutesPerGame = resolvedGamesPlayed > 0 ? resolvedTotalMinutes / resolvedGamesPlayed : 0;
+      const resolvedPointsPer90 = resolvedTotalMinutes > 0 ? (resolvedTotalPoints / resolvedTotalMinutes) * 90 : 0;
       return {
         ...row,
-        games_played: games,
-        home_games: derived?.home_games ?? row.home_games ?? 0,
-        away_games: derived?.away_games ?? row.away_games ?? 0,
-        home_points: derived?.home_points ?? row.home_points ?? 0,
-        away_points: derived?.away_points ?? row.away_points ?? 0,
-        points_per_game_played: games > 0 ? totalPoints / games : 0,
-        minutes_per_game_played: games > 0 ? totalMinutes / games : 0,
-        average_points_home: derived?.average_points_home ?? row.average_points_home ?? null,
-        average_points_away: derived?.average_points_away ?? row.average_points_away ?? null,
+        selected_count: sel ? sel.selected_count : 0,
+        captain_count: sel ? sel.captain_count : 0,
+        captain_frequency: sel && sel.selected_count > 0 ? (sel.captain_count / sel.selected_count) * 100 : 0,
+        total_points_contributed: sel ? sel.total_points_contributed : 0,
+        teams_using: sel ? sel.teams.size : 0,
+        total_points: resolvedTotalPoints,
+        games_played: resolvedGamesPlayed,
+        points_per_game_played: resolvedPointsPerGame,
+        minutes_per_game_played: resolvedMinutesPerGame,
+        points_per_90_played: resolvedPointsPer90,
+        total_minutes: resolvedTotalMinutes,
+        points: resolvedTotalPoints,
       };
     });
-    const adjusted = await augmentWithDraftAdvancedStats(adjustedBase);
+
+    const allPlayerIds = insights.map((row: any) => coerceNumber(row.player_id)).filter((id: number) => id > 0);
+    const summaryDerived = await resolveSummaryDerived(allPlayerIds, positionByPlayerId);
+    const adjusted = insights.map((row: any) => {
+      const derived = summaryDerived[coerceNumber(row.player_id)];
+      const games = derived?.games_played;
+      const totalPoints = coerceNumber(row.total_points ?? row.points, 0);
+      const totalMinutes = coerceNumber(row.total_minutes ?? row.minutes_played, 0);
+      const base =
+        !Number.isInteger(games)
+          ? row
+          : {
+              ...row,
+              games_played: games,
+              home_games: derived?.home_games ?? row.home_games ?? 0,
+              away_games: derived?.away_games ?? row.away_games ?? 0,
+              home_points: derived?.home_points ?? row.home_points ?? 0,
+              away_points: derived?.away_points ?? row.away_points ?? 0,
+              points_per_game_played: games > 0 ? totalPoints / games : 0,
+              minutes_per_game_played: games > 0 ? totalMinutes / games : 0,
+              average_points_home: derived?.average_points_home ?? row.average_points_home ?? null,
+              average_points_away: derived?.average_points_away ?? row.average_points_away ?? null,
+            };
+      return {
+        ...base,
+        bonus: derived?.bonus ?? base.bonus ?? 0,
+        expected_goals: derived?.expected_goals ?? base.expected_goals ?? 0,
+        expected_assists: derived?.expected_assists ?? base.expected_assists ?? 0,
+        expected_goal_involvements: derived?.expected_goal_involvements ?? base.expected_goal_involvements ?? 0,
+        defensive_contributions: derived?.defensive_contributions ?? base.defensive_contributions ?? 0,
+        defensive_contribution_returns: derived?.defensive_contribution_returns ?? base.defensive_contribution_returns ?? 0,
+      };
+    });
 
     const managersList = await (async () => {
       const { data: teams } = await supabase.from("teams").select("manager_name");
@@ -6682,6 +6784,12 @@ captainPicks.get("/context", async (c) => {
 
     const bootstrap = await fetchDraftBootstrap();
     const playersById = extractDraftPlayerMap(bootstrap);
+    try {
+      const fplBootstrap = await fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`);
+      enrichPlayerMapWithFplPhotos(playersById, fplBootstrap);
+    } catch {
+      // keep Draft-only image_url when FPL unavailable
+    }
     const players = squad.picks
       .map((pick: any) => {
         const playerId = Number(pick.element);
@@ -6696,21 +6804,36 @@ captainPicks.get("/context", async (c) => {
       })
       .filter((p: any) => Number.isInteger(p.id));
 
-    let existingSelection: any = null;
+    let selectionRow: { captain_player_id?: number | null; vice_captain_player_id?: number | null; gameweek?: number | null } | null = null;
     try {
-      const { data, error: selError } = await supabase
+      const { data } = await supabase
         .from("cup_captain_selections")
-        .select("captain_player_id, captain_name, vice_captain_player_id, vice_captain_name, gameweek, updated_at")
+        .select("captain_player_id, vice_captain_player_id, gameweek")
         .eq("team_id", session.team_id)
-        .eq("gameweek", targetGameweek)
+        .order("gameweek", { ascending: false })
+        .limit(1)
         .maybeSingle();
-      if (selError) throw selError;
-      existingSelection = data || null;
+      selectionRow = data || null;
     } catch {
-      existingSelection = null;
+      selectionRow = null;
     }
+    if (!selectionRow) {
+      try {
+        const { data: fallback } = await supabase
+          .from("captain_selections")
+          .select("captain_player_id, vice_captain_player_id, gameweek")
+          .eq("team_id", session.team_id)
+          .order("gameweek", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        selectionRow = fallback || null;
+      } catch {
+        selectionRow = null;
+      }
+    }
+    const existingSelection = selectionRow;
     const vcId = existingSelection?.vice_captain_player_id ?? (existingSelection as any)?.viceCaptainPlayerId ?? null;
-    const vcName = existingSelection?.vice_captain_name ?? (existingSelection as any)?.viceCaptainName ?? null;
+    const vcName = (existingSelection as any)?.vice_captain_name ?? (existingSelection as any)?.viceCaptainName ?? null;
 
     const { data: team } = await supabase
       .from("teams")
@@ -6727,9 +6850,9 @@ captainPicks.get("/context", async (c) => {
       gameweek: targetGameweek,
       squad_source_gameweek: squad.event,
       players,
-      selected_captain_id: existingSelection?.captain_player_id ?? null,
-      selected_captain_name: existingSelection?.captain_name ?? null,
-      selected_vice_captain_id: vcId != null ? coerceNumber(vcId) : null,
+      selected_captain_id: selectionRow?.captain_player_id ?? null,
+      selected_captain_name: (existingSelection as any)?.captain_name ?? null,
+      selected_vice_captain_id: selectionRow?.vice_captain_player_id != null ? coerceNumber(selectionRow.vice_captain_player_id) : null,
       selected_vice_captain_name: vcName ?? null,
       selected_updated_at: existingSelection?.updated_at ?? null,
     });
@@ -7717,6 +7840,12 @@ fixturesHub.get("/matchup", async (c) => {
       }
     }
     const playerMap = extractDraftPlayerMap(bootstrap || {});
+    try {
+      const fplBootstrap = await fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`);
+      enrichPlayerMapWithFplPhotos(playerMap, fplBootstrap);
+    } catch {
+      // keep existing image_url when FPL unavailable
+    }
     let liveMap: Record<number, number> = {};
     let liveStatsMap: Record<number, any> = {};
     let liveFixtures: any[] = [];
@@ -7944,6 +8073,12 @@ fixturesHub.get("/lineup", async (c) => {
       }
     }
     const playerMap = extractDraftPlayerMap(bootstrap);
+    try {
+      const fplBootstrap = await fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`);
+      enrichPlayerMapWithFplPhotos(playerMap, fplBootstrap);
+    } catch {
+      // keep existing image_url when FPL unavailable
+    }
     let liveMap: Record<number, number> = {};
     let liveStatsMap: Record<number, any> = {};
     try {
