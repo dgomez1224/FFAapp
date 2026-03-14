@@ -56,6 +56,8 @@ interface GroupStanding {
   manager_short_name: string;
   total_points: number;
   captain_points: number;
+  current_week_points?: number;
+  current_week_captain?: number;
   played: number;
   rank: number;
 }
@@ -430,8 +432,10 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
                     <TableHead className="w-12">Rank</TableHead>
                     <TableHead>Team</TableHead>
                     <TableHead>Manager</TableHead>
-                    <TableHead className="text-right">Total Points</TableHead>
-                    <TableHead className="text-right">Captain Points</TableHead>
+                    <TableHead className="text-right">Total Pts</TableHead>
+                    <TableHead className="text-right">GW Pts</TableHead>
+                    <TableHead className="text-right">Total C Pts</TableHead>
+                    <TableHead className="text-right">GW C Pts</TableHead>
                     <TableHead className="text-right">Played</TableHead>
                     <TableHead className="text-center">Status</TableHead>
                   </TableRow>
@@ -480,9 +484,17 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
                         </TableCell>
                         <TableCell>{team.manager_name}</TableCell>
                         <TableCell className="text-right font-medium">
-                          {team.total_points}
+                          {team.total_points ?? 0}
                         </TableCell>
-                        <TableCell className="text-right">{(team.captain_points ?? 0) * 2}</TableCell>
+                        <TableCell className="text-right">
+                          {team.current_week_points ?? 0}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {(team.captain_points ?? 0) * 2}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {(team.current_week_captain ?? 0) * 2}
+                        </TableCell>
                         <TableCell className="text-right">{team.played}</TableCell>
                         <TableCell className="text-center">
                           {advancing ? (

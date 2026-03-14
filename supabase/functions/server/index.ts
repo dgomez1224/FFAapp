@@ -610,6 +610,52 @@ function extractLivePointsMap(payload: any) {
   return pointsByPlayerId;
 }
 
+/**
+ * Compute cup gameweek score for one team: squad (starters + bench) + captain bonus.
+ * cup_gameweek_scores semantics: total_points column = gameweek_points; captain_points = raw captain; bench_points = bench.
+ */
+async function computeCupGameweekScore(
+  team: { id: string; entry_id: string | number | null },
+  gameweek: number,
+  liveMap: Record<number, number>,
+  supabase: any,
+): Promise<{ gameweek_points: number; captain_points: number; bench_points: number; captain_element_id: number } | null> {
+  const entryId = String(team.entry_id ?? "").trim();
+  if (!entryId) return null;
+  let picks: any[] = [];
+  try {
+    const picksData = await fetchJSON<any>(`${DRAFT_BASE_URL}/entry/${entryId}/event/${gameweek}`);
+    picks = normalizeDraftList<any>(picksData?.picks ?? []);
+  } catch {
+    return null;
+  }
+  if (!picks.length) return null;
+
+  const starters = picks.filter((p: any) => coerceNumber(p?.position, 0) <= 11);
+  const bench = picks.filter((p: any) => coerceNumber(p?.position, 0) > 11);
+  const pointFor = (p: any) => liveMap[coerceNumber(p?.element ?? p?.element_id ?? p?.player_id, 0)] ?? 0;
+  const starter_points = starters.reduce((sum: number, p: any) => sum + pointFor(p), 0);
+  const bench_points = bench.reduce((sum: number, p: any) => sum + pointFor(p), 0);
+  const squad_points = starter_points + bench_points;
+
+  const { data: captainRow } = await supabase
+    .from("cup_captain_selections")
+    .select("captain_player_id")
+    .eq("team_id", team.id)
+    .eq("gameweek", gameweek)
+    .maybeSingle();
+  const captainPlayerId = coerceNumber(captainRow?.captain_player_id, 0);
+  const captain_points = captainPlayerId > 0 ? (liveMap[captainPlayerId] ?? 0) : 0;
+  const gameweek_points = squad_points + captain_points;
+
+  return {
+    gameweek_points,
+    captain_points,
+    bench_points,
+    captain_element_id: captainPlayerId,
+  };
+}
+
 function extractLivePlayerStatsMap(payload: any) {
   const statsByPlayerId: Record<number, any> = {};
   const elements = payload?.elements;
@@ -2218,6 +2264,7 @@ leagueStandings.get("/", async (c) => {
     const dbContext = await resolveLeagueContextFromDb(supabase);
     if (dbContext.teams.length > 0) {
       const teamIds = dbContext.teams.map((t: any) => t.id);
+      // cup_gameweek_scores: total_points column = gameweek_points (per-GW squad + captain bonus); captain_points = raw captain; bench_points = bench contribution
       const { data: scores, error: scoresError } = await supabase
         .from("cup_gameweek_scores")
         .select("team_id, total_points, gameweek")
@@ -2432,9 +2479,9 @@ cupGroupStage.get("/", async (c) => {
         });
         (scores || []).forEach((s: any) => {
           if (!map[s.team_id]) return;
-          const rowTotal = s.total_points || 0;
+          const gameweek_points = s.total_points || 0;
           const rowCaptain = s.captain_points || 0;
-          map[s.team_id].total_points += rowTotal + rowCaptain;
+          map[s.team_id].total_points += gameweek_points;
           map[s.team_id].captain_points += rowCaptain;
           map[s.team_id].played += 1;
         });
@@ -3959,9 +4006,19 @@ playerInsights.get("/", async (c) => {
         return coerceNumber(b.total_points) - coerceNumber(a.total_points);
       });
 
+    // Optional: populate from DB for selection/captain stats; if absent we use bootstrap-only path.
+    const selections: any[] = [];
+    const playerMap: Record<number, { selected_count: number; captain_count: number; total_points_contributed: number; teams: Set<string> }> = {};
+    const playerGwPoints: Record<number, Record<number, number>> = {};
+
     if (!selections || selections.length === 0) {
       const allPlayerIds = fullInsightsFromBootstrap.map((row: any) => coerceNumber(row.player_id)).filter((id: number) => id > 0);
-      const summaryDerived = await resolveSummaryDerived(allPlayerIds, positionByPlayerId);
+      let summaryDerived: Record<number, { games_played?: number; home_games?: number; away_games?: number; home_points?: number; away_points?: number; average_points_home?: number | null; average_points_away?: number | null; bonus?: number; expected_goals?: number; expected_assists?: number; expected_goal_involvements?: number; defensive_contributions?: number; defensive_contribution_returns?: number }> = {};
+      try {
+        summaryDerived = await resolveSummaryDerived(allPlayerIds, positionByPlayerId);
+      } catch (e) {
+        console.error("player-insights resolveSummaryDerived failed:", e);
+      }
       const adjusted = fullInsightsFromBootstrap.map((row: any) => {
         const derived = summaryDerived[coerceNumber(row.player_id)];
         const games = derived?.games_played;
@@ -3993,9 +4050,13 @@ playerInsights.get("/", async (c) => {
         };
       });
       const managersList = await (async () => {
-        const { data: teams } = await supabase.from("teams").select("manager_name");
-        const names = (teams || []).map((t: any) => String(t?.manager_name || "").trim()).filter(Boolean);
-        return [...new Set(names)].sort((a, b) => a.localeCompare(b));
+        try {
+          const { data: teams } = await supabase.from("teams").select("manager_name");
+          const names = (teams || []).map((t: any) => String(t?.manager_name || "").trim()).filter(Boolean);
+          return [...new Set(names)].sort((a, b) => a.localeCompare(b));
+        } catch {
+          return [];
+        }
       })();
       return c.json({
         insights: adjusted,
@@ -5586,90 +5647,105 @@ bracket.get("/", async (c) => {
 
       if (teamIds.length > 0) {
         const currentGw = await resolveCurrentGameweek();
+        const tournamentId = tournament.id;
 
-        // Captain selections by team_id (UUID) and gameweek
-        const { data: captainRows } = await supabase
-          .from("cup_captain_selections")
-          .select("team_id, gameweek, captain_player_id")
-          .in("team_id", teamIds)
+        const { data: scoreRows } = await supabase
+          .from("cup_gameweek_scores")
+          .select("team_id, gameweek, total_points, captain_points")
+          .eq("tournament_id", tournamentId)
           .gte("gameweek", startGW)
           .lte("gameweek", endGW);
-        const captainByTeamGw: Record<string, Record<number, number>> = {};
-        (captainRows || []).forEach((r: any) => {
-          if (!captainByTeamGw[r.team_id]) captainByTeamGw[r.team_id] = {};
-          captainByTeamGw[r.team_id][coerceNumber(r.gameweek)] = coerceNumber(r.captain_player_id);
-        });
 
-        const standingsMap: Record<string, any> = {};
-        registeredTeams.forEach((t) => {
-          standingsMap[t.id] = {
-            team_id: t.id,
-            entry_name: t.entry_name,
-            manager_name: t.manager_name,
-            manager_short_name: t.manager_short_name,
-            total_points: 0,
-            captain_points: 0,
-            played: 0,
-          };
-        });
+        const teamTotals: Record<string, {
+          total_points: number;
+          captain_points: number;
+          current_week_points: number;
+          current_week_captain: number;
+          played: number;
+          max_gw: number;
+        }> = {};
 
-        for (let gw = startGW; gw <= endGW; gw++) {
-          let pointsMap: Record<number, number> = {};
-          if (currentGw != null && gw === currentGw) {
-            try {
-              const livePayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${gw}/live`);
-              pointsMap = extractLivePointsMap(livePayload);
-            } catch {
-              // use pick.points below
-            }
+        for (const row of scoreRows ?? []) {
+          const tid = row.team_id;
+          if (!tid) continue;
+          if (!teamTotals[tid]) {
+            teamTotals[tid] = {
+              total_points: 0,
+              captain_points: 0,
+              current_week_points: 0,
+              current_week_captain: 0,
+              played: 0,
+              max_gw: 0,
+            };
           }
-
-          await Promise.all(
-            registeredTeams.map(async (team: any) => {
-              const entryId = String(team.entry_id ?? "").trim();
-              if (!entryId) return;
-              let picks: any[] = [];
-              try {
-                const picksRes = await fetchJSON<any>(`${DRAFT_BASE_URL}/entry/${entryId}/event/${gw}`);
-                picks = normalizeDraftList<any>(picksRes?.picks ?? []);
-              } catch {
-                return;
-              }
-              if (!picks.length) return;
-
-              const captainPlayerId = captainByTeamGw[team.id]?.[gw] ?? 0;
-              let totalPoints = 0;
-              let captainRaw = 0;
-              for (const pick of picks) {
-                const elementId = coerceNumber(pick?.element ?? pick?.element_id ?? pick?.player_id);
-                const basePoints =
-                  Object.prototype.hasOwnProperty.call(pointsMap, elementId)
-                    ? coerceNumber(pointsMap[elementId], 0)
-                    : coerceNumber(pick?.points ?? pick?.total_points ?? 0, 0);
-                const isCaptain = captainPlayerId > 0 && elementId === captainPlayerId;
-                totalPoints += basePoints;
-                if (isCaptain) {
-                  captainRaw = basePoints;
-                  totalPoints += basePoints;
-                }
-              }
-              if (!standingsMap[team.id]) return;
-              standingsMap[team.id].total_points += totalPoints;
-              standingsMap[team.id].captain_points += captainRaw;
-              standingsMap[team.id].played += 1;
-            }),
-          );
+          const t = teamTotals[tid];
+          const gameweek_points = coerceNumber(row.total_points, 0);
+          const captain_points = coerceNumber(row.captain_points, 0);
+          t.total_points += gameweek_points;
+          t.captain_points += captain_points;
+          t.played += 1;
+          if ((row.gameweek ?? 0) > t.max_gw) {
+            t.max_gw = row.gameweek ?? 0;
+            t.current_week_points = gameweek_points;
+            t.current_week_captain = captain_points;
+          }
         }
 
-        groupStandings = Object.values(standingsMap)
-          .sort((a, b) => {
-            if (b.total_points !== a.total_points) return b.total_points - a.total_points;
-            return b.captain_points - a.captain_points;
-          })
-          .map((team, index) => ({
-            ...team,
-            rank: index + 1,
-          }));
+        const teamsWithCurrentGw = new Set(
+          (scoreRows ?? []).filter((r: any) => r.gameweek === currentGw).map((r: any) => r.team_id),
+        );
+
+        if (currentGw != null && currentGw >= startGW && currentGw <= endGW) {
+          let liveMap: Record<number, number> = {};
+          try {
+            const livePayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${currentGw}/live`);
+            liveMap = extractLivePointsMap(livePayload);
+          } catch {
+            // skip live top-up
+          }
+          for (const team of registeredTeams) {
+            if (teamsWithCurrentGw.has(team.id)) continue;
+            const score = await computeCupGameweekScore(team, currentGw, liveMap, supabase);
+            if (!score) continue;
+            if (!teamTotals[team.id]) {
+              teamTotals[team.id] = {
+                total_points: 0,
+                captain_points: 0,
+                current_week_points: 0,
+                current_week_captain: 0,
+                played: 0,
+                max_gw: 0,
+              };
+            }
+            const t = teamTotals[team.id];
+            t.total_points += score.gameweek_points;
+            t.captain_points += score.captain_points;
+            t.played += 1;
+            t.current_week_points = score.gameweek_points;
+            t.current_week_captain = score.captain_points;
+            t.max_gw = currentGw;
+          }
+        }
+
+        const defaultTotals = {
+          total_points: 0,
+          captain_points: 0,
+          current_week_points: 0,
+          current_week_captain: 0,
+          played: 0,
+        };
+        groupStandings = registeredTeams.map((t) => ({
+          team_id: t.id,
+          entry_name: t.entry_name,
+          manager_name: t.manager_name,
+          manager_short_name: t.manager_short_name,
+          ...(teamTotals[t.id] ?? defaultTotals),
+        }));
+        groupStandings.sort((a, b) => {
+          if (b.total_points !== a.total_points) return b.total_points - a.total_points;
+          return b.captain_points - a.captain_points;
+        });
+        groupStandings = groupStandings.map((s, i) => ({ ...s, rank: i + 1 }));
       }
     } else {
       groupStandings = registeredTeams.map((team, index) => ({
@@ -5679,6 +5755,8 @@ bracket.get("/", async (c) => {
         manager_short_name: team.manager_short_name,
         total_points: 0,
         captain_points: 0,
+        current_week_points: 0,
+        current_week_captain: 0,
         played: 0,
         rank: index + 1,
       }));
@@ -6172,11 +6250,10 @@ adminRefresh.post("/refresh-current-season", async (c) => {
       return jsonError(c, 400, "No teams found in database");
     }
 
-    // Step 5: For each completed gameweek, fetch and store scores
+    // Step 5: For each completed gameweek, fetch live once then compute and store scores (gameweek_points = squad + captain; captain_points = raw)
     const results: any[] = [];
     const tournamentStartGw = startGameweek || 1;
     for (let gw = tournamentStartGw; gw <= currentGameweek; gw++) {
-      // Get live points for this gameweek
       let liveMap: Record<number, number> = {};
       try {
         const live = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${gw}/live`);
@@ -6185,62 +6262,18 @@ adminRefresh.post("/refresh-current-season", async (c) => {
         continue;
       }
       for (const team of teams) {
-        const entryId = String(team.entry_id);
-        if (!entryId) continue;
-        // Fetch picks for this team and gameweek
-        let picks: any[] = [];
-        try {
-          const picksData = await fetchJSON<any>(
-            `${DRAFT_BASE_URL}/entry/${entryId}/event/${gw}`
-          );
-          picks = normalizeDraftList<any>(picksData?.picks ?? []);
-        } catch {
-          continue;
-        }
-        if (!picks.length) continue;
-        // Get captain selection
-        const { data: captainRow } = await supabase
-          .from("cup_captain_selections")
-          .select("captain_player_id, vice_captain_player_id")
-          .eq("team_id", team.id)
-          .eq("gameweek", gw)
-          .maybeSingle();
-        const captainId = coerceNumber(captainRow?.captain_player_id);
-        const vcId = coerceNumber(captainRow?.vice_captain_player_id);
-        // Calculate total points
-        let totalPoints = 0;
-        let captainPoints = 0;
-        let captainMinutes = 0;
-        if (captainId) {
-          try {
-            const liveRaw = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${gw}/live`);
-            const elements = normalizeDraftList<any>(liveRaw?.elements ?? liveRaw?.elements?.data ?? []);
-            const captainEl = elements.find((e: any) => coerceNumber(e?.id) === captainId);
-            captainMinutes = coerceNumber(captainEl?.stats?.minutes ?? captainEl?.minutes, 0);
-          } catch {
-            captainMinutes = 0;
-          }
-        }
-        for (const pick of picks) {
-          const elementId = coerceNumber(pick.element);
-          const basePoints = liveMap[elementId] ?? 0;
-          const isCaptain = elementId === captainId;
-          const isVice = elementId === vcId;
-          const multiplier = isCaptain ? 2 : (isVice && captainMinutes === 0 ? 2 : 1);
-          const pts = basePoints * multiplier;
-          totalPoints += pts;
-          if (isCaptain) captainPoints = pts;
-        }
-        if (gw < tournamentStartGw) continue;
-        await supabase.from("cup_gameweek_scores").upsert({
+        const score = await computeCupGameweekScore(team, gw, liveMap, supabase);
+        if (!score || gw < tournamentStartGw) continue;
+        const row = {
           team_id: team.id,
           tournament_id: tournamentId,
           gameweek: gw,
-          total_points: totalPoints,
-          captain_points: captainPoints,
-          bench_points: 0,
-        }, { onConflict: "team_id,gameweek" });
-        results.push({ team: team.manager_name, gw, totalPoints });
+          total_points: score.gameweek_points,
+          captain_points: score.captain_points,
+          bench_points: score.bench_points,
+        };
+        await supabase.from("cup_gameweek_scores").upsert(row, { onConflict: "team_id,gameweek,tournament_id" });
+        results.push({ team: team.manager_name, gw, totalPoints: score.gameweek_points });
       }
     }
 
@@ -6253,6 +6286,65 @@ adminRefresh.post("/refresh-current-season", async (c) => {
     });
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to refresh current season");
+  }
+});
+
+adminRefresh.post("/score-cup-gameweek", async (c) => {
+  if (!requireAdminToken(c)) {
+    return jsonError(c, 401, "Unauthorized");
+  }
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const gameweek = coerceNumber(body?.gameweek, 0);
+    if (!gameweek || gameweek < 1) {
+      return jsonError(c, 400, "Missing or invalid body.gameweek");
+    }
+    const supabase = getSupabaseAdmin();
+    const { data: tournament } = await supabase
+      .from("tournaments")
+      .select("id, start_gameweek, group_stage_gameweeks")
+      .eq("entry_id", STATIC_ENTRY_ID)
+      .eq("season", CURRENT_SEASON)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const tournamentId = tournament?.id ?? null;
+    const startGw = tournament?.start_gameweek ?? 29;
+    const endGw = startGw + (tournament?.group_stage_gameweeks ?? 4) - 1;
+    if (gameweek < startGw || gameweek > endGw) {
+      return jsonError(c, 400, `Gameweek ${gameweek} is outside group stage ${startGw}-${endGw}`);
+    }
+    const { data: teams } = await supabase
+      .from("teams")
+      .select("id, entry_id, manager_name");
+    if (!teams?.length) {
+      return jsonError(c, 400, "No teams found");
+    }
+    let liveMap: Record<number, number> = {};
+    try {
+      const live = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${gameweek}/live`);
+      liveMap = extractLivePointsMap(live);
+    } catch (e) {
+      return jsonError(c, 502, "Failed to fetch live points for gameweek");
+    }
+    let scored = 0;
+    for (const team of teams) {
+      const score = await computeCupGameweekScore(team, gameweek, liveMap, supabase);
+      if (!score) continue;
+      const row = {
+        team_id: team.id,
+        tournament_id: tournamentId,
+        gameweek,
+        total_points: score.gameweek_points,
+        captain_points: score.captain_points,
+        bench_points: score.bench_points,
+      };
+      const { error } = await supabase.from("cup_gameweek_scores").upsert(row, { onConflict: "team_id,gameweek,tournament_id" });
+      if (!error) scored += 1;
+    }
+    return c.json({ scored, gameweek });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to score cup gameweek");
   }
 });
 
