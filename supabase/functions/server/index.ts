@@ -3455,11 +3455,9 @@ playerInsights.get("/", async (c) => {
       const goals = coerceNumber(merged?.goals_scored ?? merged?.stats?.goals_scored);
       const assists = coerceNumber(merged?.assists ?? merged?.stats?.assists);
       const defensiveContributions = coerceNumber(
-        merged?.defensive_contributions ?? merged?.stats?.defensive_contributions,
+        merged?.defensive_contributions ?? merged?.defensive_contribution ?? merged?.stats?.defensive_contributions ?? merged?.stats?.defensive_contribution,
         0,
       );
-      const threshold = position === 2 ? 10 : position === 3 || position === 4 ? 12 : 0;
-      const defContribReturns = threshold > 0 ? Math.floor(defensiveContributions / threshold) : 0;
       const gamesPlayedRaw = coerceNumber(
         merged?.appearances ?? merged?.stats?.appearances ?? merged?.starts ?? merged?.stats?.starts,
         minutes > 0 ? Math.max(1, Math.round(minutes / 90)) : 0,
@@ -3497,7 +3495,7 @@ playerInsights.get("/", async (c) => {
         goals_scored: goals,
         assists,
         defensive_contributions: defensiveContributions,
-        defensive_contribution_returns: defContribReturns,
+        defensive_contribution_returns: 0,
         games_played: gamesPlayed,
         home_games: gamesHome,
         away_games: gamesAway,
@@ -3820,28 +3818,6 @@ playerInsights.get("/", async (c) => {
       return out;
     };
 
-    // Fetch player selection data from database
-    // This would come from a player_selections table that tracks which players
-    // are selected by which teams each gameweek
-    const { data: selections, error: selectionsError } = await supabase
-      .from("player_selections")
-      .select(`
-        player_id,
-        player_name,
-        team_id,
-        gameweek,
-        is_captain,
-        points_earned,
-        teams (
-          entry_name
-        )
-      `)
-      .order("gameweek", { ascending: false });
-
-    if (selectionsError && !isMissingRelationError(selectionsError)) {
-      return jsonError(c, 500, "Failed to fetch player selections", selectionsError.message);
-    }
-
     const fullInsightsFromBootstrap = Object.values(byPlayerFromBootstrap)
       .map((p: any) => {
         const ownerLabel = resolveOwnerLabel(coerceNumber(p.player_id, 0), p.player_name);
@@ -3864,112 +3840,124 @@ playerInsights.get("/", async (c) => {
         return coerceNumber(b.total_points) - coerceNumber(a.total_points);
       });
 
-    if (!selections || selections.length === 0) {
-      const allPlayerIds = fullInsightsFromBootstrap.map((row: any) => coerceNumber(row.player_id)).filter((id: number) => id > 0);
-      const summaryDerived = await resolveSummaryDerived(allPlayerIds);
-      const adjusted = fullInsightsFromBootstrap.map((row: any) => {
-        const derived = summaryDerived[coerceNumber(row.player_id)];
-        const games = derived?.games_played;
-        if (!Number.isInteger(games)) return row;
-        const totalPoints = coerceNumber(row.total_points, 0);
-        const totalMinutes = coerceNumber(row.total_minutes ?? row.minutes_played, 0);
-        return {
-          ...row,
-          games_played: games,
-          home_games: derived?.home_games ?? row.home_games ?? 0,
-          away_games: derived?.away_games ?? row.away_games ?? 0,
-          home_points: derived?.home_points ?? row.home_points ?? 0,
-          away_points: derived?.away_points ?? row.away_points ?? 0,
-          points_per_game_played: games > 0 ? totalPoints / games : 0,
-          minutes_per_game_played: games > 0 ? totalMinutes / games : 0,
-          average_points_home: derived?.average_points_home ?? row.average_points_home ?? null,
-          average_points_away: derived?.average_points_away ?? row.average_points_away ?? null,
-        };
-      });
+    // Aggregate defensive_contribution (sum) and defensive_contribution_returns (count of GWs where player hit threshold) from event/{GW}/live for GW 1 up to current.
+    const getSeasonDefensiveFromLive = async (): Promise<Record<number, { defensive_contributions: number; defensive_contribution_returns: number }>> => {
+      const out: Record<number, { defensive_contributions: number; defensive_contribution_returns: number }> = {};
+      try {
+        const bootstrapRes = await fetch(
+          `${DRAFT_BASE_URL}/bootstrap-static`,
+          { headers: { "User-Agent": "Mozilla/5.0" } }
+        );
+        const bootstrap = bootstrapRes.ok ? await bootstrapRes.json() : null;
+        const events = Array.isArray(bootstrap?.events) ? bootstrap.events : [];
+        const elements = Array.isArray(bootstrap?.elements) ? bootstrap.elements : [];
 
-      const managersList = await (async () => {
-        const { data: teams } = await supabase.from("teams").select("manager_name");
-        const names = (teams || []).map((t: any) => String(t?.manager_name || "").trim()).filter(Boolean);
-        return [...new Set(names)].sort((a, b) => a.localeCompare(b));
-      })();
-      return c.json({
-        insights: adjusted,
-        managers: managersList,
-        source: "fpl_bootstrap",
-        debug: includeDebug ? { ownership: ownershipDebug } : undefined,
-      });
-    }
+        const currentGw = events.find((e: any) => e.is_current)?.id
+          ?? events.filter((e: any) => e.finished).pop()?.id
+          ?? 29;
+        if (!currentGw || currentGw < 1) return out;
 
-    const playerMap: Record<number, { selected_count: number; captain_count: number; total_points_contributed: number; teams: Set<string> }> = {};
-    const playerGwPoints: Record<number, Record<number, number>> = {};
-    (selections || []).forEach((sel: any) => {
-      if (!playerMap[sel.player_id]) {
-        playerMap[sel.player_id] = {
-          selected_count: 0,
-          captain_count: 0,
-          total_points_contributed: 0,
-          teams: new Set<string>(),
-        };
+        // Build position map from elements (element_type: 1=GK, 2=DEF, 3=MID, 4=FWD). Threshold DEF=10, MID/FWD=12.
+        const positionByPlayerId: Record<number, number> = {};
+        for (const el of elements) {
+          const id = Number(el?.id);
+          if (id > 0) positionByPlayerId[id] = Number(el?.element_type ?? el?.position ?? 0);
+        }
+
+        for (let gw = 1; gw <= currentGw; gw++) {
+          try {
+            const liveRes = await fetch(`${DRAFT_BASE_URL}/event/${gw}/live`, {
+              headers: { "User-Agent": "Mozilla/5.0" },
+            });
+            const liveData = liveRes.ok ? await liveRes.json() : null;
+            const elements = liveData?.elements;
+            if (!elements || typeof elements !== "object") continue;
+            const entries = Array.isArray(elements)
+              ? elements.map((el: any, i: number) => [String(el?.id ?? i), el])
+              : Object.entries(elements);
+            for (const [key, value] of entries as [string, any][]) {
+              const id = coerceNumber(key ?? value?.id ?? value?.element, 0);
+              if (!id) continue;
+              const stats = value?.stats ?? value;
+              const contribThisGw = coerceNumber(stats?.defensive_contribution ?? stats?.defensive_contributions, 0);
+              if (!out[id]) out[id] = { defensive_contributions: 0, defensive_contribution_returns: 0 };
+              out[id].defensive_contributions += contribThisGw;
+              // Returns = count of gameweeks where player hit the threshold in that game (not season total / threshold).
+              const position = positionByPlayerId[id] ?? 0;
+              const threshold = position === 2 ? 10 : position === 3 || position === 4 ? 12 : 0;
+              if (threshold > 0 && contribThisGw >= threshold) {
+                out[id].defensive_contribution_returns += 1;
+              }
+            }
+          } catch {
+            // skip this GW
+          }
+        }
+      } catch (e) {
+        console.error("player-insights getSeasonDefensiveFromLive failed:", e);
       }
-      playerMap[sel.player_id].selected_count += 1;
-      if (sel.is_captain) playerMap[sel.player_id].captain_count += 1;
-      playerMap[sel.player_id].total_points_contributed += sel.points_earned || 0;
-      playerMap[sel.player_id].teams.add(sel.team_id);
+      return out;
+    };
 
-      const playerId = coerceNumber(sel.player_id, 0);
-      const gw = coerceNumber(sel.gameweek, 0);
-      if (playerId > 0 && gw > 0) {
-        if (!playerGwPoints[playerId]) playerGwPoints[playerId] = {};
-        const existing = coerceNumber(playerGwPoints[playerId][gw], Number.NEGATIVE_INFINITY);
-        playerGwPoints[playerId][gw] = Math.max(existing, coerceNumber(sel.points_earned, 0));
+    // Helper: augment rows with advanced stats from Draft bootstrap when available.
+    const augmentWithDraftAdvancedStats = async (rows: any[]): Promise<any[]> => {
+      try {
+        const [draftData, seasonDefensive] = await Promise.all([
+          (async () => {
+            const draftRes = await fetch(`${DRAFT_BASE_URL}/bootstrap-static`);
+            return draftRes.ok ? await draftRes.json() : null;
+          })(),
+          getSeasonDefensiveFromLive(),
+        ]);
+        const draftElements: Record<number, any> = {};
+        (draftData?.elements || []).forEach((el: any) => {
+          const id = coerceNumber(el?.id, 0);
+          if (id > 0) draftElements[id] = el;
+        });
+        return rows.map((row: any) => {
+          const pid = coerceNumber(row.player_id, 0);
+          const draftEl = draftElements[pid] || {};
+          const rowBonus = (row as any).bonus ?? (row as any).total_bonus;
+          const rowXg = (row as any).expected_goals ?? (row as any).xg;
+          const rowXa = (row as any).expected_assists ?? (row as any).xa;
+          const rowXgi = (row as any).expected_goal_involvements ?? (row as any).xgi;
+          const draftBonus = draftEl?.bonus;
+          const draftXg = draftEl?.expected_goals ?? draftEl?.xg;
+          const draftXa = draftEl?.expected_assists ?? draftEl?.xa;
+          const draftXgi = draftEl?.expected_goal_involvements ?? draftEl?.xgi;
+          const agg = seasonDefensive[pid];
+          return {
+            ...row,
+            defensive_contributions: agg?.defensive_contributions ?? Number(
+              (row as any).defensive_contributions ??
+                (row as any).defensive_contribution ??
+                draftEl?.defensive_contributions ??
+                draftEl?.defensive_contribution ??
+                0
+            ),
+            defensive_contribution_returns: agg?.defensive_contribution_returns ?? Number(
+              (row as any).defensive_contribution_returns ?? (row as any).def_contribution_returns ?? 0
+            ),
+            bonus: Number(rowBonus ?? draftBonus ?? 0),
+            expected_goals: parseFloat(String(rowXg ?? draftXg ?? "0")),
+            expected_assists: parseFloat(String(rowXa ?? draftXa ?? "0")),
+            expected_goal_involvements: parseFloat(String(rowXgi ?? draftXgi ?? "0")),
+          };
+        });
+      } catch {
+        return rows;
       }
-    });
+    };
 
-    const fallbackTotalPointsByPlayer: Record<number, number> = {};
-    Object.entries(playerGwPoints).forEach(([playerIdRaw, gwPoints]) => {
-      const playerId = coerceNumber(playerIdRaw, 0);
-      const total = Object.values(gwPoints || {}).reduce((sum: number, value: any) => sum + coerceNumber(value, 0), 0);
-      fallbackTotalPointsByPlayer[playerId] = total;
-    });
-
-    const insights = fullInsightsFromBootstrap.map((row: any) => {
-      const pid = coerceNumber(row.player_id, 0);
-      const sel = playerMap[pid];
-      const bootstrapTotalPoints = coerceNumber(row.total_points, 0);
-      const fallbackTotalPoints = coerceNumber(fallbackTotalPointsByPlayer[pid], 0);
-      const resolvedTotalPoints = bootstrapTotalPoints > 0 ? bootstrapTotalPoints : fallbackTotalPoints;
-      const resolvedTotalMinutes = coerceNumber(row.minutes_played, 0);
-      const resolvedGamesPlayed = Math.max(
-        coerceNumber(row.games_played, 0),
-        Object.keys(playerGwPoints[pid] || {}).length,
-      );
-      const resolvedPointsPerGame = resolvedGamesPlayed > 0 ? resolvedTotalPoints / resolvedGamesPlayed : 0;
-      const resolvedMinutesPerGame = resolvedGamesPlayed > 0 ? resolvedTotalMinutes / resolvedGamesPlayed : 0;
-      const resolvedPointsPer90 = resolvedTotalMinutes > 0 ? (resolvedTotalPoints / resolvedTotalMinutes) * 90 : 0;
-      return {
-        ...row,
-        selected_count: sel ? sel.selected_count : 0,
-        captain_count: sel ? sel.captain_count : 0,
-        captain_frequency: sel && sel.selected_count > 0 ? (sel.captain_count / sel.selected_count) * 100 : 0,
-        total_points_contributed: sel ? sel.total_points_contributed : 0,
-        teams_using: sel ? sel.teams.size : 0,
-        total_points: resolvedTotalPoints,
-        games_played: resolvedGamesPlayed,
-        points_per_game_played: resolvedPointsPerGame,
-        minutes_per_game_played: resolvedMinutesPerGame,
-        points_per_90_played: resolvedPointsPer90,
-        total_minutes: resolvedTotalMinutes,
-        points: resolvedTotalPoints,
-      };
-    });
-
-    const allPlayerIds = insights.map((row: any) => coerceNumber(row.player_id)).filter((id: number) => id > 0);
+    const allPlayerIds = fullInsightsFromBootstrap
+      .map((row: any) => coerceNumber(row.player_id))
+      .filter((id: number) => id > 0);
     const summaryDerived = await resolveSummaryDerived(allPlayerIds);
-    const adjusted = insights.map((row: any) => {
+    const adjustedBase = fullInsightsFromBootstrap.map((row: any) => {
       const derived = summaryDerived[coerceNumber(row.player_id)];
       const games = derived?.games_played;
       if (!Number.isInteger(games)) return row;
-      const totalPoints = coerceNumber(row.total_points ?? row.points, 0);
+      const totalPoints = coerceNumber(row.total_points, 0);
       const totalMinutes = coerceNumber(row.total_minutes ?? row.minutes_played, 0);
       return {
         ...row,
@@ -3984,6 +3972,7 @@ playerInsights.get("/", async (c) => {
         average_points_away: derived?.average_points_away ?? row.average_points_away ?? null,
       };
     });
+    const adjusted = await augmentWithDraftAdvancedStats(adjustedBase);
 
     const managersList = await (async () => {
       const { data: teams } = await supabase.from("teams").select("manager_name");
@@ -3991,9 +3980,9 @@ playerInsights.get("/", async (c) => {
       return [...new Set(names)].sort((a, b) => a.localeCompare(b));
     })();
     return c.json({
-      insights: adjusted.sort((a: any, b: any) => coerceNumber(b.selected_count) - coerceNumber(a.selected_count)),
+      insights: adjusted,
       managers: managersList,
-      source: "database",
+      source: "fpl_bootstrap",
       debug: includeDebug ? { ownership: ownershipDebug } : undefined,
     });
   } catch (err: any) {
@@ -6764,7 +6753,16 @@ captainPicks.post("/select", async (c) => {
     const session = await resolveCaptainSession(supabase, token);
     if (!session) return jsonError(c, 401, "Invalid or expired session");
 
-    const targetGameweek = await resolveCupTargetGameweek(supabase);
+    // Use gameweek from request if provided, otherwise resolve from the captain session context / tournament context.
+    const requestedGameweek = Number(body?.gameweek) || 0;
+    const sessionGameweek = Number((session as any)?.gameweek) || 0;
+    const resolvedGameweek = await resolveCupTargetGameweek(supabase);
+    const targetGameweek = requestedGameweek || sessionGameweek || resolvedGameweek || 0;
+
+    if (!targetGameweek) {
+      return c.json({ error: { message: "Could not determine target gameweek" } }, 400);
+    }
+
     const entryCandidates = await resolveDraftEntryCandidatesForManager(
       session.manager_name,
       session.entry_id,
@@ -6789,80 +6787,60 @@ captainPicks.post("/select", async (c) => {
     const captainName = playersById[captainPlayerId]?.name || `Player ${captainPlayerId}`;
     const viceCaptainName = playersById[viceCaptainPlayerId]?.name || `Player ${viceCaptainPlayerId}`;
 
-    const upsertPayload = {
-      team_id: session.team_id,
-      manager_name: session.manager_name,
-      entry_id: squad.entryId,
-      gameweek: targetGameweek,
+    const teamId = session.team_id;
+    const managerName = session.manager_name ?? "";
+    const entryId = squad.entryId ?? session.entry_id ?? "";
+    console.log("cup_captain_selections upsert:", {
+      teamId,
+      targetGameweek,
       captain_player_id: captainPlayerId,
-      captain_name: captainName,
       vice_captain_player_id: viceCaptainPlayerId,
-      vice_captain_name: viceCaptainName,
-      squad_event: squad.event,
-      updated_at: new Date().toISOString(),
-    };
+    });
 
-    let upsertError: any = null;
-    let savedRow: any = null;
-    try {
-      const { data: existing } = await supabase
-        .from("cup_captain_selections")
-        .select("id")
-        .eq("team_id", session.team_id)
-        .eq("gameweek", targetGameweek)
-        .maybeSingle();
-
-      if (existing?.id) {
-        const { error: updateErr } = await supabase
-          .from("cup_captain_selections")
-          .update({
-            captain_player_id: captainPlayerId,
-            captain_name: captainName,
-            vice_captain_player_id: viceCaptainPlayerId,
-            vice_captain_name: viceCaptainName,
-            entry_id: squad.entryId,
-            squad_event: squad.event,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("team_id", session.team_id)
-          .eq("gameweek", targetGameweek);
-        upsertError = updateErr;
-      } else {
-        const { error: insertErr } = await supabase
-          .from("cup_captain_selections")
-          .insert(upsertPayload);
-        upsertError = insertErr;
-      }
-
-      const { data: readBack } = await supabase
-        .from("cup_captain_selections")
-        .select("vice_captain_player_id, vice_captain_name")
-        .eq("team_id", session.team_id)
-        .eq("gameweek", targetGameweek)
-        .maybeSingle();
-      savedRow = readBack;
-    } catch (err: any) {
-      upsertError = err;
-    }
-
-    if (upsertError && String(upsertError?.message || "").toLowerCase().includes("vice_captain")) {
-      return jsonError(
-        c,
-        500,
-        "Vice captain fields are missing in cup_captain_selections. Run migration 202602271930_add_vice_captain_to_cup_selections.sql",
+    const TABLE = "cup_captain_selections";
+    let { error: upsertErr } = await supabase
+      .from(TABLE)
+      .upsert(
+        {
+          team_id: teamId,
+          manager_name: managerName,
+          entry_id: String(entryId ?? ""),
+          gameweek: targetGameweek,
+          captain_player_id: captainPlayerId,
+          vice_captain_player_id: viceCaptainPlayerId,
+          captain_name: captainName ?? null,
+          vice_captain_name: viceCaptainName ?? null,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "team_id,gameweek" },
       );
+
+    if (upsertErr?.code === "42P01") {
+      // Table doesn't exist yet, fall back to captain_selections
+      ({ error: upsertErr } = await supabase
+        .from("captain_selections")
+        .upsert(
+          {
+            team_id: teamId,
+            gameweek: targetGameweek,
+            captain_element_id: captainPlayerId,
+            vice_captain_element_id: viceCaptainPlayerId,
+            validated_at: new Date().toISOString(),
+          },
+          { onConflict: "team_id,gameweek" },
+        ));
     }
 
-    if (upsertError) {
-      return jsonError(c, 500, "Failed to save captain selection", upsertError.message);
+    if (upsertErr) {
+      console.error("cup_captain_selections upsert error:", upsertErr);
+      return c.json({ error: { message: upsertErr.message } }, 500);
     }
 
-    if (!savedRow) {
-      savedRow = { vice_captain_player_id: viceCaptainPlayerId, vice_captain_name: viceCaptainName };
-    }
-    const rawVcId = (savedRow as any)?.vice_captain_player_id ?? (savedRow as any)?.viceCaptainPlayerId;
-    const savedViceId = rawVcId != null ? coerceNumber(rawVcId) : viceCaptainPlayerId;
-    const savedViceName = (savedRow as any)?.vice_captain_name ?? (savedRow as any)?.viceCaptainName ?? viceCaptainName;
+    // Optional migration helper:
+    // INSERT INTO cup_captain_selections (team_id, gameweek, captain_element_id, vice_captain_element_id)
+    // SELECT team_id, gameweek, captain_element_id, vice_captain_element_id
+    // FROM captain_selections
+    // ON CONFLICT (team_id, gameweek) DO NOTHING;
 
     return c.json({
       ok: true,
@@ -6870,11 +6848,12 @@ captainPicks.post("/select", async (c) => {
       gameweek: targetGameweek,
       captain_player_id: captainPlayerId,
       captain_name: captainName,
-      vice_captain_player_id: savedViceId,
-      vice_captain_name: savedViceName,
+      vice_captain_player_id: viceCaptainPlayerId,
+      vice_captain_name: viceCaptainPlayerId ? `Player ${viceCaptainPlayerId}` : null,
     });
   } catch (err: any) {
-    return jsonError(c, 500, err.message || "Failed to save captain selection");
+    console.error("captain/select error:", err);
+    return c.json({ error: { message: err?.message ?? "Internal error" } }, 500);
   }
 });
 

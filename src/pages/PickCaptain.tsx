@@ -44,6 +44,9 @@ export default function PickCaptain() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [livePoints, setLivePoints] = useState<Record<number, number>>({});
   const [liveStats, setLiveStats] = useState<Record<number, any>>({});
+  const [currentGw, setCurrentGw] = useState<number>(0);
+  const [nextGw, setNextGw] = useState<number>(0);
+  const [gwLocked, setGwLocked] = useState<boolean>(false);
 
   const token = useMemo(() => getCaptainSessionToken(), []);
   const toPositiveIntOrNull = (value: unknown): number | null => {
@@ -93,6 +96,25 @@ export default function PickCaptain() {
         );
         const gwData = gwRes.ok ? await gwRes.json() : null;
         const activeGw = gwData?.current_gameweek ?? normalizedContext.gameweek;
+        const eventFinished =
+          gwData?.current_event_finished === true || gwData?.event_finished === true;
+        const cGw = gwData?.current_gameweek ?? 0;
+        const nGw = eventFinished ? cGw + 1 : cGw;
+        // GW is locked if it has already started OR is already finished
+        const locked = !eventFinished === false ? false : false;
+        // Simpler: locked = current GW has started and NOT finished yet,
+        // OR current GW is finished (picks are for next GW which hasn't started)
+        // Captain picks should only be blocked if the TARGET gameweek has started.
+        // Target GW = next GW if event_finished, else current GW.
+        // Lock saving if target GW == current GW and event has started (not finished yet).
+        const targetGw = eventFinished ? cGw + 1 : cGw;
+        const isLocked = !eventFinished && cGw > 0;
+        // Actually: lock = GW is currently IN PROGRESS (started but not finished)
+        // Allow picks only when: GW hasn't started yet (upcoming) OR between GWs (finished)
+        const gwInProgress = cGw > 0 && !eventFinished;
+        setCurrentGw(cGw);
+        setNextGw(targetGw);
+        setGwLocked(gwInProgress);
         if (activeGw > 0) {
           const liveRes = await fetch(
             `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/api/live?event=${activeGw}`,
@@ -161,6 +183,7 @@ export default function PickCaptain() {
           token,
           captain_player_id: captainId,
           vice_captain_player_id: viceCaptainId,
+          gameweek: nextGw > 0 ? nextGw : undefined,
         }),
       });
       const payload = await res.json();
@@ -370,7 +393,13 @@ export default function PickCaptain() {
           <div>
             <h1 className="text-2xl font-semibold">Pick Captain</h1>
             <p className="text-sm text-muted-foreground mt-1">
-              {context.manager_name} {context.team_name ? `(${context.team_name})` : ""} | GW{context.gameweek}
+              {context.manager_name} {context.team_name ? `(${context.team_name})` : ""} | GW
+              {nextGw > 0 ? nextGw : context.gameweek}
+              {gwLocked && (
+                <span className="ml-2 text-xs text-amber-600 font-medium">
+                  (GW{currentGw} in progress — picks locked)
+                </span>
+              )}
             </p>
           </div>
           <Button variant="outline" onClick={handleSignOut}>
@@ -395,13 +424,20 @@ export default function PickCaptain() {
             liveStats={liveStats}
             captainId={captainId}
             viceCaptainId={viceCaptainId}
-            gameweek={context.gameweek}
+            gameweek={currentGw > 0 ? currentGw : context.gameweek}
           />
         )}
 
         <div className="mt-5 flex items-center gap-2">
-          <Button onClick={handleSave} disabled={saving || !captainId || !viceCaptainId || captainId === viceCaptainId}>
-            {saving ? "Saving..." : "Save Captains"}
+          <Button 
+            onClick={handleSave} 
+            disabled={saving || !captainId || !viceCaptainId || captainId === viceCaptainId || gwLocked}
+          >
+            {saving
+              ? "Saving..."
+              : gwLocked
+              ? `GW${currentGw} in progress — picks locked`
+              : "Save Captains"}
           </Button>
           {(selectedCaptainName || selectedViceCaptainName) && (
             <p className="text-sm text-muted-foreground">

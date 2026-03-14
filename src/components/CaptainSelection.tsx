@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from "react";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import { getCaptainSessionToken } from "../lib/captainSession";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
-import { supabase } from "../lib/supabaseClient";
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
 import { RadioGroup, RadioGroupItem } from "./ui/radio-group";
@@ -134,22 +133,29 @@ export function CaptainSelection() {
         return;
       }
 
-      const { error: upsertError } = await supabase
-        .from("captain_selections")
-        .upsert({
-          team_id: teamId,
-          gameweek: currentGameweek,
-          captain_element_id: captainId,
-          vice_captain_element_id: viceCaptainId,
-          validated_at: new Date().toISOString(),
-        });
-
-      if (upsertError) {
-        setError(`Failed to save captain selection: ${upsertError.message}`);
+      const token = getCaptainSessionToken();
+      const selectRes = await fetch(
+        `${functionsBase}/captain/select`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...getSupabaseFunctionHeaders(),
+          },
+          body: JSON.stringify({
+            token,
+            captain_player_id: captainId,
+            vice_captain_player_id: viceCaptainId,
+            gameweek: currentGameweek,
+          }),
+        }
+      );
+      const selectPayload = await selectRes.json();
+      if (!selectRes.ok || selectPayload?.error) {
+        setError(selectPayload?.error?.message || "Failed to save captain selection.");
         setSubmitting(false);
         return;
       }
-
       setSuccess("Captain selection saved and validated.");
     } catch (err) {
       setError(
