@@ -153,14 +153,17 @@ export default function GobletStandings() {
               const safeToResort = allTeamsHaveLive && (allLiveZero || allLiveNonZero);
 
               if (hasAnyLivePoints && safeToResort) {
+                const pointsForDisplay = (s: any) =>
+                  typeof s.points_for === "number" ? s.points_for
+                    : typeof s.total_points === "number" ? s.total_points : 0;
                 const liveRows = (payload.standings as any[])
                   .map((s: any) => {
                     const liveGwPts = livePointsThisGw[String(s.team_id)] ?? 0;
-                    const storedPts = typeof s.points_for === "number" ? s.points_for
-                      : typeof s.total_points === "number" ? s.total_points : 0;
-                    return { ...s, points_for: storedPts, _sort_key: storedPts + liveGwPts };
+                    const storedPts = pointsForDisplay(s);
+                    const totalIncludingLive = storedPts + liveGwPts;
+                    return { ...s, points_for: totalIncludingLive, total_points: totalIncludingLive };
                   })
-                  .sort((a: any, b: any) => b._sort_key - a._sort_key)
+                  .sort((a: any, b: any) => (b.points_for ?? 0) - (a.points_for ?? 0))
                   .map((s: any, i: number) => ({ ...s, rank: i + 1 }));
                 setLiveStandings(liveRows as GobletStanding[]);
               } else {
@@ -242,7 +245,11 @@ export default function GobletStandings() {
   }
 
   const baselineRanks = baselineRanksRef.current ?? {};
-  const rowsToRender = liveStandings ?? data.standings;
+  const rawRows = liveStandings ?? data.standings;
+  const pointsFor = (s: GobletStanding) => s.points_for ?? s.total_points ?? 0;
+  const rowsToRender = [...rawRows]
+    .sort((a, b) => pointsFor(b) - pointsFor(a))
+    .map((s, i) => ({ ...s, rank: i + 1 }));
 
   return (
     <div className="space-y-4">

@@ -124,6 +124,7 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedSeason, setSelectedSeason] = useState<string>("current");
+  const [refreshBracketTrigger, setRefreshBracketTrigger] = useState(0);
   const pollingIntervalRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -236,7 +237,7 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
         pollingIntervalRef.current = null;
       }
     };
-  }, [contextLoading, showLegacySelector, selectedSeason]);
+  }, [contextLoading, showLegacySelector, selectedSeason, refreshBracketTrigger]);
 
   const renderEmptyBracket = () => {
     // Simple 8-team knockout skeleton: 4 quarter-finals, 2 semis, 1 final.
@@ -420,11 +421,32 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
         <>
           {group.standings.length > 0 ? (
             <Card className="p-4">
-              <div className="mb-3">
-                <h2 className="text-lg font-semibold">FFA Cup Group Stage</h2>
-                <p className="text-sm text-muted-foreground">
-                  {group.autoRegistered ? "All league members are auto-registered." : "Group stage standings."}
-                </p>
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-lg font-semibold">FFA Cup Group Stage</h2>
+                  <p className="text-sm text-muted-foreground">
+                    {group.autoRegistered ? "All league members are auto-registered." : "Group stage standings."}
+                  </p>
+                </div>
+                {typeof localStorage !== "undefined" && localStorage.getItem("ffa_is_admin") === "true" && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/admin/score-cup-gameweek-auto`, {
+                          method: "POST",
+                          headers: getSupabaseFunctionHeaders() as HeadersInit,
+                        });
+                        setRefreshBracketTrigger((t) => t + 1);
+                      } catch {
+                        // ignore
+                      }
+                    }}
+                    className="text-xs text-muted-foreground underline hover:text-foreground"
+                  >
+                    Refresh Scores
+                  </button>
+                )}
               </div>
               <Table>
                 <TableHeader>

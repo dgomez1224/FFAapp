@@ -656,6 +656,41 @@ async function computeCupGameweekScore(
   };
 }
 
+/** Score one group-stage gameweek for all teams and upsert into cup_gameweek_scores. Returns number of teams scored. */
+async function scoreGroupStageGameweek(
+  supabase: any,
+  gw: number,
+  tournamentId: string,
+): Promise<number> {
+  const { data: teams } = await supabase
+    .from("teams")
+    .select("id, entry_id, manager_name");
+  if (!teams?.length) return 0;
+  let liveMap: Record<number, number> = {};
+  try {
+    const live = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${gw}/live`);
+    liveMap = extractLivePointsMap(live);
+  } catch {
+    return 0;
+  }
+  let scored = 0;
+  for (const team of teams) {
+    const score = await computeCupGameweekScore(team, gw, liveMap, supabase);
+    if (!score) continue;
+    const row = {
+      team_id: team.id,
+      tournament_id: tournamentId,
+      gameweek: gw,
+      total_points: score.gameweek_points,
+      captain_points: score.captain_points,
+      bench_points: score.bench_points,
+    };
+    const { error } = await supabase.from("cup_gameweek_scores").upsert(row, { onConflict: "team_id,gameweek,tournament_id" });
+    if (!error) scored += 1;
+  }
+  return scored;
+}
+
 function extractLivePlayerStatsMap(payload: any) {
   const statsByPlayerId: Record<number, any> = {};
   const elements = payload?.elements;
@@ -5746,6 +5781,20 @@ bracket.get("/", async (c) => {
           return b.captain_points - a.captain_points;
         });
         groupStandings = groupStandings.map((s, i) => ({ ...s, rank: i + 1 }));
+
+        const scoredGws = new Set((scoreRows ?? []).map((r: any) => r.gameweek));
+        let eventFinished = false;
+        try {
+          const bootstrap = await fetch(`${DRAFT_BASE_URL}/bootstrap-static`, { headers: { "User-Agent": "Mozilla/5.0" } }).then((r) => r.json());
+          const events = Array.isArray(bootstrap?.events) ? bootstrap.events : [];
+          const currentEvent = events.find((e: any) => e.is_current);
+          eventFinished = currentEvent?.finished === true || currentEvent?.data_checked === true;
+        } catch {
+          // ignore
+        }
+        if (eventFinished && currentGw != null && currentGw >= startGW && currentGw <= endGW && !scoredGws.has(currentGw)) {
+          scoreGroupStageGameweek(supabase, currentGw, tournamentId).catch((err) => console.error("bracket background score:", err));
+        }
       }
     } else {
       groupStandings = registeredTeams.map((team, index) => ({
@@ -6289,6 +6338,77 @@ adminRefresh.post("/refresh-current-season", async (c) => {
   }
 });
 
+function requireAdminOrServiceRole(c: any): boolean {
+  if (requireAdminToken(c)) return true;
+  const authHeader = c.req.header("Authorization") ?? "";
+  const bearer = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  return !!serviceRoleKey && bearer === serviceRoleKey;
+}
+
+adminRefresh.post("/score-cup-gameweek-auto", async (c) => {
+  if (!requireAdminOrServiceRole(c)) {
+    return jsonError(c, 401, "Unauthorized");
+  }
+  try {
+    const supabase = getSupabaseAdmin();
+    const bootstrap = await fetch("https://draft.premierleague.com/api/bootstrap-static", {
+      headers: { "User-Agent": "Mozilla/5.0" },
+    }).then((r) => r.json());
+    const events = Array.isArray(bootstrap?.events) ? bootstrap.events : [];
+    const currentEvent = events.find((e: any) => e.is_current);
+    const currentGw = currentEvent?.id ?? 0;
+    const eventFinished = currentEvent?.finished === true || currentEvent?.data_checked === true;
+
+    const { data: tournament } = await supabase
+      .from("tournaments")
+      .select("id, start_gameweek, group_stage_gameweeks")
+      .eq("season", CURRENT_SEASON)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!tournament?.id) {
+      return c.json({ checked_gw: currentGw, event_finished: eventFinished, gws_scored: [], already_scored: [], error: "No tournament found" });
+    }
+    const startGw = tournament.start_gameweek ?? 29;
+    const endGw = startGw + (tournament.group_stage_gameweeks ?? 4) - 1;
+
+    const { data: existingScores } = await supabase
+      .from("cup_gameweek_scores")
+      .select("gameweek")
+      .eq("tournament_id", tournament.id);
+    const scoredGws = new Set((existingScores ?? []).map((r: any) => r.gameweek));
+
+    const gwsToScore: number[] = [];
+    for (let gw = startGw; gw <= Math.min(currentGw, endGw); gw++) {
+      const gwEvent = events.find((e: any) => e.id === gw);
+      const gwFinished = gwEvent?.finished === true || gwEvent?.data_checked === true || gw < currentGw;
+      if (gwFinished && !scoredGws.has(gw)) gwsToScore.push(gw);
+    }
+    if (eventFinished && currentGw >= startGw && currentGw <= endGw) {
+      if (!gwsToScore.includes(currentGw)) gwsToScore.push(currentGw);
+    }
+
+    const results: Array<{ gw: number; scored?: number; error?: string }> = [];
+    for (const gw of gwsToScore) {
+      try {
+        const count = await scoreGroupStageGameweek(supabase, gw, tournament.id);
+        results.push({ gw, scored: count });
+      } catch (e: any) {
+        results.push({ gw, error: e?.message ?? String(e) });
+      }
+    }
+    return c.json({
+      checked_gw: currentGw,
+      event_finished: eventFinished,
+      gws_scored: results,
+      already_scored: Array.from(scoredGws),
+    });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to run score-cup-gameweek-auto");
+  }
+});
+
 adminRefresh.post("/score-cup-gameweek", async (c) => {
   if (!requireAdminToken(c)) {
     return jsonError(c, 401, "Unauthorized");
@@ -6311,37 +6431,10 @@ adminRefresh.post("/score-cup-gameweek", async (c) => {
     const tournamentId = tournament?.id ?? null;
     const startGw = tournament?.start_gameweek ?? 29;
     const endGw = startGw + (tournament?.group_stage_gameweeks ?? 4) - 1;
-    if (gameweek < startGw || gameweek > endGw) {
+    if (!tournamentId || gameweek < startGw || gameweek > endGw) {
       return jsonError(c, 400, `Gameweek ${gameweek} is outside group stage ${startGw}-${endGw}`);
     }
-    const { data: teams } = await supabase
-      .from("teams")
-      .select("id, entry_id, manager_name");
-    if (!teams?.length) {
-      return jsonError(c, 400, "No teams found");
-    }
-    let liveMap: Record<number, number> = {};
-    try {
-      const live = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${gameweek}/live`);
-      liveMap = extractLivePointsMap(live);
-    } catch (e) {
-      return jsonError(c, 502, "Failed to fetch live points for gameweek");
-    }
-    let scored = 0;
-    for (const team of teams) {
-      const score = await computeCupGameweekScore(team, gameweek, liveMap, supabase);
-      if (!score) continue;
-      const row = {
-        team_id: team.id,
-        tournament_id: tournamentId,
-        gameweek,
-        total_points: score.gameweek_points,
-        captain_points: score.captain_points,
-        bench_points: score.bench_points,
-      };
-      const { error } = await supabase.from("cup_gameweek_scores").upsert(row, { onConflict: "team_id,gameweek,tournament_id" });
-      if (!error) scored += 1;
-    }
+    const scored = await scoreGroupStageGameweek(supabase, gameweek, tournamentId);
     return c.json({ scored, gameweek });
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to score cup gameweek");
