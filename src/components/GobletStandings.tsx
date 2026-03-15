@@ -77,7 +77,6 @@ export default function GobletStandings() {
 
             const nameByTeamId: Record<string, { entry_name: string; manager_name: string }> = {};
             const nameByEntryId: Record<string, { entry_name: string; manager_name: string }> = {};
-            const livePointsThisGw: Record<string, number> = {};
 
             matchups.forEach((m: any) => {
               const t1 = m.team_1 || null;
@@ -111,12 +110,6 @@ export default function GobletStandings() {
                   manager_name: t2.manager_name ?? team2EntryId,
                 };
               }
-              if (team1Id && m.live_team_1_points != null) {
-                livePointsThisGw[team1Id] = Number(m.live_team_1_points);
-              }
-              if (team2Id && m.live_team_2_points != null) {
-                livePointsThisGw[team2Id] = Number(m.live_team_2_points);
-              }
             });
 
             if (
@@ -136,48 +129,9 @@ export default function GobletStandings() {
               payload = { ...payload, standings: overlaid };
             }
 
-            if (Array.isArray(payload.standings) && payload.standings.length) {
-              const hasAnyLivePoints = Object.values(livePointsThisGw).some(v => v > 0);
-              const allTeamsHaveLive = payload.standings.every(
-                (s: any) => livePointsThisGw[String(s.team_id)] != null
-              );
-              // Only re-sort when we have full coverage AND no "mixed" state: either all live
-              // values are 0 (no live yet) or all are non-zero (everyone has live). Avoid
-              // re-sorting when some teams have live and others 0 (partial data) — that
-              // scrambles the correct server order.
-              const liveValues = (payload.standings as any[]).map(
-                (s: any) => livePointsThisGw[String(s.team_id)] ?? 0
-              );
-              const allLiveZero = liveValues.every((v) => v === 0);
-              const allLiveNonZero = liveValues.every((v) => v > 0);
-              const safeToResort = allTeamsHaveLive && (allLiveZero || allLiveNonZero);
-
-              if (hasAnyLivePoints && safeToResort) {
-                const pointsForDisplay = (s: any) =>
-                  typeof s.points_for === "number" ? s.points_for
-                    : typeof s.total_points === "number" ? s.total_points : 0;
-                const liveRows = (payload.standings as any[])
-                  .map((s: any) => {
-                    const liveGwPts = livePointsThisGw[String(s.team_id)] ?? 0;
-                    const storedPts = pointsForDisplay(s);
-                    const totalIncludingLive = storedPts + liveGwPts;
-                    return { ...s, points_for: totalIncludingLive, total_points: totalIncludingLive };
-                  })
-                  .sort((a: any, b: any) => (b.points_for ?? 0) - (a.points_for ?? 0))
-                  .map((s: any, i: number) => ({ ...s, rank: i + 1 }));
-                setLiveStandings(liveRows as GobletStanding[]);
-              } else {
-                // Partial live data or no live — use server order as-is
-                setLiveStandings(
-                  (payload.standings as any[]).map((s: any, i: number) => ({
-                    ...s,
-                    rank: typeof s.rank === "number" ? s.rank : i + 1,
-                  })) as GobletStanding[]
-                );
-              }
-            } else {
-              setLiveStandings(null);
-            }
+            // Use server standings as-is for points (no client-side live add).
+            // League standings already reflect live; goblet shows same source of truth.
+            setLiveStandings(null);
           }
         } catch {
           // Non-fatal: fall back to database names and baseline-only view.

@@ -2914,7 +2914,7 @@ async function rebuildGobletStandings(supabase: ReturnType<typeof getSupabaseAdm
   }
 }
 
-/** Sync h2h_matchups and goblet_standings: live for current GW only, past GWs immutable. Idempotent. */
+/** Sync h2h_matchups and goblet_standings. Use Draft API match scores (league_entry_*_points) for all GWs so Goblet "points for" matches League standings. */
 async function syncGobletLive(supabase: ReturnType<typeof getSupabaseAdmin>): Promise<void> {
   const currentGw = await resolveCurrentGameweek();
   if (currentGw == null || currentGw < 1) return;
@@ -2930,8 +2930,6 @@ async function syncGobletLive(supabase: ReturnType<typeof getSupabaseAdmin>): Pr
   }
   if (matches.length === 0) return;
 
-  const liveEntryPoints = await computeLiveEntryPoints(currentGw);
-
   const h2hRows: any[] = [];
   for (const match of matches) {
     const gw = coerceNumber(match.event);
@@ -2941,13 +2939,8 @@ async function syncGobletLive(supabase: ReturnType<typeof getSupabaseAdmin>): Pr
     const team2Id = entryIdToTeamId[entry2Id];
     if (!team1Id || !team2Id) continue;
 
-    const isCurrent = gw === currentGw;
-    const team1Points = isCurrent
-      ? coerceNumber(liveEntryPoints[entry1Id], coerceNumber(match.league_entry_1_points ?? match.score_1 ?? match.home_score, 0))
-      : coerceNumber(match.league_entry_1_points ?? match.score_1 ?? match.home_score, 0);
-    const team2Points = isCurrent
-      ? coerceNumber(liveEntryPoints[entry2Id], coerceNumber(match.league_entry_2_points ?? match.score_2 ?? match.away_score, 0))
-      : coerceNumber(match.league_entry_2_points ?? match.score_2 ?? match.away_score, 0);
+    const team1Points = coerceNumber(match.league_entry_1_points ?? match.score_1 ?? match.home_score, 0);
+    const team2Points = coerceNumber(match.league_entry_2_points ?? match.score_2 ?? match.away_score, 0);
 
     const winner_id =
       team1Points > team2Points ? team1Id : team2Points > team1Points ? team2Id : null;
