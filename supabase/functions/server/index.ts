@@ -8225,6 +8225,7 @@ fixturesHub.get("/matchup", async (c) => {
     } catch {
       currentGw = gameweek;
     }
+    const hasStarted = gameweek < currentGw;
     const cupCaptainByTeam: Record<string, { captain: number; vice: number }> = {};
     let rankMap: Record<string, number> = {};
     let team1: any = null;
