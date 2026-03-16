@@ -3593,7 +3593,7 @@ playerInsights.get("/", async (c) => {
           })
             .then((r) => (r.ok ? r.json() : null))
             .catch(() => null),
-          fetch(`https://draft.premierleague.com/api/fixtures?event=${gw}`, {
+          fetch(`https://fantasy.premierleague.com/api/fixtures/?event=${gw}`, {
             headers: { "User-Agent": "Mozilla/5.0" },
           })
             .then((r) => (r.ok ? r.json() : null))
@@ -3618,6 +3618,12 @@ playerInsights.get("/", async (c) => {
     for (let gwIdx = 0; gwIdx < liveAndFixtureResponses.length; gwIdx++) {
       const [liveData, fixtureData] = liveAndFixtureResponses[gwIdx] ?? [null, null];
       const gw = gwRange[gwIdx];
+      if (gw === 1) {
+        console.log("[PI] GW1 fixtureData:", JSON.stringify(fixtureData)?.slice(0, 500));
+        console.log("[PI] GW1 fixtureData length:", Array.isArray(fixtureData) ? fixtureData.length : (fixtureData?.fixtures?.length ?? "null"));
+        console.log("[PI] teamByPlayerId[5]:", teamByPlayerId[5]);
+        console.log("[PI] teamByPlayerId[636]:", teamByPlayerId[636]);
+      }
       if (!liveData) continue;
 
       const rawFixtures = Array.isArray(fixtureData) ? fixtureData : (fixtureData?.fixtures ?? []);
@@ -3664,6 +3670,14 @@ playerInsights.get("/", async (c) => {
         const pos = positionByPlayerId[id];
         const playerTeam = teamByPlayerId[id];
         const threshold = pos === 2 ? 10 : (pos === 3 || pos === 4) ? 12 : 0;
+
+        if (id === 5 && gw === 1) {
+          const gw1TeamFixtures = rawFixtures.filter((f: any) =>
+            Number((f as any).team_h) === playerTeam || Number((f as any).team_a) === playerTeam
+          );
+          console.log("[PI] Gabriel GW1 playerTeam:", playerTeam);
+          console.log("[PI] Gabriel GW1 teamFixtures:", JSON.stringify(gw1TeamFixtures));
+        }
 
         const teamFixtures = rawFixtures.filter((f: any) =>
           Number((f as any).team_h) === playerTeam || Number((f as any).team_a) === playerTeam
