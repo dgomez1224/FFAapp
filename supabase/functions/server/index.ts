@@ -4029,38 +4029,8 @@ playerInsights.get("/", async (c) => {
       }
     }
 
-    const ownerByPlayerName: Record<string, string | null> = {};
-    const ownerByPlayerSurname: Record<string, string | null> = {};
-    const surnameCollision = new Set<string>();
-    const draftPlayerMap = extractDraftPlayerMap(draftBootstrap || {});
-    Object.entries(ownerManagerMap).forEach(([playerIdRaw, owner]) => {
-      const playerId = coerceNumber(playerIdRaw, 0);
-      if (!playerId || !owner) return;
-      const draftPlayer = draftPlayerMap[playerId];
-      const bootstrapPlayer = byPlayerFromBootstrap[playerId];
-      const playerName = String(draftPlayer?.name || bootstrapPlayer?.player_name || "").trim();
-      const key = toCanonicalPlayerName(playerName);
-      if (key && !ownerByPlayerName[key]) ownerByPlayerName[key] = owner;
-
-      const surname = toCanonicalPlayerSurname(playerName);
-      if (!surname) return;
-      if (!Object.prototype.hasOwnProperty.call(ownerByPlayerSurname, surname)) {
-        ownerByPlayerSurname[surname] = owner;
-      } else if (ownerByPlayerSurname[surname] !== owner) {
-        surnameCollision.add(surname);
-      }
-    });
-    surnameCollision.forEach((surname) => {
-      delete ownerByPlayerSurname[surname];
-    });
-
     const resolveOwnerLabel = (playerId: number, playerName: string) => {
-      const direct = ownerManagerMap[playerId];
-      if (direct) return direct;
-      const byName = ownerByPlayerName[toCanonicalPlayerName(playerName)];
-      if (byName) return byName;
-      const bySurname = ownerByPlayerSurname[toCanonicalPlayerSurname(playerName)];
-      return bySurname || null;
+      return ownerManagerMap[playerId] ?? null;
     };
 
     // Build team id -> name map from bootstrap/team data
@@ -8498,6 +8468,7 @@ app.route("/server/league-activity", leagueActivity);
 
 const legacyStats = new Hono();
 const allTimeStandings = new Hono();
+const debugOwnership = new Hono();
 
 // All-time manager statistics
 legacyStats.get("/all-time", async (c) => {
@@ -8882,5 +8853,34 @@ app.route("/legacy-stats", legacyStats);
 app.route("/all-time-standings", allTimeStandings);
 app.route("/server/legacy-stats", legacyStats);
 app.route("/server/all-time-standings", allTimeStandings);
+app.route("/debug/ownership", debugOwnership);
 
 export default app;
+
+debugOwnership.get("/", async (c) => {
+  try {
+    const [davidSquad, lennartSquad] = await Promise.all([
+      fetch(`${DRAFT_BASE_URL}/entry/164475/squad`, {
+        headers: { "User-Agent": "Mozilla/5.0" },
+      })
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null),
+      fetch(`${DRAFT_BASE_URL}/entry/228873/squad`, {
+        headers: { "User-Agent": "Mozilla/5.0" },
+      })
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null),
+    ]);
+
+    return c.json({
+      david_picks: davidSquad?.picks?.map((p: any) => p.element),
+      lennart_picks: lennartSquad?.picks?.map((p: any) => p.element),
+      david_has_305: davidSquad?.picks?.some((p: any) => p.element === 305) ?? false,
+      david_has_817: davidSquad?.picks?.some((p: any) => p.element === 817) ?? false,
+      lennart_has_508: lennartSquad?.picks?.some((p: any) => p.element === 508) ?? false,
+      lennart_has_379: lennartSquad?.picks?.some((p: any) => p.element === 379) ?? false,
+    });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to fetch debug ownership");
+  }
+});
