@@ -23,6 +23,7 @@ interface PlayerInsight {
   expected_goals?: number;
   expected_assists?: number;
   expected_goal_involvements?: number;
+  expected_goals_conceded?: number;
   points_per_game_played?: number;
   minutes_per_game_played?: number;
   points_per_minute_played?: number;
@@ -355,7 +356,6 @@ export default function PlayerInsights() {
                 <TableHead className="cursor-pointer" onClick={() => toggleSort("team_name")}>Team{sortLabel("team_name")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("goals_scored")}>Goals{sortLabel("goals_scored")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("assists")}>Assists{sortLabel("assists")}</TableHead>
-                <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("own_goals")}>OG{sortLabel("own_goals")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("total_points")}>Total Pts{sortLabel("total_points")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("games_started")}>GS{sortLabel("games_started")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("games_played")}>GP{sortLabel("games_played")}</TableHead>
@@ -365,6 +365,7 @@ export default function PlayerInsights() {
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("bonus")}>
                   Bonus{sortLabel("bonus")}
                 </TableHead>
+                <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("own_goals")}>OG{sortLabel("own_goals")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("expected_goals")}>
                   xG{sortLabel("expected_goals")}
                 </TableHead>
@@ -373,6 +374,9 @@ export default function PlayerInsights() {
                 </TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("expected_goal_involvements")}>
                   xG+A{sortLabel("expected_goal_involvements")}
+                </TableHead>
+                <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("expected_goals_conceded")}>
+                  xGC{sortLabel("expected_goals_conceded")}
                 </TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("points_per_game_played")}>Pts/Game{sortLabel("points_per_game_played")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("minutes_per_game_played")}>Min/Game{sortLabel("minutes_per_game_played")}</TableHead>
@@ -395,7 +399,6 @@ export default function PlayerInsights() {
                   <TableCell>{p.team_name || "—"}</TableCell>
                   <TableCell className="text-right">{p.goals_scored ?? 0}</TableCell>
                   <TableCell className="text-right">{p.assists ?? 0}</TableCell>
-                  <TableCell className="text-right">{p.own_goals ?? 0}</TableCell>
                   <TableCell className="text-right">{p.total_points ?? 0}</TableCell>
                   <TableCell className="text-right">{p.games_started ?? 0}</TableCell>
                   <TableCell className="text-right">{p.games_played ?? 0}</TableCell>
@@ -403,6 +406,7 @@ export default function PlayerInsights() {
                   <TableCell className="text-right">{p.defensive_contribution_returns ?? 0}</TableCell>
                   <TableCell className="text-right">{p.defensive_contributions ?? 0}</TableCell>
                   <TableCell className="text-right">{p.bonus ?? 0}</TableCell>
+                  <TableCell className="text-right">{p.own_goals ?? 0}</TableCell>
                   <TableCell className="text-right">
                     {p.expected_goals != null ? Number(p.expected_goals).toFixed(2) : "0.00"}
                   </TableCell>
@@ -413,6 +417,9 @@ export default function PlayerInsights() {
                     {p.expected_goal_involvements != null
                       ? Number(p.expected_goal_involvements).toFixed(2)
                       : "0.00"}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {p.expected_goals_conceded != null ? Number(p.expected_goals_conceded).toFixed(2) : "0.00"}
                   </TableCell>
                   <TableCell className="text-right">
                     {p.games_played ? ((p.total_points ?? 0) / p.games_played).toFixed(2) : "0.00"}
