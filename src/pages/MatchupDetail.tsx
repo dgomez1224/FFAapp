@@ -240,7 +240,7 @@ export default function MatchupDetailPage() {
 
   useEffect(() => {
     let mounted = true;
-    let timer: ReturnType<typeof setInterval> | null = null;
+    let timer: number | null = null;
 
     async function load(silent = false): Promise<boolean> {
       if (!type || !gameweek || !team1 || !team2) return false;
