@@ -6,12 +6,22 @@ export interface PlayerStatsTableProps {
     name: string;
     image_url?: string | null;
     position: number | null;
+    is_auto_subbed_off?: boolean;
+    is_auto_subbed_on?: boolean;
+    subbed_on_by?: number;
+    subbed_off_for?: number;
   }>;
   livePoints: Record<number, number>;
   liveStats: Record<number, any>;
   captainId?: number | null;
   viceCaptainId?: number | null;
   gameweek?: number;
+  autoSubs?: Array<{
+    player_off_id: number;
+    player_off_name: string;
+    player_on_id: number;
+    player_on_name: string;
+  }>;
 }
 
 export default function PlayerStatsTable({
@@ -102,6 +112,22 @@ export default function PlayerStatsTable({
                       {player.id === viceCaptainId && (
                         <span className="ml-1 text-muted-foreground">V</span>
                       )}
+                      {player.is_auto_subbed_on && (
+                        <span
+                          className="ml-1 text-green-600 text-xs font-bold"
+                          title="Auto subbed on"
+                        >
+                          ↑
+                        </span>
+                      )}
+                      {player.is_auto_subbed_off && (
+                        <span
+                          className="ml-1 text-red-500 text-xs font-bold"
+                          title="Auto subbed off"
+                        >
+                          ↓
+                        </span>
+                      )}
                     </td>
                     <td className="py-1 px-1 text-center text-muted-foreground">{posLabel}</td>
                     <td className="py-1 px-1 text-center font-semibold">{pts}</td>
@@ -148,6 +174,103 @@ export default function PlayerStatsTable({
                   </tr>
                 );
               })}
+              {players.some((p) => p.is_auto_subbed_off) && (
+                <>
+                  <tr>
+                    <td
+                      colSpan={17}
+                      className="py-1 px-1 text-xs text-muted-foreground border-t"
+                    >
+                      Substituted off
+                    </td>
+                  </tr>
+                  {players
+                    .filter((player) => player.is_auto_subbed_off)
+                    .map((player) => {
+                      const s = liveStats[player.id];
+                      const pos = player.position ?? 3;
+                      const posLabel =
+                        pos === 1 ? "GK" : pos === 2 ? "DEF" : pos === 3 ? "MID" : "FWD";
+                      const pts = livePoints[player.id] ?? 0;
+                      return (
+                        <tr
+                          key={`suboff-${player.id}`}
+                          className="border-b opacity-50"
+                        >
+                          <td className="py-1 px-1">
+                            {player.image_url ? (
+                              <img
+                                src={player.image_url}
+                                alt=""
+                                className="h-6 w-5 object-cover rounded"
+                                onError={(e) => {
+                                  e.currentTarget.style.display = "none";
+                                }}
+                              />
+                            ) : (
+                              <div className="h-6 w-5 rounded bg-muted" />
+                            )}
+                          </td>
+                          <td className="py-1 px-1 font-medium">
+                            {player.name}
+                            <span className="ml-1 text-red-500 text-xs font-bold">↓</span>
+                          </td>
+                          <td className="py-1 px-1 text-center text-muted-foreground">
+                            {posLabel}
+                          </td>
+                          <td className="py-1 px-1 text-center font-semibold">
+                            {pts}
+                          </td>
+                          <td className="py-1 px-1 text-center">
+                            {s?.goals_scored ?? 0}
+                          </td>
+                          <td className="py-1 px-1 text-center">
+                            {s?.assists ?? 0}
+                          </td>
+                          <td className="py-1 px-1 text-center">
+                            {s?.own_goals ?? 0}
+                          </td>
+                          <td className="py-1 px-1 text-center">
+                            {s?.goals_conceded ?? 0}
+                          </td>
+                          <td className="py-1 px-1 text-center">
+                            {s?.defensive_contribution ?? 0}
+                          </td>
+                          <td className="py-1 px-1 text-center text-muted-foreground">
+                            —
+                          </td>
+                          <td className="py-1 px-1 text-center">
+                            {s?.minutes ?? 0}
+                          </td>
+                          <td className="py-1 px-1 text-center">
+                            {s?.bonus ?? 0}
+                          </td>
+                          <td className="py-1 px-1 text-center">
+                            {s?.expected_goals != null
+                              ? Number(s.expected_goals).toFixed(2)
+                              : "—"}
+                          </td>
+                          <td className="py-1 px-1 text-center">
+                            {s?.expected_assists != null
+                              ? Number(s.expected_assists).toFixed(2)
+                              : "—"}
+                          </td>
+                          <td className="py-1 px-1 text-center">
+                            {s?.expected_goal_involvements != null
+                              ? Number(s.expected_goal_involvements).toFixed(2)
+                              : "—"}
+                          </td>
+                          <td className="py-1 px-1 text-center">
+                            {s?.saves > 0 ? s.saves : "—"}
+                          </td>
+                          <td className="py-1 px-1 text-center text-muted-foreground">
+                            —
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </>
+              )}
             </tbody>
           </table>
         </div>

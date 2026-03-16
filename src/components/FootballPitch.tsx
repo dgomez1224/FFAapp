@@ -20,6 +20,7 @@ export interface PitchPlayer {
   goals_scored?: number;
   assists?: number;
   minutes?: number;
+  is_auto_subbed_on?: boolean;
 }
 
 interface FootballPitchProps {
@@ -208,6 +209,12 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
                         }
                       }}
                     />
+                  )}
+
+                  {player.is_auto_subbed_on && (
+                    <div className="absolute -top-1 -right-1 z-10 bg-green-500 text-white rounded-full w-4 h-4 flex items-center justify-center text-xs font-bold leading-none">
+                      ↑
+                    </div>
                   )}
 
                   {/* Captain badge */}

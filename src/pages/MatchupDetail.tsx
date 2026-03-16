@@ -30,6 +30,10 @@ type LineupPlayer = {
   red_cards: number;
   penalties_missed: number;
   penalties_saved: number;
+  is_auto_subbed_off?: boolean;
+  is_auto_subbed_on?: boolean;
+  subbed_on_by?: number;
+  subbed_off_for?: number;
 };
 
 type TeamDetail = {
@@ -40,6 +44,12 @@ type TeamDetail = {
   rank: number | null;
   total_points: number;
   lineup: LineupPlayer[];
+  auto_subs?: Array<{
+    player_off_id: number;
+    player_off_name: string;
+    player_on_id: number;
+    player_on_name: string;
+  }>;
 };
 
 type Payload = {
@@ -83,6 +93,8 @@ function TeamPitchDisplay({
     .filter((p) => !!p.is_bench)
     .sort((a, b) => (a.lineup_slot ?? 99) - (b.lineup_slot ?? 99));
 
+  const subbedOff = team.lineup.filter((p) => p.is_auto_subbed_off);
+
   const pitchPlayers: PitchPlayer[] = starters.map((p) => ({
     player_id: p.player_id,
     player_name: p.player_name,
@@ -97,6 +109,7 @@ function TeamPitchDisplay({
     goals_scored: p.goals_scored,
     assists: p.assists,
     minutes: p.minutes,
+    is_auto_subbed_on: p.is_auto_subbed_on,
   }));
 
   const handlePlayerClick = async (player: PitchPlayer) => {
@@ -159,18 +172,57 @@ function TeamPitchDisplay({
         <FootballPitch players={pitchPlayers} onPlayerClick={handlePlayerClick} showCaptain={true} />
       </div>
 
+      {subbedOff.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          <span className="text-xs text-muted-foreground mr-1">↓ Off:</span>
+          {subbedOff.map((p) => {
+            const subOn = team.lineup.find((s) => s.player_id === p.subbed_on_by);
+            return (
+              <div
+                key={p.player_id}
+                className="relative opacity-50"
+                title={`${p.player_name} subbed off → ${subOn?.player_name ?? "?"}`}
+              >
+                <div className="relative h-8 w-8 rounded-full overflow-hidden border border-muted">
+                  {p.player_image_url ? (
+                    <img
+                      src={p.player_image_url}
+                      alt={p.player_name}
+                      className="h-full w-full object-cover"
+                      onError={(e) => {
+                        e.currentTarget.style.display = "none";
+                      }}
+                    />
+                  ) : (
+                    <div className="h-full w-full bg-muted flex items-center justify-center text-xs">
+                      {p.player_name.charAt(0)}
+                    </div>
+                  )}
+                </div>
+                <span className="absolute -bottom-1 -right-1 text-xs">↓</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       <PlayerStatsTable
         players={(team.lineup || []).map((p) => ({
           id: p.player_id,
           name: p.player_name,
           image_url: p.player_image_url ?? null,
           position: p.position,
+          is_auto_subbed_off: p.is_auto_subbed_off,
+          is_auto_subbed_on: p.is_auto_subbed_on,
+          subbed_on_by: p.subbed_on_by,
+          subbed_off_for: p.subbed_off_for,
         }))}
         livePoints={livePoints}
         liveStats={liveStats}
         captainId={team.lineup.find((p) => p.is_cup_captain || p.is_captain)?.player_id ?? null}
         viceCaptainId={team.lineup.find((p) => p.is_vice_captain)?.player_id ?? null}
         gameweek={gameweek}
+        autoSubs={team.auto_subs ?? []}
       />
 
       <PlayerStatsModal

@@ -2428,6 +2428,47 @@ leagueStandings.get("/matches", async (c) => {
     );
     const matches = normalizeDraftList<any>(details?.matches ?? []);
     const entries = normalizeDraftList<any>(details?.league_entries ?? []);
+
+    // For the current active gameweek (when not fully finished), override raw
+    // match scores with auto-subbed live points from computeLiveEntryPoints.
+    try {
+      const bootstrap = await fetchDraftBootstrap();
+      const currentGw = extractDraftCurrentEventId(bootstrap);
+      const latestCompleted = extractLatestCompletedDraftEventId(bootstrap) || 0;
+      const shouldOverride =
+        currentGw != null &&
+        currentGw > 0 &&
+        currentGw > latestCompleted;
+
+      if (shouldOverride) {
+        let livePoints: Record<string, number> = {};
+        try {
+          livePoints = await computeLiveEntryPoints(currentGw);
+        } catch {
+          livePoints = {};
+        }
+
+        if (Object.keys(livePoints).length > 0) {
+          matches.forEach((m: any) => {
+            const gw = coerceNumber(m.event);
+            if (gw !== currentGw) return;
+
+            const entry1Id = String(m.league_entry_1 ?? m.entry_1 ?? m.home ?? "").trim();
+            const entry2Id = String(m.league_entry_2 ?? m.entry_2 ?? m.away ?? "").trim();
+
+            if (entry1Id && livePoints[entry1Id] != null) {
+              m.league_entry_1_points = livePoints[entry1Id];
+            }
+            if (entry2Id && livePoints[entry2Id] != null) {
+              m.league_entry_2_points = livePoints[entry2Id];
+            }
+          });
+        }
+      }
+    } catch {
+      // Non-fatal: if live override fails, fall back to stored match scores.
+    }
+
     return c.json({ matches, league_entries: entries });
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to fetch matches");
@@ -2760,13 +2801,204 @@ function buildEntryKeyToApiId(entries: any[]): Record<string, string> {
   return map;
 }
 
+interface SubEvent {
+  player_off_id: number;
+  player_off_name: string;
+  player_on_id: number;
+  player_on_name: string;
+}
+
+interface AutoSubResult {
+  lineup: any[];
+  subs: SubEvent[];
+}
+
+function applyLeagueAutoSubs(
+  lineup: any[],
+  currentGwForMatch: number,
+  fixturesByTeam: Record<number, { started: boolean; finished: boolean }>,
+  playerTeamMap: Record<number, number>,
+): AutoSubResult {
+  const starters = lineup
+    .filter((p) => !p.is_bench)
+    .sort((a, b) => (a.lineup_slot ?? 99) - (b.lineup_slot ?? 99));
+  const bench = lineup
+    .filter((p) => p.is_bench)
+    .sort((a, b) => (a.lineup_slot ?? 99) - (b.lineup_slot ?? 99));
+
+  const gameFinished = (playerId: number) => {
+    const teamId = playerTeamMap[playerId];
+    if (!teamId) return false;
+    return fixturesByTeam[teamId]?.finished === true;
+  };
+  const playedMinutes = (p: any) => Number(p.minutes ?? 0) > 0;
+  const posType = (p: any) => coerceNumber(p.position, 3); // 1=GK,2=DEF,3=MID,4=FWD
+
+  const countTypes = (xi: any[]) => {
+    const c: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0 };
+    for (const p of xi) {
+      const t = posType(p);
+      c[t] = (c[t] ?? 0) + 1;
+    }
+    return c;
+  };
+
+  const isValidFormation = (xi: any[], outType: number, inType: number) => {
+    const c = countTypes(xi);
+    c[outType] = (c[outType] ?? 0) - 1;
+    c[inType] = (c[inType] ?? 0) + 1;
+    if (c[1] !== 1) return false;
+    if ((c[2] ?? 0) < 3) return false;
+    if ((c[4] ?? 0) < 1) return false;
+    const total = (c[1] ?? 0) + (c[2] ?? 0) + (c[3] ?? 0) + (c[4] ?? 0);
+    return total === 11;
+  };
+
+  const usedBench = new Set<number>();
+  const subbedOffPlayers: any[] = [];
+  const subs: SubEvent[] = [];
+  let currentXI = [...starters];
+
+  const gkBench = bench.find((p) => posType(p) === 1);
+  const outfieldBench = bench
+    .filter((p) => posType(p) !== 1)
+    .sort((a, b) => (a.lineup_slot ?? 99) - (b.lineup_slot ?? 99));
+
+  const gkStarter = currentXI.find((p) => posType(p) === 1);
+  if (gkStarter && gkBench) {
+    if (
+      !playedMinutes(gkStarter) &&
+      gameFinished(gkStarter.player_id) &&
+      playedMinutes(gkBench) &&
+      gameFinished(gkBench.player_id)
+    ) {
+      const subbedOffPlayer = {
+        ...gkStarter,
+        is_bench: true,
+        is_auto_subbed_off: true,
+        subbed_on_by: gkBench.player_id,
+      };
+      subbedOffPlayers.push(subbedOffPlayer);
+
+      currentXI = currentXI.map((p) =>
+        p.player_id === gkStarter.player_id
+          ? {
+              ...gkBench,
+              is_bench: false,
+              lineup_slot: gkStarter.lineup_slot,
+              multiplier: 1,
+              effective_points: gkBench.raw_points,
+              is_auto_subbed_on: true,
+              subbed_off_for: gkStarter.player_id,
+            }
+          : p,
+      );
+      subs.push({
+        player_off_id: gkStarter.player_id,
+        player_off_name: gkStarter.player_name,
+        player_on_id: gkBench.player_id,
+        player_on_name: gkBench.player_name,
+      });
+      usedBench.add(gkBench.player_id);
+    }
+  }
+
+  for (let i = 0; i < currentXI.length; i++) {
+    const starter = currentXI[i];
+    if (posType(starter) === 1) continue;
+    if (playedMinutes(starter)) continue;
+    if (!gameFinished(starter.player_id)) continue;
+
+    for (let j = 0; j < outfieldBench.length; j++) {
+      const candidate = outfieldBench[j];
+      if (usedBench.has(candidate.player_id)) continue;
+
+      const candidatePlayed = playedMinutes(candidate);
+      const candidateGameDone = gameFinished(candidate.player_id);
+
+      let blocked = false;
+      for (let k = 0; k < j; k++) {
+        const earlier = outfieldBench[k];
+        if (usedBench.has(earlier.player_id)) continue;
+        if (!gameFinished(earlier.player_id)) {
+          blocked = true;
+          break;
+        }
+        if (playedMinutes(earlier)) {
+          blocked = true;
+          break;
+        }
+      }
+      if (blocked) break;
+
+      if (!candidatePlayed || !candidateGameDone) {
+        if (!candidateGameDone) break;
+        continue;
+      }
+
+      if (!isValidFormation(currentXI, posType(starter), posType(candidate))) continue;
+
+      const subbedOffPlayer = {
+        ...starter,
+        is_bench: true,
+        is_auto_subbed_off: true,
+        subbed_on_by: candidate.player_id,
+      };
+      subbedOffPlayers.push(subbedOffPlayer);
+
+      currentXI[i] = {
+        ...candidate,
+        is_bench: false,
+        lineup_slot: starter.lineup_slot,
+        multiplier: 1,
+        effective_points: candidate.raw_points,
+        is_auto_subbed_on: true,
+        subbed_off_for: starter.player_id,
+      };
+      subs.push({
+        player_off_id: starter.player_id,
+        player_off_name: starter.player_name,
+        player_on_id: candidate.player_id,
+        player_on_name: candidate.player_name,
+      });
+      usedBench.add(candidate.player_id);
+      break;
+    }
+  }
+
+  const remainingBench = bench
+    .filter((p) => !usedBench.has(p.player_id))
+    .map((p) => ({
+      ...p,
+      is_bench: true,
+    }));
+
+  return {
+    lineup: [...currentXI, ...remainingBench, ...subbedOffPlayers],
+    subs,
+  };
+}
+
 /** Compute live points per entry for current GW only (starters only). */
 async function computeLiveEntryPoints(currentGw: number): Promise<Record<string, number>> {
-  console.log("🔥 computeLiveEntryPoints EXECUTED", currentGw);
+  console.log("[CLEP] called for GW:", currentGw);
   const liveEntryPoints: Record<string, number> = {};
   try {
     const livePayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${currentGw}/live`);
     const liveMap = extractLivePointsMap(livePayload);
+    console.log(
+      "[CLEP] livePayload elements count:",
+      Object.keys((livePayload as any)?.elements ?? {}).length,
+    );
+    // Build liveStatsMap from live payload if not already present
+    const liveStatsMap: Record<number, any> = {};
+    const liveElements = (livePayload && (livePayload as any).elements) || {};
+    Object.entries(liveElements as Record<string, any>).forEach(([key, val]) => {
+      const id = Number(key);
+      if (!id) return;
+      liveStatsMap[id] = (val as any)?.stats ?? val;
+    });
+
     const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
     const entries = normalizeDraftList<any>(details?.league_entries ?? []);
     const matches = normalizeDraftList<any>(details?.matches ?? []);
@@ -2779,20 +3011,123 @@ async function computeLiveEntryPoints(currentGw: number): Promise<Record<string,
       if (e1) currentGwEntryKeys.add(e1);
       if (e2) currentGwEntryKeys.add(e2);
     });
+
+    // Build a simple playerMap from bootstrap so we can derive team/position info
+    const bootstrap = await fetchDraftBootstrap();
+    const playerMap: Record<number, any> = {};
+    normalizeDraftList<any>(
+      (bootstrap as any)?.elements?.data ??
+        (bootstrap as any)?.elements ??
+        (bootstrap as any)?.players ??
+        [],
+    ).forEach((el: any) => {
+      const id = parsePositiveInt(el?.id ?? el?.element ?? el?.element_id);
+      if (!id) return;
+      playerMap[id] = el;
+    });
+    console.log("[CLEP] playerMap size:", Object.keys(playerMap ?? {}).length);
+
+    // Fetch FPL fixtures once to drive auto-sub logic
+    const fixturesArr: any[] = await fetch(
+      `${FPL_BASE_URL}/fixtures/?event=${currentGw}`,
+      { headers: { "User-Agent": "Mozilla/5.0" } },
+    )
+      .then((r) => (r.ok ? r.json() : []))
+      .catch(() => []);
+
+    const fixturesByTeam: Record<number, { started: boolean; finished: boolean }> = {};
+    for (const fix of fixturesArr) {
+      const upd = (tid: number) => {
+        const id = coerceNumber(tid, 0);
+        if (!id) return;
+        const ex = fixturesByTeam[id];
+        fixturesByTeam[id] = ex
+          ? {
+              started: ex.started || !!fix.started,
+              finished: ex.finished && !!fix.finished,
+            }
+          : { started: !!fix.started, finished: !!fix.finished };
+      };
+      upd(fix.team_h);
+      upd(fix.team_a);
+    }
+    console.log("[CLEP] fixturesArr length:", fixturesArr?.length ?? 0);
+
     const picksResults = await Promise.all(
       Array.from(currentGwEntryKeys).map(async (matchKey) => {
         const apiEntryId = entryKeyToApiId[matchKey] ?? matchKey;
         try {
           const picksRes = await fetchJSON<any>(`${DRAFT_BASE_URL}/entry/${apiEntryId}/event/${currentGw}`);
           const picks = normalizeDraftList<any>(picksRes?.picks ?? []);
-          let total = 0;
-          picks.forEach((pick: any) => {
-            const pos = coerceNumber(pick.position, 0);
-            if (pos >= 1 && pos <= 11) {
-              const el = parsePositiveInt(pick?.element ?? pick?.element_id ?? pick?.player_id);
-              if (el) total += coerceNumber(liveMap[el], 0);
+          const entryPicks = picks || [];
+
+          // Build playerTeamMap from bootstrap playerMap
+          const playerTeamMap: Record<number, number> = {};
+          entryPicks.forEach((pick: any) => {
+            const elId = parsePositiveInt(
+              pick?.element ?? pick?.element_id ?? pick?.player_id,
+            );
+            if (!elId) return;
+            const el = playerMap[elId];
+            if (el && el.team) {
+              playerTeamMap[elId] = coerceNumber(el.team, 0);
             }
           });
+
+          // Build a simple lineup array for auto-sub processing
+          const lineup = entryPicks.map((pick: any) => {
+            const elId = parsePositiveInt(
+              pick?.element ?? pick?.element_id ?? pick?.player_id,
+            );
+            const elementId = elId || 0;
+            const stats = elementId ? liveStatsMap[elementId] || {} : {};
+            const player = elementId ? playerMap[elementId] || {} : {};
+            return {
+              player_id: elementId,
+              player_name:
+                (player?.web_name ??
+                  `${player?.first_name ?? ""} ${player?.second_name ?? ""}`.trim()) ||
+                String(elementId),
+              position: coerceNumber(player?.element_type ?? player?.position, 3),
+              lineup_slot: coerceNumber(pick.position, 0),
+              is_bench: coerceNumber(pick.position, 0) > 11,
+              raw_points: coerceNumber(stats?.total_points, 0),
+              effective_points: coerceNumber(stats?.total_points, 0),
+              minutes: coerceNumber(stats?.minutes, 0),
+            };
+          });
+
+          let total = 0;
+          try {
+            // Apply auto-subs using the existing top-level applyLeagueAutoSubs
+            const { lineup: subbedLineup } = applyLeagueAutoSubs(
+              lineup,
+              currentGw,
+              fixturesByTeam,
+              playerTeamMap,
+            );
+
+            // Sum only non-bench, non-subbed-off players
+            total = subbedLineup
+              .filter((p: any) => !p.is_bench && !p.is_auto_subbed_off)
+              .reduce(
+                (sum: number, p: any) => sum + coerceNumber(p.raw_points, 0),
+                0,
+              );
+          } catch (subErr) {
+            console.error("[CLEP] auto-sub failed, falling back:", subErr);
+            // Fallback: sum starters without auto-sub
+            total = lineup
+              .filter((p: any) => !p.is_bench)
+              .reduce(
+                (sum: number, p: any) => sum + coerceNumber(p.raw_points, 0),
+                0,
+              );
+          }
+
+          console.log("[CLEP] first entry picks count:", entryPicks?.length);
+          console.log("[CLEP] first entry total:", total);
+
           return { matchKey, total };
         } catch {
           return { matchKey, total: 0 };
@@ -2800,6 +3135,7 @@ async function computeLiveEntryPoints(currentGw: number): Promise<Record<string,
       }),
     );
     picksResults.forEach((r) => { liveEntryPoints[r.matchKey] = r.total; });
+    console.log("[CLEP] liveEntryPoints:", JSON.stringify(liveEntryPoints));
   } catch {
     // non-fatal
   }
@@ -2930,6 +3266,17 @@ async function syncGobletLive(supabase: ReturnType<typeof getSupabaseAdmin>): Pr
   }
   if (matches.length === 0) return;
 
+  // For the current gameweek, prefer live entry points (per-entry totals) so that
+  // Goblet / league "points for" reflect the same live totals as the fixtures
+  // hub and matchup detail (including current GW performance instead of stale
+  // stored match scores).
+  let liveEntryPoints: Record<string, number> = {};
+  try {
+    liveEntryPoints = await computeLiveEntryPoints(currentGw);
+  } catch {
+    liveEntryPoints = {};
+  }
+
   const h2hRows: any[] = [];
   for (const match of matches) {
     const gw = coerceNumber(match.event);
@@ -2939,8 +3286,16 @@ async function syncGobletLive(supabase: ReturnType<typeof getSupabaseAdmin>): Pr
     const team2Id = entryIdToTeamId[entry2Id];
     if (!team1Id || !team2Id) continue;
 
-    const team1Points = coerceNumber(match.league_entry_1_points ?? match.score_1 ?? match.home_score, 0);
-    const team2Points = coerceNumber(match.league_entry_2_points ?? match.score_2 ?? match.away_score, 0);
+    // Use live entry points for the current gameweek when available; fall back
+    // to stored Draft match scores otherwise (for past GWs or when live data
+    // is unavailable for a given entry).
+    const useLive = gw === currentGw && Object.keys(liveEntryPoints).length > 0;
+    const team1Points = useLive
+      ? coerceNumber(liveEntryPoints[entry1Id], coerceNumber(match.league_entry_1_points ?? match.score_1 ?? match.home_score, 0))
+      : coerceNumber(match.league_entry_1_points ?? match.score_1 ?? match.home_score, 0);
+    const team2Points = useLive
+      ? coerceNumber(liveEntryPoints[entry2Id], coerceNumber(match.league_entry_2_points ?? match.score_2 ?? match.away_score, 0))
+      : coerceNumber(match.league_entry_2_points ?? match.score_2 ?? match.away_score, 0);
 
     const winner_id =
       team1Points > team2Points ? team1Id : team2Points > team1Points ? team2Id : null;
@@ -3001,53 +3356,88 @@ gobletStandings.get("/", async (c) => {
       .select("team_1_id, team_2_id, gameweek, team_1_points, team_2_points");
 
     if (!dbMatchupsError && (dbMatchups || []).length > 0) {
-      const agg: Record<string, any> = {};
-      (dbMatchups || [])
-        .filter((m: any) =>
-          maxGwForGoblet ? coerceNumber(m.gameweek) <= maxGwForGoblet : true
-        )
-        .forEach((m: any) => {
-          if (!agg[m.team_1_id]) {
-            agg[m.team_1_id] = { team_id: m.team_1_id, points_for: 0, points_against: 0, wins: 0, total_points: 0, rounds: 0 };
-          }
-          if (!agg[m.team_2_id]) {
-            agg[m.team_2_id] = { team_id: m.team_2_id, points_for: 0, points_against: 0, wins: 0, total_points: 0, rounds: 0 };
-          }
+      const aggCurrent: Record<string, any> = {};
+      const aggBaseline: Record<string, any> = {};
+      const hasBaselineGw = latestCompletedEvent != null;
 
+      (dbMatchups || []).forEach((m: any) => {
+        const gw = coerceNumber(m.gameweek);
+        const includeInCurrent =
+          maxGwForGoblet != null ? gw <= maxGwForGoblet : true;
+        const includeInBaseline =
+          hasBaselineGw && latestCompletedEvent != null
+            ? gw <= latestCompletedEvent
+            : false;
+
+        const ensureRow = (target: Record<string, any>, teamId: string) => {
+          if (!target[teamId]) {
+            target[teamId] = {
+              team_id: teamId,
+              points_for: 0,
+              points_against: 0,
+              wins: 0,
+              total_points: 0,
+              rounds: 0,
+            };
+          }
+        };
+
+        const applyRow = (target: Record<string, any>) => {
+          ensureRow(target, m.team_1_id);
+          ensureRow(target, m.team_2_id);
           const p1 = coerceNumber(m.team_1_points);
           const p2 = coerceNumber(m.team_2_points);
-          agg[m.team_1_id].points_for += p1;
-          agg[m.team_1_id].points_against += p2;
-          agg[m.team_2_id].points_for += p2;
-          agg[m.team_2_id].points_against += p1;
-          if (p1 > p2) agg[m.team_1_id].wins += 1;
-          else if (p2 > p1) agg[m.team_2_id].wins += 1;
-          agg[m.team_1_id].total_points = agg[m.team_1_id].points_for;
-          agg[m.team_2_id].total_points = agg[m.team_2_id].points_for;
-          agg[m.team_1_id].rounds += 1;
-          agg[m.team_2_id].rounds += 1;
-        });
+          target[m.team_1_id].points_for += p1;
+          target[m.team_1_id].points_against += p2;
+          target[m.team_2_id].points_for += p2;
+          target[m.team_2_id].points_against += p1;
+          if (p1 > p2) target[m.team_1_id].wins += 1;
+          else if (p2 > p1) target[m.team_2_id].wins += 1;
+          target[m.team_1_id].total_points = target[m.team_1_id].points_for;
+          target[m.team_2_id].total_points = target[m.team_2_id].points_for;
+          target[m.team_1_id].rounds += 1;
+          target[m.team_2_id].rounds += 1;
+        };
 
-      const teamIds = Object.keys(agg);
+        if (includeInCurrent) {
+          applyRow(aggCurrent);
+        }
+        if (includeInBaseline) {
+          applyRow(aggBaseline);
+        }
+      });
+
+      const teamIds = Object.keys(aggCurrent);
       if (teamIds.length > 0) {
         const { data: teams } = await supabase
           .from("teams")
           .select("id, entry_name, manager_name")
           .in("id", teamIds);
         (teams || []).forEach((t: any) => {
-          if (!agg[t.id]) return;
-          agg[t.id].entry_name = t.entry_name;
-          agg[t.id].manager_name = t.manager_name;
+          if (aggCurrent[t.id]) {
+            aggCurrent[t.id].entry_name = t.entry_name;
+            aggCurrent[t.id].manager_name = t.manager_name;
+          }
+          if (aggBaseline[t.id]) {
+            aggBaseline[t.id].entry_name = t.entry_name;
+            aggBaseline[t.id].manager_name = t.manager_name;
+          }
         });
       }
 
-      const standings = Object.values(agg)
+      const standings = Object.values(aggCurrent)
+        .sort(gobletSort)
+        .map((row: any, idx: number) => ({ ...row, rank: idx + 1 }));
+
+      const baseline_standings = Object.values(
+        Object.keys(aggBaseline).length > 0 ? aggBaseline : aggCurrent,
+      )
         .sort(gobletSort)
         .map((row: any, idx: number) => ({ ...row, rank: idx + 1 }));
 
       const hasNonZeroPointsFor = standings.some((row: any) => coerceNumber(row.points_for) > 0);
       if (hasNonZeroPointsFor) {
-        return c.json({ standings, source: "database" });
+        return c.json({ standings, baseline_standings, source: "database" });
       }
     }
 
@@ -8094,8 +8484,6 @@ fixturesHub.get("/matchup", async (c) => {
       if (ta > 0) fixtureByTeamId[ta] = { kickoff_time: kickoff, elapsed };
     });
 
-    const hasStarted = gameweek < currentGw;
-
     const mapLineup = (rows: any[] | undefined, teamId: string) =>
       (rows || []).map((pick: any) => {
         const playerId = coerceNumber(pick.element);
@@ -8153,11 +8541,60 @@ fixturesHub.get("/matchup", async (c) => {
           penalties_saved: coerceNumber(stats.penalties_saved, 0),
           fixture_kickoff_time: fixtureTiming?.kickoff_time ?? null,
           fixture_elapsed: fixtureTiming?.elapsed ?? 0,
+          team: playerTeamId,
         };
       });
 
-    const lineup1 = mapLineup(picks1?.picks, team1Id);
-    const lineup2 = mapLineup(picks2?.picks, team2Id);
+    let lineup1 = mapLineup(picks1?.picks, team1Id);
+    let lineup2 = mapLineup(picks2?.picks, team2Id);
+
+    const fixturesByTeam: Record<number, { started: boolean; finished: boolean }> = {};
+    try {
+      const fplFixtures = await fetchJSON<any[]>(
+        `${FPL_BASE_URL}/fixtures/?event=${gameweek}`,
+      );
+      (fplFixtures || []).forEach((fix: any) => {
+        const started = !!fix.started;
+        const finished = !!fix.finished;
+        const updateTeam = (teamId: number) => {
+          const id = coerceNumber(teamId, 0);
+          if (!id) return;
+          const existing = fixturesByTeam[id];
+          if (!existing) {
+            fixturesByTeam[id] = { started, finished };
+          } else {
+            fixturesByTeam[id] = {
+              started: existing.started || started,
+              finished: existing.finished && finished,
+            };
+          }
+        };
+        updateTeam(fix.team_h);
+        updateTeam(fix.team_a);
+      });
+    } catch {
+      // non-fatal; autosubs will simply not apply without fixture status
+    }
+
+    const playerTeamMap: Record<number, number> = {};
+    [...lineup1, ...lineup2].forEach((p: any) => {
+      const pid = coerceNumber(p.player_id, 0);
+      const teamId = coerceNumber(p.team, 0);
+      if (pid && teamId) {
+        playerTeamMap[pid] = teamId;
+      }
+    });
+
+    let autoSubs1: SubEvent[] = [];
+    let autoSubs2: SubEvent[] = [];
+    if (type === "league") {
+      const result1 = applyLeagueAutoSubs(lineup1, gameweek, fixturesByTeam, playerTeamMap);
+      const result2 = applyLeagueAutoSubs(lineup2, gameweek, fixturesByTeam, playerTeamMap);
+      lineup1 = result1.lineup;
+      lineup2 = result2.lineup;
+      autoSubs1 = result1.subs;
+      autoSubs2 = result2.subs;
+    }
 
     const includePlayerPoints = (player: any) => type === "cup" || !player?.is_bench;
     const total1 = lineup1.reduce((sum, p) => sum + (includePlayerPoints(p) ? coerceNumber(p.effective_points) : 0), 0);
@@ -8215,6 +8652,7 @@ fixturesHub.get("/matchup", async (c) => {
         club_crest_url: team1.club_crest_url || null,
         rank: gameweek === currentGw ? rankMap[String(team1.id)] || null : null,
         lineup: lineup1,
+        auto_subs: autoSubs1,
       },
       team_2: {
         id: String(team2.id),
@@ -8223,6 +8661,7 @@ fixturesHub.get("/matchup", async (c) => {
         club_crest_url: team2.club_crest_url || null,
         rank: gameweek === currentGw ? rankMap[String(team2.id)] || null : null,
         lineup: lineup2,
+        auto_subs: autoSubs2,
       },
     });
   } catch (err: any) {
@@ -8430,6 +8869,18 @@ app.route("/api/context", liveContext);
 app.route("/api/live", liveData);
 app.route("/api/entry", entryPicks);
 app.route("/api/h2h", liveH2H);
+app.get("/api/bootstrap", async (c) => {
+  try {
+    const res = await fetch("https://draft.premierleague.com/api/bootstrap-static", {
+      headers: { "User-Agent": "Mozilla/5.0" },
+    });
+    if (!res.ok) throw new Error("Bootstrap fetch failed");
+    const data = await res.json();
+    return c.json(data);
+  } catch (err: any) {
+    return c.json({ error: { message: err.message } }, 500);
+  }
+});
 app.route("/captain-auth", captainAuth);
 app.route("/captain", captainPicks);
 app.route("/fixtures", fixturesHub);

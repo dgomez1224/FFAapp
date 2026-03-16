@@ -23,6 +23,7 @@ interface GobletStanding {
 
 interface GobletStandingsResponse {
   standings: GobletStanding[];
+  baseline_standings?: GobletStanding[];
   source: "database" | "derived" | "draft";
 }
 
@@ -34,6 +35,14 @@ export default function GobletStandings() {
   const baselineRanksRef = useRef<Record<string, number> | null>(null);
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const { getCrest } = useManagerCrestMap();
+
+  const handleRefresh = () => {
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+    window.location.reload();
+  };
 
   useEffect(() => {
     let eventFinished = true;
@@ -51,14 +60,25 @@ export default function GobletStandings() {
           throw new Error(errPayload?.message || "Failed to fetch goblet standings");
         }
 
-        // Capture baseline ranks once per session from the DB-ordered standings.
-        if (!baselineRanksRef.current && payload?.standings?.length) {
+        // Always recompute baseline from stored database standings
+        // Prefer server-provided baseline_standings when available,
+        // otherwise derive from current standings.
+        const baselineSource =
+          (payload as any).baseline_standings && (payload as any).baseline_standings.length
+            ? (payload as any).baseline_standings
+            : payload?.standings;
+
+        if (baselineSource?.length) {
+          const sorted = [...baselineSource].sort((a: any, b: any) => {
+            const apts = a.points_for ?? a.total_points ?? 0;
+            const bpts = b.points_for ?? b.total_points ?? 0;
+            return bpts - apts;
+          });
           const initial: Record<string, number> = {};
-          payload.standings.forEach((s: any, index: number) => {
+          sorted.forEach((s: any, index: number) => {
             const key = String(s.entry_id ?? s.team_id ?? "");
             if (!key) return;
-            const baselineRank = typeof s.rank === "number" ? s.rank : index + 1;
-            initial[key] = baselineRank;
+            initial[key] = index + 1;
           });
           baselineRanksRef.current = initial;
         }
@@ -207,11 +227,20 @@ export default function GobletStandings() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="font-heading text-2xl font-semibold">Goblet Standings</h1>
-        <p className="text-sm text-muted-foreground">
-          Ranked by points for. Data source: {data.source}
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="font-heading text-2xl font-semibold">Goblet Standings</h1>
+          <p className="text-sm text-muted-foreground">
+            Ranked by points for. Data source: {data.source}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={handleRefresh}
+          className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50 flex items-center gap-1"
+        >
+          ↻ Refresh
+        </button>
       </div>
 
       <Card className="p-4">

@@ -126,17 +126,27 @@ function shouldAutoSub(
  * This is a simplified version that always allows substitutions.
  */
 function isValidFormation(
-  _startingXI: Pick[],
-  _elementTypes: Map<number, ElementType>,
-  _substitutedPosition: number,
-  _substitutePosition: number
+  xi: { element: number; typeId: number }[],
+  outTypeId: number,
+  inTypeId: number,
 ): boolean {
-  // Simplified: always allow substitution
-  // Full implementation would check:
-  // - GK: exactly 1
-  // - DEF: min 3, max 5
-  // - MID: min 3, max 5
-  // - FWD: min 1, max 3
+  const counts: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0 };
+  for (const p of xi) {
+    if (!p.typeId) continue;
+    counts[p.typeId] = (counts[p.typeId] ?? 0) + 1;
+  }
+
+  counts[outTypeId] = (counts[outTypeId] ?? 0) - 1;
+  counts[inTypeId] = (counts[inTypeId] ?? 0) + 1;
+
+  if (counts[1] !== 1) return false; // exactly 1 GK
+  if ((counts[2] ?? 0) < 3) return false; // at least 3 DEF
+  if ((counts[4] ?? 0) < 1) return false; // at least 1 FWD
+
+  const total =
+    (counts[1] ?? 0) + (counts[2] ?? 0) + (counts[3] ?? 0) + (counts[4] ?? 0);
+  if (total !== 11) return false;
+
   return true;
 }
 
@@ -152,69 +162,123 @@ export function applyAutoSubs(
   picks: Pick[],
   liveStatsMap: Map<number, LivePlayerStats>,
   elementTypes: Map<number, ElementType>,
-  rules: ScoringRules = DEFAULT_RULES
+  fixtureStatusMap: Map<number, { status: "not_started" | "live" | "finished"; elapsed: number }>,
+  elementTeamMap: Map<number, number>,
+  elementTypeMap: Map<number, number>,
+  rules: ScoringRules = DEFAULT_RULES,
 ): Pick[] {
-  if (!rules.applyAutosubs) {
-    return picks;
+  if (!rules.applyAutosubs) return picks;
+
+  let starters = picks
+    .filter((p) => p.position <= 11)
+    .sort((a, b) => a.position - b.position);
+  const bench = picks
+    .filter((p) => p.position > 11)
+    .sort((a, b) => a.position - b.position);
+
+  const gkBench = bench.find((p) => (elementTypeMap.get(p.element) ?? 3) === 1);
+  const outfieldBench = bench
+    .filter((p) => (elementTypeMap.get(p.element) ?? 3) !== 1)
+    .sort((a, b) => a.position - b.position);
+
+  const usedBench = new Set<number>();
+
+  function gameFinished(element: number): boolean {
+    return fixtureStatusMap.get(element)?.status === "finished";
   }
 
-  const startingXI = picks.filter((p) => p.position <= 11).sort((a, b) => a.position - b.position);
-  const bench = picks.filter((p) => p.position > 11).sort((a, b) => a.position - b.position);
+  function playedMinutes(element: number): boolean {
+    return (liveStatsMap.get(element)?.stats.minutes ?? 0) > 0;
+  }
 
-  const finalXI: Pick[] = [];
-  const usedBench: Set<number> = new Set();
+  function typeOf(element: number): number {
+    return elementTypeMap.get(element) ?? 3;
+  }
 
-  // Process each starting position
-  for (const starter of startingXI) {
-    const starterStats = liveStatsMap.get(starter.element);
-    const starterMinutes = starterStats?.stats.minutes || 0;
+  function getXITypes(xi: Pick[]): { element: number; typeId: number }[] {
+    return xi.map((p) => ({ element: p.element, typeId: typeOf(p.element) }));
+  }
 
-    if (starterMinutes === 0) {
-      // Try to find a substitute
-      let substituted = false;
-      for (const benchPick of bench) {
-        if (usedBench.has(benchPick.position)) continue;
+  const gkStarter = starters.find((p) => typeOf(p.element) === 1);
+  if (gkStarter && gkBench) {
+    const starterPlayed = playedMinutes(gkStarter.element);
+    const starterGameDone = gameFinished(gkStarter.element);
+    const benchPlayed = playedMinutes(gkBench.element);
+    const benchGameDone = gameFinished(gkBench.element);
 
-        const benchStats = liveStatsMap.get(benchPick.element);
-        const benchMinutes = benchStats?.stats.minutes || 0;
+    if (!starterPlayed && starterGameDone && benchPlayed && benchGameDone) {
+      starters = starters.map((p) =>
+        p.element === gkStarter.element
+          ? {
+              ...gkBench,
+              position: gkStarter.position,
+              is_captain: false,
+              is_vice_captain: false,
+              multiplier: 1,
+            }
+          : p,
+      );
+      usedBench.add(gkBench.element);
+    }
+  }
 
-        if (benchMinutes > 0) {
-          // Check formation constraints (simplified)
-          if (isValidFormation(finalXI, elementTypes, starter.position, benchPick.position)) {
-            // Substitute: move bench player to starting position
-            finalXI.push({
-              ...benchPick,
-              position: starter.position,
-              is_captain: starter.is_captain,
-              is_vice_captain: starter.is_vice_captain,
-              multiplier: starter.multiplier,
-            });
-            usedBench.add(benchPick.position);
-            substituted = true;
-            break;
-          }
+  for (let i = 0; i < starters.length; i++) {
+    const starter = starters[i];
+    if (typeOf(starter.element) === 1) continue;
+    if (playedMinutes(starter.element)) continue;
+    if (!gameFinished(starter.element)) continue;
+
+    for (let j = 0; j < outfieldBench.length; j++) {
+      const candidate = outfieldBench[j];
+      if (usedBench.has(candidate.element)) continue;
+
+      const candidatePlayed = playedMinutes(candidate.element);
+      const candidateGameDone = gameFinished(candidate.element);
+
+      let queueBlocked = false;
+      for (let k = 0; k < j; k++) {
+        const earlier = outfieldBench[k];
+        if (usedBench.has(earlier.element)) continue;
+        const earlierGameDone = gameFinished(earlier.element);
+        const earlierPlayed = playedMinutes(earlier.element);
+        if (!earlierGameDone) {
+          queueBlocked = true;
+          break;
         }
+        if (earlierGameDone && !earlierPlayed) {
+          continue;
+        }
+        queueBlocked = true;
+        break;
       }
 
-      if (!substituted) {
-        // No valid sub found, keep original starter
-        finalXI.push(starter);
+      if (queueBlocked) break;
+
+      if (!candidatePlayed || !candidateGameDone) {
+        if (!candidateGameDone) break;
+        continue;
       }
-    } else {
-      // Starter played, keep them
-      finalXI.push(starter);
+
+      const xiTypes = getXITypes(starters);
+      const outType = typeOf(starter.element);
+      const inType = typeOf(candidate.element);
+
+      if (!isValidFormation(xiTypes, outType, inType)) continue;
+
+      starters[i] = {
+        ...candidate,
+        position: starter.position,
+        is_captain: false,
+        is_vice_captain: false,
+        multiplier: 1,
+      };
+      usedBench.add(candidate.element);
+      break;
     }
   }
 
-  // Add remaining bench players in their original positions
-  bench.forEach((benchPick) => {
-    if (!usedBench.has(benchPick.position)) {
-      finalXI.push(benchPick);
-    }
-  });
-
-  // Sort by position
-  return finalXI.sort((a, b) => a.position - b.position);
+  const unusedBench = bench.filter((p) => !usedBench.has(p.element));
+  return [...starters, ...unusedBench].sort((a, b) => a.position - b.position);
 }
 
 /**
@@ -257,10 +321,20 @@ export function computeSquadPoints(
   liveStatsMap: Map<number, LivePlayerStats>,
   fixtureStatusMap: Map<number, { status: "not_started" | "live" | "finished"; elapsed: number }>,
   elementTypes: Map<number, ElementType>,
-  rules: ScoringRules = DEFAULT_RULES
+  elementTeamMap: Map<number, number>,
+  elementTypeMap: Map<number, number>,
+  rules: ScoringRules = DEFAULT_RULES,
 ): number {
   // Apply autosubs first
-  const finalPicks = applyAutoSubs(picks, liveStatsMap, elementTypes, rules);
+  const finalPicks = applyAutoSubs(
+    picks,
+    liveStatsMap,
+    elementTypes,
+    fixtureStatusMap,
+    elementTeamMap,
+    elementTypeMap,
+    rules,
+  );
 
   // Compute points for starting XI only
   const startingXI = finalPicks.filter((p) => p.position <= 11);

@@ -37,7 +37,7 @@ interface MatchupWithScores {
   lastUpdated: string;
 }
 
-const POLL_INTERVAL = 60000; // 60 seconds
+const POLL_INTERVAL = 300000; // 5 minutes
 const DEFAULT_RULES: ScoringRules = {
   applyAutosubs: true,
   applyBonus: true,
@@ -56,6 +56,11 @@ export function LiveMatchups() {
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const timeoutRef = useRef<number | null>(null);
+  const bootstrapRef = useRef<{
+    elementTypeMap: Map<number, number>;
+    elementTeamMap: Map<number, number>;
+    elementTypes: Map<number, ElementType>;
+  } | null>(null);
 
   // Fetch context once
   useEffect(() => {
@@ -86,7 +91,7 @@ export function LiveMatchups() {
 
     async function fetchH2H() {
       try {
-        const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/api/h2h?entryId=${entryId}&event=${context.currentEvent}`;
+        const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/api/h2h?entryId=${entryId}&event=${context!.currentEvent}`;
         const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
         if (!res.ok) throw new Error("Failed to fetch H2H matchups");
         const data: H2HResponse = await res.json();
@@ -116,10 +121,11 @@ export function LiveMatchups() {
     setIsPolling(true);
     const controller = new AbortController();
     abortControllerRef.current = controller;
+    let anyGameLive = false;
 
     try {
       // Fetch live data
-      const liveUrl = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/api/live?event=${context.currentEvent}`;
+      const liveUrl = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/api/live?event=${context!.currentEvent}`;
       const liveRes = await fetch(liveUrl, {
         headers: getSupabaseFunctionHeaders(),
         signal: controller.signal,
@@ -128,46 +134,97 @@ export function LiveMatchups() {
       if (!liveRes.ok) throw new Error("Failed to fetch live data");
       const liveData: LiveDataResponse = await liveRes.json();
 
-      // Build live stats map
+      // Build live stats map (Draft API elements is a keyed object)
       const liveStatsMap = new Map<number, LivePlayerStats>();
-      liveData.elements.forEach((el) => {
-        liveStatsMap.set(el.element, {
-          element: el.element,
-          stats: el.stats,
-          explain: el.explain,
+      Object.entries(liveData.elements as any).forEach(([key, val]: [string, any]) => {
+        const id = Number(key);
+        if (!id) return;
+        liveStatsMap.set(id, {
+          element: id,
+          stats: val.stats ?? val,
+          explain: val.explain ?? [],
         });
       });
 
-      // Build fixture status map (simplified - would need element->fixture mapping from bootstrap)
-      // For now, we'll use a default status for all players
+      // Only fetch bootstrap once - it doesn't change during a GW
+      if (!bootstrapRef.current) {
+        const bootstrapUrl = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/api/bootstrap`;
+        const bootstrap = await fetch(bootstrapUrl, {
+          headers: getSupabaseFunctionHeaders(),
+          signal: controller.signal,
+        })
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null);
+
+        const elementTypeMap = new Map<number, number>();
+        const elementTeamMap = new Map<number, number>();
+        const elementTypes = new Map<number, ElementType>();
+
+        for (const el of bootstrap?.elements ?? []) {
+          elementTypeMap.set(el.id, el.element_type);
+          elementTeamMap.set(el.id, el.team);
+        }
+        for (const et of bootstrap?.element_types ?? []) {
+          elementTypes.set(et.id, et as ElementType);
+        }
+
+        bootstrapRef.current = { elementTypeMap, elementTeamMap, elementTypes };
+      }
+
+      const { elementTypeMap, elementTeamMap, elementTypes } = bootstrapRef.current!;
+
+      // Build fixture status per team, then map to elements
+      const teamFixtureStatus = new Map<
+        number,
+        { status: "not_started" | "live" | "finished"; elapsed: number }
+      >();
+
+      anyGameLive = liveData.fixtures.some((f: any) => f.started && !f.finished);
+
+      for (const fixture of liveData.fixtures) {
+        const status: "not_started" | "live" | "finished" = fixture.finished
+          ? "finished"
+          : fixture.started
+          ? "live"
+          : "not_started";
+        const elapsed = fixture.elapsed ?? 0;
+
+        const updateTeam = (teamId: number) => {
+          const existing = teamFixtureStatus.get(teamId);
+          if (!existing) {
+            teamFixtureStatus.set(teamId, { status, elapsed });
+          } else {
+            if (existing.status === "finished" && status !== "finished") {
+              teamFixtureStatus.set(teamId, { status, elapsed });
+            }
+            if (elapsed > existing.elapsed) {
+              teamFixtureStatus.set(teamId, {
+                status:
+                  existing.status === "finished" && status === "finished"
+                    ? "finished"
+                    : status === "not_started"
+                    ? existing.status
+                    : status,
+                elapsed: Math.max(elapsed, existing.elapsed),
+              });
+            }
+          }
+        };
+
+        updateTeam(fixture.team_h);
+        updateTeam(fixture.team_a);
+      }
+
       const fixtureStatusMap = new Map<
         number,
         { status: "not_started" | "live" | "finished"; elapsed: number }
       >();
-      
-      // Determine overall fixture status (simplified)
-      const hasStarted = liveData.fixtures.some((f) => f.started);
-      const allFinished = liveData.fixtures.every((f) => f.finished);
-      const maxElapsed = Math.max(...liveData.fixtures.map((f) => f.elapsed), 0);
-      
-      const overallStatus = allFinished
-        ? ("finished" as const)
-        : hasStarted
-          ? ("live" as const)
-          : ("not_started" as const);
-      
-      // Apply same status to all players (simplified - would need proper mapping)
-      liveStatsMap.forEach((_, elementId) => {
-        fixtureStatusMap.set(elementId, {
-          status: overallStatus,
-          elapsed: maxElapsed,
-        });
-      });
 
-      // Recompute scores for each matchup
-      // Note: elementTypes would normally come from bootstrap data
-      // For now, we'll use an empty map (scoring will use defaults)
-      const elementTypes = new Map<number, ElementType>();
+      elementTeamMap.forEach((teamId, elementId) => {
+        const status =
+          teamFixtureStatus.get(teamId) ?? ({ status: "not_started", elapsed: 0 } as const);
+        fixtureStatusMap.set(elementId, status);
+      });
       
       const updatedMatchups: MatchupWithScores[] = matchups.map((matchup) => {
         // Convert PickResponse to Pick format
@@ -191,14 +248,18 @@ export function LiveMatchups() {
           liveStatsMap,
           fixtureStatusMap,
           elementTypes,
-          DEFAULT_RULES
+          elementTeamMap,
+          elementTypeMap,
+          DEFAULT_RULES,
         );
         const points2 = computeSquadPoints(
           picks2,
           liveStatsMap,
           fixtureStatusMap,
           elementTypes,
-          DEFAULT_RULES
+          elementTeamMap,
+          elementTypeMap,
+          DEFAULT_RULES,
         );
 
         return {
@@ -219,8 +280,8 @@ export function LiveMatchups() {
       }
     } finally {
       setIsPolling(false);
-      // Schedule next poll
-      if (!controller.signal.aborted) {
+      // Only continue polling if PL games are currently live
+      if (!controller.signal.aborted && anyGameLive) {
         timeoutRef.current = window.setTimeout(pollLiveData, POLL_INTERVAL);
       }
     }
@@ -243,6 +304,11 @@ export function LiveMatchups() {
       }
     };
   }, [context, matchups.length, loading, pollLiveData]);
+
+  const handleRefresh = useCallback(() => {
+    if (timeoutRef.current !== null) clearTimeout(timeoutRef.current);
+    pollLiveData();
+  }, [pollLiveData]);
 
   if (!entryId) {
     return (
@@ -289,10 +355,16 @@ export function LiveMatchups() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {isPolling && (
-            <Badge variant="outline" className="text-xs">
-              Updating...
-            </Badge>
+          {isPolling ? (
+            <Badge variant="outline" className="text-xs">Updating...</Badge>
+          ) : (
+            <button
+              onClick={handleRefresh}
+              className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1"
+              title="Refresh now"
+            >
+              ↻ Refresh
+            </button>
           )}
           {lastUpdate && (
             <span className="text-xs text-muted-foreground">

@@ -79,7 +79,7 @@ export function ThisWeekMatchups() {
   const { getCrest } = useManagerCrestMap();
 
   const loadMatchups = useCallback(async (silent = false): Promise<boolean> => {
-    let eventFinished = true;
+    let gamesLive = false;
     try {
       if (silent) {
         setRefreshing(true);
@@ -108,9 +108,14 @@ export function ThisWeekMatchups() {
         const liveRes = await fetch(liveUrl, { headers: getSupabaseFunctionHeaders() });
         if (liveRes.ok) {
           const livePayload: LiveDataResponse = await liveRes.json();
-          (livePayload.elements || []).forEach((el) => {
-            startsByPlayerId[el.element] = Number(el.stats?.starts || 0);
+          const elementsObj = livePayload?.elements ?? {};
+          Object.entries(elementsObj as any).forEach(([key, el]: [string, any]) => {
+            const id = Number(key);
+            if (!id) return;
+            startsByPlayerId[id] = Number(el?.stats?.starts ?? 0);
           });
+          const fixtures = (livePayload?.fixtures ?? []) as any[];
+          gamesLive = fixtures.some((f: any) => f.started && !f.finished);
         }
       } catch {
         // Non-blocking
@@ -188,17 +193,6 @@ export function ThisWeekMatchups() {
 
       setData(merged);
       setLastUpdated(Date.now());
-
-      try {
-        const gwRes = await fetch(
-          `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/current-gameweek`,
-          { headers: getSupabaseFunctionHeaders() }
-        );
-        const gwData = gwRes.ok ? await gwRes.json() : null;
-        eventFinished = gwData?.event_finished === true || gwData?.current_event_finished === true;
-      } catch {
-        // default eventFinished stays true (no polling)
-      }
     } catch (err: any) {
       setError(err.message || "Failed to load matchups");
     } finally {
@@ -208,28 +202,30 @@ export function ThisWeekMatchups() {
         setLoading(false);
       }
     }
-    return eventFinished;
+    return gamesLive;
   }, []);
 
   useEffect(() => {
     let mounted = true;
 
-    const run = (silent = false) => {
-      if (!mounted) return Promise.resolve(true);
+    const run = async (silent = false): Promise<boolean> => {
+      if (!mounted) return false;
       return loadMatchups(silent);
     };
 
-    run(false).then((eventFinished) => {
-      if (!eventFinished && mounted) {
-        pollingIntervalRef.current = window.setInterval(() => run(true), POLL_INTERVAL_MS);
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    run(false).then((gamesLive) => {
+      if (gamesLive && mounted) {
+        timer = window.setInterval(() => run(true), POLL_INTERVAL_MS);
+        pollingIntervalRef.current = timer;
       }
     });
 
     return () => {
       mounted = false;
-      if (pollingIntervalRef.current) {
-        window.clearInterval(pollingIntervalRef.current);
-        pollingIntervalRef.current = null;
+      if (timer) {
+        window.clearInterval(timer);
       }
     };
   }, [loadMatchups]);

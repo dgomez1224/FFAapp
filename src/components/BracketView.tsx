@@ -127,6 +127,14 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
   const [refreshBracketTrigger, setRefreshBracketTrigger] = useState(0);
   const pollingIntervalRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const handleRefresh = () => {
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+    setRefreshBracketTrigger((t) => t + 1);
+  };
+
   useEffect(() => {
     if (contextLoading || (showLegacySelector && selectedSeason !== "current")) {
       return;

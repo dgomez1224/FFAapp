@@ -167,6 +167,19 @@ export default function LeagueStandings() {
   const [error, setError] = useState<string | null>(null);
   const { getCrest } = useManagerCrestMap();
   const baselineRanksRef = useRef<Record<string, number> | null>(null);
+  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  function handleRefresh() {
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+    // Re-run effect body by calling fetchStandings-like logic via a small wrapper.
+    // We rely on the existing effect's fetchStandings; simplest is to refactor,
+    // but per instructions we keep logic unchanged, so we trigger a reload by
+    // forcing window reload of this route.
+    window.location.reload();
+  }
 
   const baselineStandings = data?.standings || [];
   const baselineById = useMemo(() => {
@@ -177,8 +190,6 @@ export default function LeagueStandings() {
     return map;
   }, [baselineStandings]);
   const rowsToRender = isLiveGameweek && liveStandings ? liveStandings : baselineStandings;
-
-  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     let eventFinished = true;
@@ -428,9 +439,18 @@ export default function LeagueStandings() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="font-heading text-2xl font-semibold">League Standings</h1>
-        <p className="text-sm text-muted-foreground">Ranked by league points, then points for.</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="font-heading text-2xl font-semibold">League Standings</h1>
+          <p className="text-sm text-muted-foreground">Ranked by league points, then points for.</p>
+        </div>
+        <button
+          type="button"
+          onClick={handleRefresh}
+          className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50 flex items-center gap-1"
+        >
+          ↻ Refresh
+        </button>
       </div>
 
       <Card className="p-4">
