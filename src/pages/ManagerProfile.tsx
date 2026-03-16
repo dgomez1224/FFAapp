@@ -743,43 +743,93 @@ export default function ManagerProfile() {
         </TabsContent>
 
         <TabsContent value="trophies" className="mt-4">
-          <Card className="p-4">
-            <h3 className="text-lg font-semibold mb-4">Trophies</h3>
-            {data.trophies.length > 0 ? (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Season</TableHead>
-                    <TableHead>League</TableHead>
-                    <TableHead>FFA Cup</TableHead>
-                    <TableHead>Goblet</TableHead>
-                    <TableHead>Treble</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {data.trophies.map((trophy) => (
-                    <TableRow key={trophy.season}>
-                      <TableCell className="font-medium">{trophy.season}</TableCell>
-                      <TableCell className="text-center">
-                        {trophy.league_champion ? "✓" : "–"}
-                      </TableCell>
-                      <TableCell className="text-center">
-                        {trophy.cup_winner ? "✓" : "–"}
-                      </TableCell>
-                      <TableCell className="text-center">
-                        {trophy.goblet_winner ? "✓" : "–"}
-                      </TableCell>
-                      <TableCell className="text-center">
-                        {trophy.treble ? "✓" : "–"}
-                      </TableCell>
+            <Card className="p-4">
+              <h3 className="text-lg font-semibold mb-4">Trophies</h3>
+              {data.trophies.length > 0 ? (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Season</TableHead>
+                      <TableHead className="text-center">League</TableHead>
+                      <TableHead className="text-center">FFA Cup</TableHead>
+                      <TableHead className="text-center">Goblet</TableHead>
+                      <TableHead className="text-center">Treble</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            ) : (
-              <p className="text-sm text-muted-foreground">No trophies yet.</p>
-            )}
-          </Card>
+                  </TableHeader>
+                  <TableBody>
+                    {data.trophies.map((trophy) => (
+                      <TableRow key={trophy.season}>
+                        <TableCell className="font-medium">{trophy.season}</TableCell>
+                        <TableCell className="text-center">
+                          {trophy.league_champion ? (
+                            <img
+                              src={leagueTrophy}
+                              alt="League trophy"
+                              title="League Title"
+                              className="mx-auto h-6 w-4 object-contain"
+                            />
+                          ) : (
+                            <span className="text-zinc-400">–</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          {trophy.cup_winner ? (
+                            <img
+                              src={cupTrophy}
+                              alt="FFA Cup trophy"
+                              title="FFA Cup Win"
+                              className="mx-auto h-6 w-4 object-contain"
+                            />
+                          ) : (
+                            <span className="text-zinc-400">–</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          {trophy.goblet_winner ? (
+                            <img
+                              src={gobletTrophy}
+                              alt="Goblet trophy"
+                              title="Goblet Win"
+                              className="mx-auto h-6 w-4 object-contain"
+                            />
+                          ) : (
+                            <span className="text-zinc-400">–</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          {trophy.treble ? (
+                            <div className="flex items-center justify-center gap-[2px]">
+                              <img
+                                src={leagueTrophy}
+                                alt="League trophy"
+                                title="Treble season"
+                                className="h-5 w-3 object-contain"
+                              />
+                              <img
+                                src={cupTrophy}
+                                alt="FFA Cup trophy"
+                                title="Treble season"
+                                className="h-5 w-3 object-contain"
+                              />
+                              <img
+                                src={gobletTrophy}
+                                alt="Goblet trophy"
+                                title="Treble season"
+                                className="h-5 w-3 object-contain"
+                              />
+                            </div>
+                          ) : (
+                            <span className="text-zinc-400">–</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              ) : (
+                <p className="text-sm text-muted-foreground">No trophies yet.</p>
+              )}
+            </Card>
         </TabsContent>
       </Tabs>
 

@@ -8,6 +8,9 @@ import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { Card } from "../components/ui/card";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import { contrastText, extractPaletteFromImage, mix, rgbCss } from "../lib/colorPalette";
+import leagueTrophy from "../assets/trophies/League Cup Icon.png";
+import cupTrophy from "../assets/trophies/FFA Cup Icon + Year.png";
+import gobletTrophy from "../assets/trophies/Goblet Icon.png";
 
 interface ManagerCardData {
   manager_name: string;
@@ -184,13 +187,7 @@ export default function ManagersPage() {
           const managerKey = normalizeManagerName(manager.manager_name);
           const media = mediaByManager[managerKey];
           const cardTheme = themeByManager[managerKey];
-          const blurb = [
-            manager.league_titles ? `${manager.league_titles}x league titles` : null,
-            manager.cup_wins ? `${manager.cup_wins}x cup wins` : null,
-            manager.goblet_wins ? `${manager.goblet_wins}x goblet wins` : null,
-          ]
-            .filter(Boolean)
-            .join(" • ") || "Building their legacy season by season.";
+          const blurb = "Building their legacy season by season.";
 
           return (
             <Card
@@ -219,8 +216,40 @@ export default function ManagersPage() {
                 </div>
               </div>
 
-              <div className="text-sm text-muted-foreground" style={cardTheme ? { color: cardTheme.mutedText } : undefined}>
-                {blurb}
+              <div className="flex flex-wrap gap-1 text-sm text-muted-foreground" style={cardTheme ? { color: cardTheme.mutedText } : undefined}>
+                {manager.league_titles > 0 && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-muted/70 px-2 py-0.5 text-[11px]">
+                    <img
+                      src={leagueTrophy}
+                      alt="League trophy"
+                      className="h-4 w-3 object-contain"
+                    />
+                    <span>{manager.league_titles}x</span>
+                  </span>
+                )}
+                {manager.cup_wins > 0 && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-muted/70 px-2 py-0.5 text-[11px]">
+                    <img
+                      src={cupTrophy}
+                      alt="FFA Cup trophy"
+                      className="h-4 w-3 object-contain"
+                    />
+                    <span>{manager.cup_wins}x</span>
+                  </span>
+                )}
+                {manager.goblet_wins > 0 && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-muted/70 px-2 py-0.5 text-[11px]">
+                    <img
+                      src={gobletTrophy}
+                      alt="Goblet trophy"
+                      className="h-4 w-3 object-contain"
+                    />
+                    <span>{manager.goblet_wins}x</span>
+                  </span>
+                )}
+                {manager.league_titles + manager.cup_wins + manager.goblet_wins === 0 && (
+                  <span>{blurb}</span>
+                )}
               </div>
 
               <div className="grid grid-cols-3 gap-2 text-xs">
