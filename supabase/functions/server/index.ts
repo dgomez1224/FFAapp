@@ -4145,6 +4145,7 @@ playerInsights.get("/", async (c) => {
       const expected_assists = Number(el?.expected_assists ?? 0);
       const expected_goal_involvements = Number(el?.expected_goal_involvements ?? 0);
       const expected_goals_conceded = Number(el?.expected_goals_conceded ?? 0);
+      const goals_conceded = Number(el?.goals_conceded ?? el?.stats?.goals_conceded ?? 0);
 
       // SOURCE B: Per-GW live loop accumulator only
       const gamesStarted = playerTotals[playerId]?.games_started ?? 0;
@@ -4179,6 +4180,7 @@ playerInsights.get("/", async (c) => {
         goals_scored,
         assists,
         own_goals,
+        goals_conceded,
         bonus,
         expected_goals,
         expected_assists,

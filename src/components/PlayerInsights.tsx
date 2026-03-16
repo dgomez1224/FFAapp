@@ -20,6 +20,7 @@ interface PlayerInsight {
   defensive_contribution_returns?: number;
   defensive_contributions?: number;
   bonus?: number;
+  goals_conceded?: number;
   expected_goals?: number;
   expected_assists?: number;
   expected_goal_involvements?: number;
@@ -205,10 +206,22 @@ export default function PlayerInsights() {
   ]);
 
   const sortedPlayers = useMemo(() => {
-    const rows = [...filteredPlayers];
-    rows.sort((a, b) => {
-      const av = (a as any)?.[sortKey];
-      const bv = (b as any)?.[sortKey];
+    const rows = filteredPlayers.map((p) => {
+      const goalsConceded = p.goals_conceded ?? 0;
+      const gp = p.games_played ?? 0;
+      const totalMinutes = p.total_minutes ?? 0;
+      const gcPerGame = gp > 0 ? goalsConceded / gp : 0;
+      const gcPer90 = totalMinutes > 0 ? (goalsConceded / totalMinutes) * 90 : 0;
+      return {
+        ...p,
+        gc_per_game: gcPerGame,
+        gc_per_90: gcPer90,
+      } as PlayerInsight & { gc_per_game: number; gc_per_90: number };
+    });
+
+    rows.sort((a: any, b: any) => {
+      const av = a?.[sortKey];
+      const bv = b?.[sortKey];
       const an = Number(av);
       const bn = Number(bv);
 
@@ -365,6 +378,7 @@ export default function PlayerInsights() {
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("bonus")}>
                   Bonus{sortLabel("bonus")}
                 </TableHead>
+                <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("goals_conceded")}>GC{sortLabel("goals_conceded")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("own_goals")}>OG{sortLabel("own_goals")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("expected_goals")}>
                   xG{sortLabel("expected_goals")}
@@ -381,6 +395,8 @@ export default function PlayerInsights() {
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("points_per_game_played")}>Pts/Game{sortLabel("points_per_game_played")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("minutes_per_game_played")}>Min/Game{sortLabel("minutes_per_game_played")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("points_per_90_played")}>Pts/90{sortLabel("points_per_90_played")}</TableHead>
+                <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("gc_per_game")}>GC/GP{sortLabel("gc_per_game")}</TableHead>
+                <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("gc_per_90")}>GC/90{sortLabel("gc_per_90")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("home_games")}>Home GP{sortLabel("home_games")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("away_games")}>Away GP{sortLabel("away_games")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("home_points")}>Home Pts{sortLabel("home_points")}</TableHead>
@@ -406,6 +422,7 @@ export default function PlayerInsights() {
                   <TableCell className="text-right">{p.defensive_contribution_returns ?? 0}</TableCell>
                   <TableCell className="text-right">{p.defensive_contributions ?? 0}</TableCell>
                   <TableCell className="text-right">{p.bonus ?? 0}</TableCell>
+                  <TableCell className="text-right">{p.goals_conceded ?? 0}</TableCell>
                   <TableCell className="text-right">{p.own_goals ?? 0}</TableCell>
                   <TableCell className="text-right">
                     {p.expected_goals != null ? Number(p.expected_goals).toFixed(2) : "0.00"}
@@ -428,6 +445,12 @@ export default function PlayerInsights() {
                     {p.games_played ? ((p.total_minutes ?? 0) / p.games_played).toFixed(1) : "0.0"}
                   </TableCell>
                   <TableCell className="text-right">{(p.points_per_90_played ?? 0).toFixed(2)}</TableCell>
+                  <TableCell className="text-right">
+                    {(p as any).gc_per_game != null ? (p as any).gc_per_game.toFixed(2) : "0.00"}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {(p as any).gc_per_90 != null ? (p as any).gc_per_90.toFixed(2) : "0.00"}
+                  </TableCell>
                   <TableCell className="text-right">{p.home_games ?? 0}</TableCell>
                   <TableCell className="text-right">{p.away_games ?? 0}</TableCell>
                   <TableCell className="text-right">{p.home_points ?? 0}</TableCell>
