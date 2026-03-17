@@ -4761,6 +4761,43 @@ playerInsights.get("/", async (c) => {
   }
 });
 
+// Lightweight ownership map for frontend overrides: player_id -> manager_name (or null if unowned).
+playerInsights.get("/ownership", async (c) => {
+  try {
+    const leagueDetails = await fetchLeagueDetails();
+    const leagueEntries = normalizeDraftList<any>(leagueDetails?.league_entries || []);
+    const ownerLabelByOwnerId: Record<number, string> = {};
+    leagueEntries.forEach((entry: any) => {
+      const managerName = formatDraftManagerName(entry);
+      const ownerLabel = String(managerName || "").trim();
+      if (!ownerLabel) return;
+      const key = parsePositiveInt(entry?.entry_id ?? entry?.entry);
+      if (!key) return;
+      ownerLabelByOwnerId[key] = ownerLabel;
+    });
+
+    const elementStatusPayload = await fetchElementStatus();
+    const elementStatusRows = normalizeDraftList<any>(
+      elementStatusPayload?.element_status ?? elementStatusPayload?.elements ?? [],
+    );
+
+    const owners: Record<number, string | null> = {};
+    elementStatusRows.forEach((row: any) => {
+      const playerId = parsePositiveInt(row?.element ?? row?.element_id ?? row?.player_id);
+      if (!playerId) return;
+      const ownerKey = parsePositiveInt(row?.owner);
+      if (ownerKey == null) return;
+      const ownerLabel = ownerLabelByOwnerId[ownerKey] || null;
+      if (!ownerLabel) return;
+      if (!owners[playerId]) owners[playerId] = ownerLabel;
+    });
+
+    return c.json({ owners });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to fetch player ownership");
+  }
+});
+
 // --------------------
 // H2H Standings
 // --------------------

@@ -137,15 +137,33 @@ export default function PlayerInsights() {
       try {
         setLoading(true);
         setError(null);
-        const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/player-insights`;
-        const res = await fetch(url, { headers: getSupabaseFunctionHeaders() as HeadersInit });
-        const payload: PlayerInsightsResponse = await res.json();
+        const baseUrl = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/player-insights`;
+        const [insightsRes, ownershipRes] = await Promise.all([
+          fetch(baseUrl, { headers: getSupabaseFunctionHeaders() as HeadersInit }),
+          fetch(`${baseUrl}/ownership`, { headers: getSupabaseFunctionHeaders() as HeadersInit }),
+        ]);
 
-        if (!res.ok || (payload as any)?.error) {
+        const payload: PlayerInsightsResponse = await insightsRes.json();
+        const ownershipPayload: { owners?: Record<number, string | null> } | null =
+          ownershipRes.ok ? await ownershipRes.json() : null;
+
+        if (!insightsRes.ok || (payload as any)?.error) {
           throw new Error((payload as any)?.error?.message || "Failed to fetch player insights");
         }
 
-        setData(payload);
+        const owners = ownershipPayload?.owners || {};
+        const adjustedInsights = (payload.insights || []).map((row) => {
+          const owner = owners[row.player_id] ?? null;
+          if (!owner) return row;
+          return {
+            ...row,
+            owner_team: owner,
+            ownership_status: "owned",
+            owned_by: [owner],
+          };
+        });
+
+        setData({ ...payload, insights: adjustedInsights });
       } catch (err: any) {
         setError(err.message || "Failed to load player insights");
       } finally {
