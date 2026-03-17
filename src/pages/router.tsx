@@ -221,24 +221,27 @@ function Shell() {
       <header className="border-b">
         <div className="mx-auto flex min-h-16 max-w-6xl items-center justify-between gap-3 px-4 py-2">
           <Link to="/dashboard" className="font-heading group text-lg font-semibold inline-flex items-center gap-2 hover:opacity-90">
-            <img
-              src={
-                location.pathname.startsWith("/goblet")
-                  ? gobletTrophy
-                  : location.pathname.startsWith("/bracket")
-                  ? cupTrophy
-                  : leagueTrophy
-              }
-              alt={
-                location.pathname.startsWith("/goblet")
-                  ? "Goblet trophy"
-                  : location.pathname.startsWith("/bracket")
-                  ? "FFA Cup trophy"
-                  : "League trophy"
-              }
-              className="h-7 w-5 object-contain transition-all duration-200 group-hover:scale-110 group-hover:brightness-110 group-hover:sepia group-hover:saturate-[8] group-hover:hue-rotate-[340deg]"
-            />
-            {location.pathname.startsWith("/bracket") ? "FFA Bench Boost Cup" : "League of Lads"}
+            {(() => {
+              const path = location.pathname;
+              const isGoblet = path.startsWith("/goblet");
+              const isCup =
+                path.startsWith("/bracket") ||
+                path.startsWith("/lineup/cup") ||
+                path.startsWith("/matchup/cup");
+              const src = isGoblet ? gobletTrophy : isCup ? cupTrophy : leagueTrophy;
+              const alt = isGoblet ? "Goblet trophy" : isCup ? "FFA Cup trophy" : "League trophy";
+              const label = isCup ? "FFA Bench Boost Cup" : "League of Lads";
+              return (
+                <>
+                  <img
+                    src={src}
+                    alt={alt}
+                    className="h-7 w-5 object-contain transition-all duration-200 group-hover:scale-110 group-hover:brightness-110 group-hover:sepia group-hover:saturate-[8] group-hover:hue-rotate-[340deg]"
+                  />
+                  {label}
+                </>
+              );
+            })()}
           </Link>
 
           <nav className="font-heading hidden flex-wrap items-center gap-5 text-sm tracking-wide lg:flex">

@@ -37,6 +37,8 @@ interface SeasonStanding {
   points_for: number;
   points: number;
   competition_type: string;
+  avg_margin_win?: number | null;
+  avg_margin_loss?: number | null;
 }
 
 interface LeaderLine {
@@ -156,7 +158,7 @@ export default function Home() {
 
     async function loadSeasonStandings() {
       try {
-        const [leagueRes, gobletRes] = await Promise.all([
+        const [leagueRes, gobletRes, h2hRes] = await Promise.all([
           supabase
             .from("legacy_season_standings")
             .select("season, manager_name, final_rank, wins, draws, losses, points_for, points, competition_type")
@@ -171,6 +173,10 @@ export default function Home() {
             .eq("competition_type", "goblet")
             .order("final_rank", { ascending: true })
             .limit(40),
+          supabase
+            .from("legacy_h2h_gameweek_results")
+            .select("manager_name, season, points_for, points_against, result")
+            .eq("season", selectedSeason),
         ]);
 
         if (leagueRes.error) {
@@ -180,13 +186,51 @@ export default function Home() {
           throw new Error(gobletRes.error.message);
         }
 
+        if (h2hRes.error) {
+          throw new Error(h2hRes.error.message);
+        }
+
+        const statsMap = new Map<string, { avg_margin_win: number | null; avg_margin_loss: number | null }>();
+        (h2hRes.data || []).forEach((row: any) => {
+          const manager = canonicalManagerName(row.manager_name);
+          const margin = Number(row.points_for) - Number(row.points_against);
+          if (!Number.isFinite(margin)) return;
+          const existing = statsMap.get(manager) || { avg_margin_win: null, avg_margin_loss: null, winSum: 0, winCount: 0, lossSum: 0, lossCount: 0 } as any;
+          if (row.result === "W") {
+            existing.winSum = (existing.winSum || 0) + margin;
+            existing.winCount = (existing.winCount || 0) + 1;
+          } else if (row.result === "L") {
+            // margin is negative for losses; average loss should be positive magnitude
+            const lossMargin = Math.abs(margin);
+            existing.lossSum = (existing.lossSum || 0) + lossMargin;
+            existing.lossCount = (existing.lossCount || 0) + 1;
+          }
+          statsMap.set(manager, existing);
+        });
+
+        // Finalize averages
+        Array.from(statsMap.entries()).forEach(([manager, raw]: any) => {
+          const winAvg = raw.winCount > 0 ? raw.winSum / raw.winCount : null;
+          const lossAvg = raw.lossCount > 0 ? raw.lossSum / raw.lossCount : null;
+          statsMap.set(manager, {
+            avg_margin_win: winAvg,
+            avg_margin_loss: lossAvg,
+          });
+        });
+
         const mergeRows = (rows: SeasonStanding[]) => {
           const map = new Map<string, SeasonStanding>();
           (rows || []).forEach((row) => {
             const manager = canonicalManagerName(row.manager_name);
             const existing = map.get(manager);
             if (!existing) {
-              map.set(manager, { ...row, manager_name: manager });
+              const stats = statsMap.get(manager);
+              map.set(manager, {
+                ...row,
+                manager_name: manager,
+                avg_margin_win: stats?.avg_margin_win ?? null,
+                avg_margin_loss: stats?.avg_margin_loss ?? null,
+              });
               return;
             }
             map.set(manager, {
@@ -290,6 +334,8 @@ export default function Home() {
     losses: s.losses,
     points_for: s.points_for,
     points: s.points,
+    avg_margin_win: s.avg_margin_win ?? null,
+    avg_margin_loss: s.avg_margin_loss ?? null,
   }));
 
   const gobletTableData = gobletStandings.map((s) => ({
@@ -423,6 +469,7 @@ export default function Home() {
                   standings={leagueTableData}
                   title={`${selectedSeason} League Standings`}
                   showPointsFor={true}
+                  showAvgMargin={true}
                 />
               </Card>
 

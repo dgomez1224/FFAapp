@@ -14,6 +14,7 @@ import CupGroupStage from "../components/CupGroupStage";
 import { ThisWeeksWaivers } from "../components/ThisWeeksWaivers";
 import LivePlayerUpdates from "../components/LivePlayerUpdates";
 import { BracketView } from "../components/BracketView";
+import { PreviousWeekResults } from "../components/PreviousWeekResults";
 
 export default function DashboardPage() {
   return (
@@ -27,6 +28,7 @@ export default function DashboardPage() {
       
       <LivePlayerUpdates />
       <LeagueStandings />
+      <PreviousWeekResults />
       <BracketView showLegacySelector={false} />
       <GobletStandings />
       

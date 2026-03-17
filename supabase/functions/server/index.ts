@@ -718,6 +718,7 @@ function extractLivePlayerStatsMap(payload: any) {
     goals_scored: coerceNumber(stats?.goals_scored, 0),
     assists: coerceNumber(stats?.assists, 0),
     minutes: coerceNumber(stats?.minutes, 0),
+    bonus: coerceNumber(stats?.bonus, 0),
     defensive_contributions: coerceNumber(
       stats?.defensive_contributions ?? stats?.defensive_contribution,
       0,
@@ -7552,6 +7553,248 @@ captainPicks.post("/select", async (c) => {
 
 const fixturesHub = new Hono();
 const leagueActivity = new Hono();
+
+leagueActivity.get("/previous-week-results", async (c) => {
+  try {
+    const supabase = getSupabaseAdmin();
+    const bootstrap = await fetchDraftBootstrap();
+    const currentGw = extractDraftCurrentEventId(bootstrap) || 1;
+    const latestCompleted = extractLatestCompletedDraftEventId(bootstrap);
+    // If the current event is already completed, use it; otherwise use the last completed,
+    // falling back to previous event when necessary.
+    let targetGw: number;
+    if (latestCompleted && latestCompleted === currentGw) {
+      targetGw = currentGw;
+    } else if (latestCompleted && latestCompleted > 0) {
+      targetGw = latestCompleted;
+    } else if (currentGw > 1) {
+      targetGw = currentGw - 1;
+    } else {
+      targetGw = currentGw || 1;
+    }
+
+    const { data: h2hRows, error: h2hError } = await supabase
+      .from("legacy_h2h_gameweek_results")
+      .select("manager_name, opponent_name, points_for, points_against, result")
+      .eq("season", CURRENT_SEASON)
+      .eq("gameweek", targetGw);
+    if (h2hError && !isMissingRelationError(h2hError)) {
+      return jsonError(c, 500, "Failed to fetch previous week results", h2hError.message);
+    }
+
+    const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
+    const draftEntries = normalizeDraftList<any>(details?.league_entries);
+    const teamByManager: Record<string, { id: string | null; entry_id: string | null; entry_name: string | null }> = {};
+    draftEntries.forEach((entry: any) => {
+      const managerName = formatDraftManagerName(entry);
+      const canonical = toCanonicalManagerName(managerName);
+      if (!canonical) return;
+      const entryId = entry.entry_id ?? entry.entry;
+      const entry_id = entryId != null ? String(entryId) : null;
+      const teamName = formatDraftTeamName(entry);
+      teamByManager[canonical] = {
+        id: entry.id != null ? String(entry.id) : null,
+        entry_id,
+        entry_name: teamName,
+      };
+    });
+
+    type FixtureKey = string;
+    interface Side {
+      manager_name: string;
+      points_for: number;
+      points_against: number;
+      result: string;
+    }
+    const fixtures: Record<
+      FixtureKey,
+      {
+        key: FixtureKey;
+        season: string;
+        gameweek: number;
+        sides: Side[];
+      }
+    > = {};
+
+    (h2hRows || []).forEach((row: any) => {
+      const a = toCanonicalManagerName(row.manager_name);
+      const b = toCanonicalManagerName(row.opponent_name);
+      if (!a || !b) return;
+      const key = [a, b].sort().join("_vs_");
+      if (!fixtures[key]) {
+        fixtures[key] = {
+          key,
+          season: CURRENT_SEASON,
+          gameweek: targetGw,
+          sides: [],
+        };
+      }
+      fixtures[key].sides.push({
+        manager_name: a,
+        points_for: coerceNumber(row.points_for),
+        points_against: coerceNumber(row.points_against),
+        result: String(row.result || "").toUpperCase(),
+      });
+    });
+
+    const live = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${targetGw}/live`);
+    const livePointsMap = extractLivePointsMap(live);
+    const liveStatsMap = extractLivePlayerStatsMap(live);
+    const playersBootstrap = await fetchDraftBootstrap();
+    const players = extractDraftPlayerMap(playersBootstrap);
+    try {
+      const fplBootstrap = await fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`);
+      enrichPlayerMapWithFplPhotos(players, fplBootstrap);
+    } catch {
+      // keep draft-only image_url when FPL unavailable
+    }
+
+    const pickCache: Record<string, any> = {};
+
+    const getLineupStarters = async (managerName: string): Promise<any[]> => {
+      const team = teamByManager[managerName];
+      if (!team || !team.entry_id) return [];
+      if (!pickCache[managerName]) {
+        const picks = await fetchDraftPicksForEntries([team.entry_id], targetGw, true);
+        pickCache[managerName] = picks;
+      }
+      const picks = pickCache[managerName];
+      const rows = picks?.picks || [];
+      return rows
+        .map((pick: any) => {
+          const playerId = coerceNumber(pick.element);
+          const pos = coerceNumber(players[playerId]?.position, 3);
+          const hasLive = Object.prototype.hasOwnProperty.call(livePointsMap, playerId);
+          const totalPoints = hasLive
+            ? coerceNumber(livePointsMap[playerId], 0)
+            : coerceNumber(pick.points ?? pick.event_points, 0);
+          const stats = liveStatsMap[playerId] || {};
+          const bonus = coerceNumber(stats.bonus, 0);
+          const goals = coerceNumber(stats.goals_scored, 0);
+          const assists = coerceNumber(stats.assists, 0);
+          const cleanSheets = coerceNumber(stats.clean_sheets, 0);
+          const defensiveContributions = coerceNumber(stats.defensive_contributions, 0);
+          const defensiveReturn =
+            (pos === 2 && defensiveContributions >= 10) ||
+            (pos >= 3 && pos <= 4 && defensiveContributions >= 12);
+          const penaltiesSaved = coerceNumber(stats.penalties_saved, 0);
+          const saves = coerceNumber(stats.saves, 0);
+          const lineupSlot = coerceNumber(pick.position, 0);
+          const isBench = lineupSlot > 11;
+          return {
+            player_id: playerId,
+            player_name: players[playerId]?.name || `Player ${playerId}`,
+            player_image_url: players[playerId]?.image_url || null,
+            position: pos,
+            total_points: totalPoints,
+            bonus,
+            goals_scored: goals,
+            assists,
+            clean_sheets: cleanSheets,
+            defensive_return: defensiveReturn,
+            penalties_saved: penaltiesSaved,
+            saves,
+            is_bench: isBench,
+          };
+        })
+        .filter((p: any) => !p.is_bench);
+    };
+
+    const results: any[] = [];
+
+    for (const fixture of Object.values(fixtures)) {
+      if (fixture.sides.length === 0) continue;
+      const [sideA, sideB] = fixture.sides.length === 1 ? [fixture.sides[0], null] : fixture.sides;
+      if (!sideA || !sideB) continue;
+
+      const startersA = await getLineupStarters(sideA.manager_name);
+      const startersB = await getLineupStarters(sideB.manager_name);
+      const winningManager =
+        sideA.points_for > sideB.points_for ? sideA.manager_name : sideB.points_for > sideA.points_for ? sideB.manager_name : null;
+
+      const allPlayers = [
+        ...startersA.map((p: any) => ({ ...p, manager_name: sideA.manager_name })),
+        ...startersB.map((p: any) => ({ ...p, manager_name: sideB.manager_name })),
+      ];
+
+      if (allPlayers.length === 0) {
+        results.push({
+          season: fixture.season,
+          gameweek: fixture.gameweek,
+          team_1: {
+            manager_name: sideA.manager_name,
+            team_name: teamByManager[sideA.manager_name]?.entry_name ?? null,
+            entry_id: teamByManager[sideA.manager_name]?.entry_id ?? null,
+            points: sideA.points_for,
+          },
+          team_2: {
+            manager_name: sideB.manager_name,
+            team_name: teamByManager[sideB.manager_name]?.entry_name ?? null,
+            entry_id: teamByManager[sideB.manager_name]?.entry_id ?? null,
+            points: sideB.points_for,
+          },
+          potm: [],
+        });
+        continue;
+      }
+
+      let bestPoints = Number.NEGATIVE_INFINITY;
+      allPlayers.forEach((p) => {
+        if (p.total_points > bestPoints) bestPoints = p.total_points;
+      });
+      const topByPoints = allPlayers.filter((p) => p.total_points === bestPoints);
+      let bestBonus = Number.NEGATIVE_INFINITY;
+      topByPoints.forEach((p) => {
+        if (p.bonus > bestBonus) bestBonus = p.bonus;
+      });
+      let candidates = topByPoints.filter((p) => p.bonus === bestBonus);
+      if (winningManager) {
+        const winners = candidates.filter((p) => p.manager_name === winningManager);
+        if (winners.length > 0) candidates = winners;
+      }
+
+      results.push({
+        season: fixture.season,
+        gameweek: fixture.gameweek,
+        team_1: {
+          manager_name: sideA.manager_name,
+          team_name: teamByManager[sideA.manager_name]?.entry_name ?? null,
+          entry_id: teamByManager[sideA.manager_name]?.entry_id ?? null,
+          points: sideA.points_for,
+        },
+        team_2: {
+          manager_name: sideB.manager_name,
+          team_name: teamByManager[sideB.manager_name]?.entry_name ?? null,
+          entry_id: teamByManager[sideB.manager_name]?.entry_id ?? null,
+          points: sideB.points_for,
+        },
+        potm: candidates.map((p) => ({
+          player_id: p.player_id,
+          player_name: p.player_name,
+          player_image_url: p.player_image_url || null,
+          manager_name: p.manager_name,
+          team_name: teamByManager[p.manager_name]?.entry_name ?? null,
+          total_points: p.total_points,
+          bonus: p.bonus,
+          goals_scored: p.goals_scored ?? 0,
+          assists: p.assists ?? 0,
+          clean_sheets: p.clean_sheets ?? 0,
+          defensive_return: !!p.defensive_return,
+          penalties_saved: p.penalties_saved ?? 0,
+          saves: p.saves ?? 0,
+        })),
+      });
+    }
+
+    return c.json({
+      season: CURRENT_SEASON,
+      gameweek: targetGw,
+      fixtures: results,
+    });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to fetch previous week results");
+  }
+});
 
 fixturesHub.get("/", async (c) => {
   try {

@@ -23,16 +23,18 @@ interface Props {
   standings: StandingRow[];
   showPointsFor?: boolean;
   showPts?: boolean;
+  showAvgMargin?: boolean;
   title?: string;
   className?: string;
 }
 
-export function LegacyStandingsTable({ 
-  standings, 
-  showPointsFor = true, 
+export function LegacyStandingsTable({
+  standings,
+  showPointsFor = true,
   showPts = true,
+  showAvgMargin = false,
   title,
-  className 
+  className,
 }: Props) {
   return (
     <div className={className}>
@@ -50,6 +52,12 @@ export function LegacyStandingsTable({
               <TableHead className="text-right">L</TableHead>
               {showPointsFor && (
                 <TableHead className="text-right">+</TableHead>
+              )}
+              {showAvgMargin && (
+                <>
+                  <TableHead className="text-right">Avg W</TableHead>
+                  <TableHead className="text-right">Avg L</TableHead>
+                </>
               )}
               {showPts && (
                 <TableHead className="text-right font-semibold">PTS</TableHead>
@@ -82,6 +90,16 @@ export function LegacyStandingsTable({
                     <TableCell className="fpl-numeric text-gray-500">
                       {standing.points_for ?? "–"}
                     </TableCell>
+                  )}
+                  {showAvgMargin && (
+                    <>
+                      <TableCell className="fpl-numeric text-gray-500">
+                        {standing.avg_margin_win != null ? Number(standing.avg_margin_win).toFixed(1) : "–"}
+                      </TableCell>
+                      <TableCell className="fpl-numeric text-gray-500">
+                        {standing.avg_margin_loss != null ? Number(standing.avg_margin_loss).toFixed(1) : "–"}
+                      </TableCell>
+                    </>
                   )}
                   {showPts && (
                     <TableCell className="fpl-points">
