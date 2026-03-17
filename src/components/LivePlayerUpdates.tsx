@@ -12,7 +12,12 @@ type StatKey =
   | "yellow_cards"
   | "red_cards"
   | "clean_sheets"
-  | "defensive_returns";
+  | "defensive_returns"
+  | "bonus_points"
+  | "subbed_on"
+  | "own_goals"
+  | "keeper_saves"
+  | "penalties_missed";
 
 interface MatchupRow {
   team_1_id: string;
@@ -42,6 +47,8 @@ interface LineupPlayer {
   yellow_cards: number;
   red_cards: number;
   penalties_saved: number;
+  penalties_missed?: number;
+  saves?: number;
   /** Fixture kickoff (ISO string) for event-time sorting */
   fixture_kickoff_time?: string | null;
   /** Minutes elapsed in fixture for event-time sorting */
@@ -95,6 +102,10 @@ interface PlayerSnapshot {
   red_cards: number;
   clean_sheets: number;
   defensive_returns: number;
+  bonus_points: number;
+  own_goals: number;
+  keeper_saves: number;
+  penalties_missed: number;
   fixture_kickoff_time?: string | null;
   fixture_elapsed?: number;
 }
@@ -139,7 +150,7 @@ function sortUpdates(rows: UpdateRow[]): UpdateRow[] {
   });
 }
 
-const POLL_INTERVAL_MS = 20000;
+const POLL_INTERVAL_MS = 300_000;
 /** Keep all updates for the current gameweek (no cap in practice) */
 const MAX_ROWS = 500;
 
@@ -152,6 +163,11 @@ const STAT_LABELS: Record<StatKey, string> = {
   red_cards: "Red Card",
   clean_sheets: "Clean Sheet",
   defensive_returns: "Defensive Return",
+  bonus_points: "Bonus",
+  subbed_on: "Subbed On",
+  own_goals: "Own Goal",
+  keeper_saves: "Saves (3x)",
+  penalties_missed: "Penalty Missed",
 };
 
 const STAT_ICONS: Record<StatKey, string> = {
@@ -163,15 +179,25 @@ const STAT_ICONS: Record<StatKey, string> = {
   red_cards: "🟥",
   clean_sheets: "🛡️",
   defensive_returns: "🔒",
+  bonus_points: "⭐",
+  subbed_on: "↩️",
+  own_goals: "⚽❌",
+  keeper_saves: "🧤",
+  penalties_missed: "❌⚽",
 };
 
 const STAT_PRIORITY: StatKey[] = [
   "red_cards",
+  "own_goals",
   "goals_scored",
   "assists",
   "penalties_saved",
+  "penalties_missed",
   "clean_sheets",
   "defensive_returns",
+  "bonus_points",
+  "keeper_saves",
+  "subbed_on",
   "starts",
   "yellow_cards",
 ];
@@ -238,6 +264,11 @@ export function summarizeMatchupHighlights(
         red_cards: Number(player.red_cards || 0),
         clean_sheets: hasCompletedCleanSheet(player) ? 1 : 0,
         defensive_returns: hasDefensiveReturn(player) ? 1 : 0,
+        bonus_points: 0,
+        subbed_on: 0,
+        own_goals: 0,
+        keeper_saves: 0,
+        penalties_missed: Number(player.penalties_missed || 0),
       };
 
       const key = STAT_PRIORITY.find((k) => statMap[k] > 0);
@@ -284,6 +315,20 @@ export default function LivePlayerUpdates() {
     }
 
     try {
+      // Check if any games are currently live before fetching matchups
+      const gwRes = await fetch(
+        `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/current-gameweek`,
+        { headers: getSupabaseFunctionHeaders() },
+      );
+      const gwData = gwRes.ok ? await gwRes.json() : null;
+      eventFinished =
+        gwData?.current_event_finished === true || gwData?.event_finished === true;
+
+      // Don't fetch matchup data if no active gameweek
+      if (eventFinished) {
+        return true;
+      }
+
       const matchupsUrl = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-matchups`;
       const matchupsRes = await fetch(matchupsUrl, { headers: getSupabaseFunctionHeaders() });
       const matchupsPayload: MatchupsResponse = await matchupsRes.json();
@@ -353,10 +398,13 @@ export default function LivePlayerUpdates() {
             assists: Number(p.assists || 0),
             starts: Number(startsByPlayerId[p.player_id] || 0),
             penalties_saved: Number(p.penalties_saved || 0),
+            penalties_missed: Number((p as any).penalties_missed || 0),
             yellow_cards: Number(p.yellow_cards || 0),
             red_cards: Number(p.red_cards || 0),
             clean_sheets: hasCompletedCleanSheet(p) ? 1 : 0,
             defensive_returns: hasDefensiveReturn(p) ? 1 : 0,
+            keeper_saves: Math.floor(Number((p as any).saves || 0) / 3),
+            bonus_points: Number((p as any).bonus || 0),
             fixture_kickoff_time: p.fixture_kickoff_time ?? null,
             fixture_elapsed: p.fixture_elapsed ?? 0,
           };
@@ -384,10 +432,13 @@ export default function LivePlayerUpdates() {
             assists: Number(p.assists || 0),
             starts: Number(startsByPlayerId[p.player_id] || 0),
             penalties_saved: Number(p.penalties_saved || 0),
+            penalties_missed: Number((p as any).penalties_missed || 0),
             yellow_cards: Number(p.yellow_cards || 0),
             red_cards: Number(p.red_cards || 0),
             clean_sheets: hasCompletedCleanSheet(p) ? 1 : 0,
             defensive_returns: hasDefensiveReturn(p) ? 1 : 0,
+            keeper_saves: Math.floor(Number((p as any).saves || 0) / 3),
+            bonus_points: Number((p as any).bonus || 0),
             fixture_kickoff_time: p.fixture_kickoff_time ?? null,
             fixture_elapsed: p.fixture_elapsed ?? 0,
           };
@@ -402,10 +453,15 @@ export default function LivePlayerUpdates() {
         "assists",
         "starts",
         "penalties_saved",
+        "penalties_missed",
         "yellow_cards",
         "red_cards",
         "clean_sheets",
         "defensive_returns",
+        "bonus_points",
+        "keeper_saves",
+        "subbed_on",
+        "own_goals",
       ];
 
       const compDetail = (snap: PlayerSnapshot) => {
@@ -428,7 +484,15 @@ export default function LivePlayerUpdates() {
         for (const key of statKeys) {
           const nextValue = Number(snapshot[key] || 0);
           const previousValue = Number(oldSnapshot?.[key] || 0);
-          const delta = nextValue - previousValue;
+          let delta = nextValue - previousValue;
+          // Subbed on: switched from bench to XI with positive points increase
+          if (key === "subbed_on") {
+            if (oldSnapshot && oldSnapshot.is_bench && !snapshot.is_bench && snapshot.points > oldSnapshot.points) {
+              delta = 1;
+            } else {
+              delta = 0;
+            }
+          }
           if (delta <= 0) continue;
           const detail = compDetail(snapshot);
           rawRows.push({

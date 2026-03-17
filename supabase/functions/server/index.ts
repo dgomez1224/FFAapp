@@ -57,6 +57,188 @@ const MANAGER_CANONICAL_ALIASES: Record<string, string> = {
   MATTHEW: "MATT",
 };
 
+// ── Cache Layer ───────────────────────────────────────────────────────────────
+
+interface CacheEntry<T> { data: T; ts: number; }
+
+const LONG_TTL  = 10 * 60 * 1000; // 10 min — bootstrap, league details, past GW live
+const LIVE_TTL  =      60 * 1000; // 60 sec — current GW live stats
+const MED_TTL   =  5 * 60 * 1000; // 5 min  — element status, aggregated standings
+
+function isFresh<T>(entry: CacheEntry<T> | null | undefined, ttl: number): boolean {
+  return !!entry && (Date.now() - entry.ts) < ttl;
+}
+
+let gameCache:              CacheEntry<any> | null = null;
+let bootstrapCache:         CacheEntry<any> | null = null;
+let leagueDetailsCache:     CacheEntry<any> | null = null;
+let elementStatusCache:     CacheEntry<any> | null = null;
+let playerInsightsCache:    CacheEntry<any> | null = null;
+let liveCache:              Record<number, CacheEntry<any>> = {};
+let fixturesCache:          Record<number, CacheEntry<any[]>> = {};
+let liveEntryPointsCache:   Record<number, CacheEntry<Record<string, number>>> = {};
+let lastSyncedGw:           number = 0;
+let lastGobletSyncGw:       number = 0;
+let h2hMatchupsCache:       Record<number, CacheEntry<any>> = {};
+
+// ── Timeout Wrapper ───────────────────────────────────────────────────────────
+
+function fetchWithTimeout(
+  url: string,
+  options?: RequestInit,
+  ms = 7000
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  return fetch(url, { ...options, signal: controller.signal })
+    .finally(() => clearTimeout(timer));
+}
+
+// ── Canonical External Fetchers ───────────────────────────────────────────────
+
+async function fetchGame(): Promise<any> {
+  if (isFresh(gameCache, LONG_TTL)) return gameCache!.data;
+  try {
+    const res = await fetchWithTimeout(
+      "https://draft.premierleague.com/api/game",
+      { headers: { "User-Agent": "Mozilla/5.0" } }
+    );
+    const data = res.ok ? await res.json() : null;
+    if (data) gameCache = { data, ts: Date.now() };
+    return data;
+  } catch { return gameCache?.data ?? null; }
+}
+
+async function fetchBootstrap(): Promise<any> {
+  if (isFresh(bootstrapCache, LONG_TTL)) return bootstrapCache!.data;
+  try {
+    const res = await fetchWithTimeout(
+      "https://draft.premierleague.com/api/bootstrap-static",
+      { headers: { "User-Agent": "Mozilla/5.0" } }
+    );
+    const data = res.ok ? await res.json() : null;
+    if (data) bootstrapCache = { data, ts: Date.now() };
+    return data;
+  } catch { return bootstrapCache?.data ?? null; }
+}
+
+async function fetchLiveGW(gw: number): Promise<any> {
+  // Past GWs are immutable — cache them for 24h
+  const ttl = gw < (gameCache?.data?.current_event ?? 99) ? LONG_TTL * 144 : LIVE_TTL;
+  if (isFresh(liveCache[gw], ttl)) return liveCache[gw]!.data;
+  try {
+    const res = await fetchWithTimeout(
+      `https://draft.premierleague.com/api/event/${gw}/live`,
+      { headers: { "User-Agent": "Mozilla/5.0" } }
+    );
+    const data = res.ok ? await res.json() : null;
+    if (data) liveCache[gw] = { data, ts: Date.now() };
+    return data;
+  } catch { return liveCache[gw]?.data ?? null; }
+}
+
+async function fetchLeagueDetails(): Promise<any> {
+  if (isFresh(leagueDetailsCache, LONG_TTL)) return leagueDetailsCache!.data;
+  try {
+    const res = await fetchWithTimeout(
+      `https://draft.premierleague.com/api/league/${DEFAULT_DRAFT_LEAGUE_ID}/details`,
+      { headers: { "User-Agent": "Mozilla/5.0" } }
+    );
+    const data = res.ok ? await res.json() : null;
+    if (data) leagueDetailsCache = { data, ts: Date.now() };
+    return data;
+  } catch { return leagueDetailsCache?.data ?? null; }
+}
+
+async function fetchElementStatus(): Promise<any> {
+  if (isFresh(elementStatusCache, MED_TTL)) return elementStatusCache!.data;
+  try {
+    const res = await fetchWithTimeout(
+      `https://draft.premierleague.com/api/league/${DEFAULT_DRAFT_LEAGUE_ID}/element-status`,
+      { headers: { "User-Agent": "Mozilla/5.0" } }
+    );
+    const data = res.ok ? await res.json() : null;
+    if (data) elementStatusCache = { data, ts: Date.now() };
+    return data;
+  } catch { return elementStatusCache?.data ?? null; }
+}
+
+async function fetchFPLFixtures(gw: number): Promise<any[]> {
+  if (isFresh(fixturesCache[gw], LONG_TTL)) return fixturesCache[gw]!.data;
+  try {
+    const res = await fetchWithTimeout(
+      `https://fantasy.premierleague.com/api/fixtures/?event=${gw}`,
+      { headers: { "User-Agent": "Mozilla/5.0" } }
+    );
+    const data = res.ok ? await res.json() : [];
+    fixturesCache[gw] = { data, ts: Date.now() };
+    return data;
+  } catch { return fixturesCache[gw]?.data ?? []; }
+}
+
+async function fetchEntryPicks(
+  entryId: string | number,
+  gw: number
+): Promise<any> {
+  try {
+    const res = await fetchWithTimeout(
+      `https://draft.premierleague.com/api/entry/${entryId}/event/${gw}`,
+      { headers: { "User-Agent": "Mozilla/5.0" } }
+    );
+    return res.ok ? res.json() : null;
+  } catch { return null; }
+}
+
+// ── Data Extractor Helpers ────────────────────────────────────────────────────
+
+function buildPlayerMap(bootstrap: any): Record<number, any> {
+  const map: Record<number, any> = {};
+  for (const el of bootstrap?.elements ?? []) map[Number(el.id)] = el;
+  return map;
+}
+
+function buildTeamMap(bootstrap: any): Record<number, any> {
+  const map: Record<number, any> = {};
+  for (const t of bootstrap?.teams ?? []) map[Number(t.id)] = t;
+  return map;
+}
+
+function buildLiveStatsMap(liveData: any): Record<number, any> {
+  const map: Record<number, any> = {};
+  for (const [key, val] of Object.entries(liveData?.elements ?? {})) {
+    const id = Number(key);
+    if (id) map[id] = (val as any)?.stats ?? val;
+  }
+  return map;
+}
+
+function buildPlayerTeamMap(
+  playerMap: Record<number, any>
+): Record<number, number> {
+  const map: Record<number, number> = {};
+  for (const [id, el] of Object.entries(playerMap)) {
+    if ((el as any)?.team) map[Number(id)] = (el as any).team;
+  }
+  return map;
+}
+
+function buildFixturesByTeam(
+  fixtures: any[]
+): Record<number, { started: boolean; finished: boolean }> {
+  const map: Record<number, { started: boolean; finished: boolean }> = {};
+  for (const fix of fixtures ?? []) {
+    const upd = (tid: number) => {
+      const ex = map[tid];
+      map[tid] = ex
+        ? { started: ex.started || !!fix.started, finished: ex.finished && !!fix.finished }
+        : { started: !!fix.started, finished: !!fix.finished };
+    };
+    upd(fix.team_h);
+    upd(fix.team_a);
+  }
+  return map;
+}
+
 // --------------------
 // Supabase Admin Client
 // --------------------
@@ -247,12 +429,6 @@ function isMissingRelationError(error: any) {
     msg.includes("does not exist") ||
     msg.includes("relation") && msg.includes("not found")
   );
-}
-
-// ── Bootstrap fetch (single cached entry point for draft bootstrap-static) ──
-
-async function fetchDraftBootstrap() {
-  return fetchJSON<any>(`${DRAFT_BASE_URL}/bootstrap-static`);
 }
 
 // ── League and config resolution ──
@@ -454,7 +630,7 @@ async function fetchDraftSquadForEntries(entryIds: string[], preferredEvent: num
 
   let currentEvent: number | null = null;
   try {
-    const bootstrap = await fetchDraftBootstrap();
+    const bootstrap = await fetchBootstrap();
     currentEvent = extractDraftCurrentEventId(bootstrap);
   } catch {
     currentEvent = null;
@@ -719,6 +895,9 @@ function extractLivePlayerStatsMap(payload: any) {
     assists: coerceNumber(stats?.assists, 0),
     minutes: coerceNumber(stats?.minutes, 0),
     bonus: coerceNumber(stats?.bonus, 0),
+    saves: coerceNumber(stats?.saves, 0),
+    penalties_missed: coerceNumber(stats?.penalties_missed, 0),
+    own_goals: coerceNumber(stats?.own_goals, 0),
     defensive_contributions: coerceNumber(
       stats?.defensive_contributions ?? stats?.defensive_contribution,
       0,
@@ -1121,7 +1300,7 @@ async function fetchDerivedGameweekStats(
 
     if (Object.keys(byManager).length === 0) {
       try {
-        const bootstrap = await fetchDraftBootstrap();
+        const bootstrap = await fetchBootstrap();
         const latestCompletedEvent = extractLatestCompletedDraftEventId(bootstrap);
         const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
         const entries = normalizeDraftList<any>(details?.league_entries);
@@ -1255,7 +1434,7 @@ async function fetchDraftPicksForEntries(
   if (strictEvent) return null;
 
   try {
-    const bootstrap = await fetchDraftBootstrap();
+    const bootstrap = await fetchBootstrap();
     const currentEvent = extractDraftCurrentEventId(bootstrap);
     if (currentEvent) {
       const fallback = await tryFetch(currentEvent);
@@ -1404,10 +1583,15 @@ function buildDraftRankMapWithLive(
 async function syncCurrentSeasonLegacyStats(
   supabase: ReturnType<typeof getSupabaseAdmin>,
 ) {
-  const bootstrap = await fetchDraftBootstrap();
+  const bootstrap = await fetchBootstrap();
   const latestCompletedEvent = extractLatestCompletedDraftEventId(bootstrap);
   if (!latestCompletedEvent || latestCompletedEvent < 1) {
     return { latestCompletedEvent: null, synced: false };
+  }
+
+  // Only sync once per completed GW — skip if already synced for this GW
+  if (lastSyncedGw >= latestCompletedEvent) {
+    return { latestCompletedEvent, synced: false };
   }
 
   const managerByKey: Record<string, string> = {};
@@ -1644,6 +1828,7 @@ async function syncCurrentSeasonLegacyStats(
     }
   }
 
+  lastSyncedGw = latestCompletedEvent;
   return { latestCompletedEvent, synced: true };
 }
 
@@ -1719,7 +1904,7 @@ async function computeAllTimeManagerStats(
   const leagueRows = persistedLeagueRows.filter((row: any) => row.season !== CURRENT_SEASON);
 
   try {
-    const bootstrap = await fetchDraftBootstrap();
+    const bootstrap = await fetchBootstrap();
     const latestCompletedEvent = extractLatestCompletedDraftEventId(bootstrap);
     if (latestCompletedEvent && latestCompletedEvent > 0) {
       const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
@@ -1880,7 +2065,7 @@ async function fetchUnifiedAllTimeH2H(
 
   let latestCompletedEvent: number | null = null;
   try {
-    const bootstrap = await fetchDraftBootstrap();
+    const bootstrap = await fetchBootstrap();
     latestCompletedEvent = extractLatestCompletedDraftEventId(bootstrap);
   } catch {
     latestCompletedEvent = null;
@@ -2147,7 +2332,14 @@ async function resolveDraftLeagueDetails(entryOrLeague: string | number, leagueI
     );
   }
 
-  const details = await fetchJSON<any>(`${DRAFT_BASE_URL}/league/${leagueId}/details`);
+  // Use cached fetchLeagueDetails() when leagueId matches DEFAULT_DRAFT_LEAGUE_ID
+  // to avoid redundant uncached fetches across all handlers
+  let details: any;
+  if (leagueId === DEFAULT_DRAFT_LEAGUE_ID) {
+    details = await fetchLeagueDetails();
+  } else {
+    details = await fetchJSON<any>(`${DRAFT_BASE_URL}/league/${leagueId}/details`);
+  }
   return {
     leagueId,
     entry,
@@ -2313,7 +2505,7 @@ const leagueStandings = new Hono();
 const bootstrapStaticRoute = new Hono();
 bootstrapStaticRoute.get("/", async (c) => {
   try {
-    const bootstrap = await fetchDraftBootstrap();
+    const bootstrap = await fetchBootstrap();
     return c.json(bootstrap);
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to fetch bootstrap");
@@ -2382,7 +2574,7 @@ leagueStandings.get("/", async (c) => {
     const leagueIdValue = leagueIdOverride ? Number.parseInt(leagueIdOverride, 10) : null;
     try {
       const { details, leagueId } = await resolveDraftLeagueDetails(entryId, leagueIdValue);
-      const bootstrap = await fetchDraftBootstrap();
+      const bootstrap = await fetchBootstrap();
       const currentEvent =
         bootstrap.events?.find((e: any) => e.is_current)?.id ??
         bootstrap.events?.[0]?.id ??
@@ -2460,7 +2652,7 @@ leagueStandings.get("/matches", async (c) => {
     // For the current active gameweek (when not fully finished), override raw
     // match scores with auto-subbed live points from computeLiveEntryPoints.
     try {
-      const bootstrap = await fetchDraftBootstrap();
+      const bootstrap = await fetchBootstrap();
       const currentGw = extractDraftCurrentEventId(bootstrap);
       const latestCompleted = extractLatestCompletedDraftEventId(bootstrap) || 0;
       const shouldOverride =
@@ -2774,7 +2966,7 @@ const gobletStandings = new Hono();
 /** Resolve current gameweek from Draft bootstrap. */
 async function resolveCurrentGameweek(): Promise<number | null> {
   try {
-    const bootstrap = await fetchDraftBootstrap();
+    const bootstrap = await fetchBootstrap();
     return extractDraftCurrentEventId(bootstrap);
   } catch {
     return null;
@@ -3009,9 +3201,13 @@ function applyLeagueAutoSubs(
 
 /** Compute live points per entry for current GW only (starters only). */
 async function computeLiveEntryPoints(currentGw: number): Promise<Record<string, number>> {
+  if (isFresh(liveEntryPointsCache[currentGw], LIVE_TTL)) {
+    return liveEntryPointsCache[currentGw]!.data;
+  }
+
   const liveEntryPoints: Record<string, number> = {};
   try {
-    const livePayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${currentGw}/live`);
+    const livePayload = await fetchLiveGW(currentGw);
     const liveMap = extractLivePointsMap(livePayload);
     // Build liveStatsMap from live payload if not already present
     const liveStatsMap: Record<number, any> = {};
@@ -3036,7 +3232,7 @@ async function computeLiveEntryPoints(currentGw: number): Promise<Record<string,
     });
 
     // Build a simple playerMap from bootstrap so we can derive team/position info
-    const bootstrap = await fetchDraftBootstrap();
+    const bootstrap = await fetchBootstrap();
     const playerMap: Record<number, any> = {};
     normalizeDraftList<any>(
       (bootstrap as any)?.elements?.data ??
@@ -3050,29 +3246,8 @@ async function computeLiveEntryPoints(currentGw: number): Promise<Record<string,
     });
 
     // Fetch FPL fixtures once to drive auto-sub logic
-    const fixturesArr: any[] = await fetch(
-      `${FPL_BASE_URL}/fixtures/?event=${currentGw}`,
-      { headers: { "User-Agent": "Mozilla/5.0" } },
-    )
-      .then((r) => (r.ok ? r.json() : []))
-      .catch(() => []);
-
-    const fixturesByTeam: Record<number, { started: boolean; finished: boolean }> = {};
-    for (const fix of fixturesArr) {
-      const upd = (tid: number) => {
-        const id = coerceNumber(tid, 0);
-        if (!id) return;
-        const ex = fixturesByTeam[id];
-        fixturesByTeam[id] = ex
-          ? {
-              started: ex.started || !!fix.started,
-              finished: ex.finished && !!fix.finished,
-            }
-          : { started: !!fix.started, finished: !!fix.finished };
-      };
-      upd(fix.team_h);
-      upd(fix.team_a);
-    }
+    const fixturesArr = await fetchFPLFixtures(currentGw);
+    const fixturesByTeam = buildFixturesByTeam(fixturesArr);
 
     const picksResults = await Promise.all(
       Array.from(currentGwEntryKeys).map(async (matchKey) => {
@@ -3156,6 +3331,7 @@ async function computeLiveEntryPoints(currentGw: number): Promise<Record<string,
   } catch {
     // non-fatal
   }
+  liveEntryPointsCache[currentGw] = { data: liveEntryPoints, ts: Date.now() };
   return liveEntryPoints;
 }
 
@@ -3272,6 +3448,9 @@ async function syncGobletLive(supabase: ReturnType<typeof getSupabaseAdmin>): Pr
   const currentGw = await resolveCurrentGameweek();
   if (currentGw == null || currentGw < 1) return;
 
+  // Only sync once per GW — skip if already synced for this GW
+  if (lastGobletSyncGw >= currentGw) return;
+
   let matches: any[] = [];
   let entryIdToTeamId: Record<string, string> = {};
   try {
@@ -3333,6 +3512,7 @@ async function syncGobletLive(supabase: ReturnType<typeof getSupabaseAdmin>): Pr
   }
 
   await rebuildGobletStandings(supabase);
+  lastGobletSyncGw = currentGw;
 }
 
 /** @deprecated Use syncGobletLive. Kept for callers that still use the old name. */
@@ -3356,7 +3536,7 @@ gobletStandings.get("/", async (c) => {
     let latestCompletedEvent: number | null = null;
     let currentEvent: number | null = null;
     try {
-      const bootstrap = await fetchDraftBootstrap();
+      const bootstrap = await fetchBootstrap();
       latestCompletedEvent = extractLatestCompletedDraftEventId(bootstrap);
       currentEvent = extractDraftCurrentEventId(bootstrap);
     } catch {
@@ -3530,7 +3710,7 @@ gobletStandings.get("/", async (c) => {
           let currentEventFallback: number | null = null;
           let liveEntryPointsFallback: Record<string, number> = {};
           try {
-            const bootstrap = await fetchDraftBootstrap();
+            const bootstrap = await fetchBootstrap();
             currentEventFallback = extractDraftCurrentEventId(bootstrap);
           } catch {
             currentEventFallback = null;
@@ -3881,6 +4061,11 @@ const playerInsights = new Hono();
 
 playerInsights.get("/", async (c) => {
   try {
+    // Return cached response if fresh (10 min TTL)
+    if (isFresh(playerInsightsCache, LONG_TTL)) {
+      return c.json(playerInsightsCache!.data);
+    }
+
     const supabase = getSupabaseAdmin();
     const filterPosition = parsePositiveInt(c.req.query("position"));
     const filterTeam = parsePositiveInt(c.req.query("team"));
@@ -3914,7 +4099,7 @@ playerInsights.get("/", async (c) => {
 
     // Single fetch for draft bootstrap-static; FPL bootstrap in parallel for classic fallback only
     const [draftBootstrapRes, classicBootstrapRes] = await Promise.allSettled([
-      fetchDraftBootstrap(),
+      fetchBootstrap(),
       fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`),
     ]);
     const draftBootstrap = draftBootstrapRes.status === "fulfilled" ? draftBootstrapRes.value : null;
@@ -3970,7 +4155,7 @@ playerInsights.get("/", async (c) => {
     const eventsList = Array.isArray(events) ? events : [];
     const currentEvent = eventsList.find((e: any) => e.is_current === true);
     const lastFinished = [...eventsList].reverse().find((e: any) => e.finished === true);
-    const game = await fetchDraftGame();
+    const game = await fetchGame();
     const _currentGw = game?.current_event ?? currentEvent?.id ?? lastFinished?.id ?? extractDraftCurrentEventId(draftBootstrap) ?? 29;
     const currentGw = (_currentGw && Number(_currentGw) > 0) ? Number(_currentGw) : 29;
 
@@ -3979,16 +4164,8 @@ playerInsights.get("/", async (c) => {
     const liveAndFixtureResponses = await Promise.all(
       gwRange.map((gw) =>
         Promise.all([
-          fetch(`https://draft.premierleague.com/api/event/${gw}/live`, {
-            headers: { "User-Agent": "Mozilla/5.0" },
-          })
-            .then((r) => (r.ok ? r.json() : null))
-            .catch(() => null),
-          fetch(`https://fantasy.premierleague.com/api/fixtures/?event=${gw}`, {
-            headers: { "User-Agent": "Mozilla/5.0" },
-          })
-            .then((r) => (r.ok ? r.json() : null))
-            .catch(() => null),
+          fetchLiveGW(gw).catch(() => null),
+          fetchFPLFixtures(gw).catch(() => []),
         ])
       )
     );
@@ -4194,7 +4371,7 @@ playerInsights.get("/", async (c) => {
       let currentGameweekContext = 0;
       let latestCompletedGameweek = 0;
       try {
-        const bootstrap = await fetchDraftBootstrap();
+        const bootstrap = await fetchBootstrap();
         currentGameweekContext = extractDraftCurrentEventId(bootstrap) || 0;
         latestCompletedGameweek = extractLatestCompletedDraftEventId(bootstrap) || 0;
       } catch {
@@ -4209,9 +4386,8 @@ playerInsights.get("/", async (c) => {
     let ownershipResolvedFromDraft = false;
     try {
       const supabase = getSupabaseAdmin();
-      const leagueId = await resolveConfiguredDraftLeagueId(supabase);
-      const details = await fetchJSON<any>(`${DRAFT_BASE_URL}/league/${leagueId}/details`);
-      const leagueEntries = normalizeDraftList<any>(details?.league_entries || []);
+      const leagueDetails = await fetchLeagueDetails();
+      const leagueEntries = normalizeDraftList<any>(leagueDetails?.league_entries || []);
       ownershipDebug.team_keys_from_player_selections_sample = leagueEntries
         .slice(0, 20)
         .map((entry: any) => String(entry?.entry_id ?? "").trim())
@@ -4234,7 +4410,7 @@ playerInsights.get("/", async (c) => {
 
       // Primary ownership source: current league element status.
       // This reflects current roster ownership including post-waiver states.
-      const elementStatusPayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/league/${leagueId}/element-status`);
+      const elementStatusPayload = await fetchElementStatus();
       const elementStatusRows = normalizeDraftList<any>(
         elementStatusPayload?.element_status ?? elementStatusPayload?.elements ?? [],
       );
@@ -4524,12 +4700,14 @@ playerInsights.get("/", async (c) => {
           return [];
         }
       })();
-      return c.json({
+      const responseData1 = {
         insights: adjusted,
         managers: managersList,
         source: "fpl_bootstrap",
         debug: includeDebug ? { ownership: ownershipDebug } : undefined,
-      });
+      };
+      playerInsightsCache = { data: responseData1, ts: Date.now() };
+      return c.json(responseData1);
     }
 
     const fallbackTotalPointsByPlayer: Record<number, number> = {};
@@ -4570,12 +4748,14 @@ playerInsights.get("/", async (c) => {
       const names = (teams || []).map((t: any) => String(t?.manager_name || "").trim()).filter(Boolean);
       return [...new Set(names)].sort((a, b) => a.localeCompare(b));
     })();
-    return c.json({
+    const responseData2 = {
       insights: adjusted,
       managers: managersList,
       source: "fpl_bootstrap",
       debug: includeDebug ? { ownership: ownershipDebug } : undefined,
-    });
+    };
+    playerInsightsCache = { data: responseData2, ts: Date.now() };
+    return c.json(responseData2);
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to fetch player insights");
   }
@@ -4684,7 +4864,7 @@ playerHistory.get("/", async (c) => {
 
       const history = [...pastHistory, ...upcomingFixtures].sort((a, b) => a.gameweek - b.gameweek);
 
-      const game = await fetchDraftGame();
+      const game = await fetchGame();
       return c.json({
         player_id: playerId,
         history,
@@ -4722,7 +4902,7 @@ playerHistory.get("/", async (c) => {
         team_entry_name: teamsMap[String(r.team_id)] || null,
       }));
 
-      const game = await fetchDraftGame();
+      const game = await fetchGame();
       return c.json({
         player_id: playerId,
         history,
@@ -4746,7 +4926,7 @@ h2hStandings.get("/", async (c) => {
     }
     let latestCompletedEvent: number | null = null;
     try {
-      const bootstrap = await fetchDraftBootstrap();
+      const bootstrap = await fetchBootstrap();
       latestCompletedEvent = extractLatestCompletedDraftEventId(bootstrap);
     } catch {
       latestCompletedEvent = null;
@@ -4981,7 +5161,7 @@ h2hMatchups.get("/", async (c) => {
     }
     let bootstrap: any = null;
     try {
-      bootstrap = await fetchDraftBootstrap();
+      bootstrap = await fetchBootstrap();
     } catch {
       // Fall back to DB or query param below.
     }
@@ -4998,6 +5178,11 @@ h2hMatchups.get("/", async (c) => {
 
     if (!gameweek) {
       return jsonError(c, 400, "Missing gameweek");
+    }
+
+    // Cache check — 30s TTL
+    if (isFresh(h2hMatchupsCache[gameweek], 30 * 1000)) {
+      return c.json(h2hMatchupsCache[gameweek]!.data);
     }
 
     const latestCompletedForRanks: number | null = bootstrap
@@ -5103,7 +5288,9 @@ h2hMatchups.get("/", async (c) => {
         }
       }
 
-      return c.json({ gameweek, matchups: formatted, source: "database" });
+      const resultDb = { gameweek, matchups: formatted, source: "database" };
+      h2hMatchupsCache[gameweek] = { data: resultDb, ts: Date.now() };
+      return c.json(resultDb);
     }
 
     const entryId = c.req.query("entryId") || STATIC_ENTRY_ID;
@@ -5187,7 +5374,9 @@ h2hMatchups.get("/", async (c) => {
         }
       }
 
-      return c.json({ gameweek, matchups: formatted, source: "draft" });
+      const resultDraft = { gameweek, matchups: formatted, source: "draft" };
+      h2hMatchupsCache[gameweek] = { data: resultDraft, ts: Date.now() };
+      return c.json(resultDraft);
     } catch (_draftErr: any) {
       // Classic fallback: derive gameweek points from each entry history.
       const classic = await fetchClassicLeagueStandings(entryId);
@@ -5234,7 +5423,9 @@ h2hMatchups.get("/", async (c) => {
         });
       }
 
-      return c.json({ gameweek, matchups: formatted, source: "classic-derived" });
+      const resultClassic = { gameweek, matchups: formatted, source: "classic-derived" };
+      h2hMatchupsCache[gameweek] = { data: resultClassic, ts: Date.now() };
+      return c.json(resultClassic);
     }
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to fetch matchups");
@@ -5254,7 +5445,7 @@ h2hRivalries.get("/", async (c) => {
     let latestCompletedEvent: number | null = null;
 
     try {
-      const bootstrap = await fetchDraftBootstrap();
+      const bootstrap = await fetchBootstrap();
       currentEvent = extractDraftCurrentEventId(bootstrap) || 1;
       latestCompletedEvent = extractLatestCompletedDraftEventId(bootstrap);
       displayEvent = resolveDisplayGameweek(currentEvent, latestCompletedEvent);
@@ -5716,19 +5907,23 @@ const currentGameweek = new Hono();
 
 currentGameweek.get("/", async (c) => {
   try {
-    const game = await fetchDraftGame();
-    const bootstrap = await fetchDraftBootstrap();
+    const [game, bootstrap] = await Promise.all([
+      fetchGame(),
+      fetchBootstrap(),
+    ]);
     const events = extractDraftEvents(bootstrap);
     const currentEventId = game?.current_event ?? extractDraftCurrentEventId(bootstrap) ?? 1;
     const currentEvent = events.find((e: any) => parsePositiveInt(e?.id) === currentEventId) || null;
 
     return c.json({
-      current_gameweek: currentEventId,
+      current_gameweek:       currentEventId,
       current_event_finished: game?.current_event_finished ?? false,
-      event_finished: currentEvent?.finished ?? game?.current_event_finished ?? false,
-      deadline_time: currentEvent?.deadline_time || null,
-      hasSeasonState: false,
-      source: "draft",
+      event_finished:         currentEvent?.finished ?? game?.current_event_finished ?? false,
+      next_event:             game?.next_event ?? null,
+      waivers_processed:      game?.waivers_processed ?? false,
+      deadline_time:          currentEvent?.deadline_time || null,
+      hasSeasonState:         false,
+      source:                 "draft",
     });
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to fetch current gameweek");
@@ -6175,7 +6370,7 @@ bracket.get("/", async (c) => {
         const scoredGws = new Set((scoreRows ?? []).map((r: any) => r.gameweek));
         let eventFinished = false;
         try {
-          const bootstrap = await fetchDraftBootstrap();
+          const bootstrap = await fetchBootstrap();
           const events = Array.isArray(bootstrap?.events) ? bootstrap.events : [];
           const currentEvent = events.find((e: any) => e.is_current);
           eventFinished = currentEvent?.finished === true || currentEvent?.data_checked === true;
@@ -6314,7 +6509,7 @@ liveContext.get("/", async (c) => {
     // Resolve current gameweek from Draft bootstrap (season_state table removed)
     let currentEvent = 1;
     try {
-      const bootstrapForGw = await fetchDraftBootstrap();
+      const bootstrapForGw = await fetchBootstrap();
       currentEvent = extractDraftCurrentEventId(bootstrapForGw) || 1;
     } catch {
       currentEvent = 1;
@@ -6323,7 +6518,7 @@ liveContext.get("/", async (c) => {
     // Fetch bootstrap static for metadata versioning
     let bootstrapVersion: string | null = null;
     try {
-      const bootstrap = await fetchDraftBootstrap();
+      const bootstrap = await fetchBootstrap();
       const bootstrapEvents = extractDraftEvents(bootstrap);
       bootstrapVersion =
         extractDraftCurrentEventId(bootstrap)?.toString() ||
@@ -6742,7 +6937,7 @@ adminRefresh.post("/score-cup-gameweek-auto", async (c) => {
   }
   try {
     const supabase = getSupabaseAdmin();
-    const bootstrap = await fetchDraftBootstrap();
+    const bootstrap = await fetchBootstrap();
     const events = Array.isArray(bootstrap?.events) ? bootstrap.events : [];
     const currentEvent = events.find((e: any) => e.is_current);
     const currentGw = currentEvent?.id ?? 0;
@@ -7355,7 +7550,7 @@ captainPicks.get("/context", async (c) => {
       return jsonError(c, 404, "Could not fetch this team's squad from the FPL Draft API");
     }
 
-    const bootstrap = await fetchDraftBootstrap();
+    const bootstrap = await fetchBootstrap();
     const playersById = extractDraftPlayerMap(bootstrap);
     try {
       const fplBootstrap = await fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`);
@@ -7478,7 +7673,7 @@ captainPicks.post("/select", async (c) => {
       return jsonError(c, 400, "Vice captain must be selected from this manager's squad");
     }
 
-    const bootstrap = await fetchDraftBootstrap();
+    const bootstrap = await fetchBootstrap();
     const playersById = extractDraftPlayerMap(bootstrap);
     const captainName = playersById[captainPlayerId]?.name || `Player ${captainPlayerId}`;
     const viceCaptainName = playersById[viceCaptainPlayerId]?.name || `Player ${viceCaptainPlayerId}`;
@@ -7557,7 +7752,7 @@ const leagueActivity = new Hono();
 leagueActivity.get("/previous-week-results", async (c) => {
   try {
     const supabase = getSupabaseAdmin();
-    const bootstrap = await fetchDraftBootstrap();
+    const bootstrap = await fetchBootstrap();
     const currentGw = extractDraftCurrentEventId(bootstrap) || 1;
     const latestCompleted = extractLatestCompletedDraftEventId(bootstrap);
     // If the current event is already completed, use it; otherwise use the last completed,
@@ -7640,7 +7835,7 @@ leagueActivity.get("/previous-week-results", async (c) => {
     const live = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${targetGw}/live`);
     const livePointsMap = extractLivePointsMap(live);
     const liveStatsMap = extractLivePlayerStatsMap(live);
-    const playersBootstrap = await fetchDraftBootstrap();
+    const playersBootstrap = await fetchBootstrap();
     const players = extractDraftPlayerMap(playersBootstrap);
     try {
       const fplBootstrap = await fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`);
@@ -7854,7 +8049,7 @@ fixturesHub.get("/", async (c) => {
       draftEntries = normalizeDraftList<any>(details?.league_entries);
       draftMatches = normalizeDraftList<any>(details?.matches);
       try {
-        const bootstrap = await fetchDraftBootstrap();
+        const bootstrap = await fetchBootstrap();
         currentGw = extractDraftCurrentEventId(bootstrap) || currentGw;
       } catch {
         // Keep season_state fallback.
@@ -8234,7 +8429,7 @@ leagueActivity.get("/waivers", async (c) => {
     const leagueId = await resolveConfiguredDraftLeagueId(supabase);
     const [{ details }, bootstrap] = await Promise.all([
       resolveDraftLeagueDetails(STATIC_ENTRY_ID, leagueId),
-      fetchDraftBootstrap(),
+      fetchBootstrap(),
     ]);
     const currentGameweek = extractDraftCurrentEventId(bootstrap) || 1;
     const latestCompletedGameweek =
@@ -8396,6 +8591,9 @@ fixturesHub.get("/matchup", async (c) => {
       return jsonError(c, 400, "Missing required query params: gameweek, team1, team2");
     }
 
+    const gwNum = Number(gameweek);
+    const currentGw = await resolveCurrentGameweek();
+
     const supabase = getSupabaseAdmin();
     const crestByManager: Record<string, string | null> = {};
     try {
@@ -8413,13 +8611,6 @@ fixturesHub.get("/matchup", async (c) => {
       });
     } catch {
       // non-fatal
-    }
-    let currentGw = gameweek;
-    try {
-      const bootstrap = await fetchDraftBootstrap();
-      currentGw = extractDraftCurrentEventId(bootstrap) || currentGw;
-    } catch {
-      currentGw = gameweek;
     }
     const hasStarted = gameweek < currentGw;
     const cupCaptainByTeam: Record<string, { captain: number; vice: number }> = {};
@@ -8581,15 +8772,34 @@ fixturesHub.get("/matchup", async (c) => {
         if (e2 === resolvedTeam2Id) team2OpponentsByGw[gw] = e1;
       });
     } else {
+      // Resolve numeric entry IDs to UUID team IDs if needed
+      const resolveToUuid = async (id: string): Promise<string> => {
+        if (!id.includes("-")) {
+          // Looks like a numeric entry_id — resolve to UUID
+          const { data } = await supabase
+            .from("teams")
+            .select("id")
+            .eq("entry_id", id)
+            .maybeSingle();
+          if (data?.id) return String(data.id);
+        }
+        return id;
+      };
+
+      const [resolvedId1, resolvedId2] = await Promise.all([
+        resolveToUuid(team1Id),
+        resolveToUuid(team2Id),
+      ]);
+
       const [teamsRes, cupSelectionRes] = await Promise.all([
         supabase
           .from("teams")
           .select("id, entry_id, entry_name, manager_name")
-          .in("id", [team1Id, team2Id]),
+          .in("id", [resolvedId1, resolvedId2]),
         supabase
           .from("cup_captain_selections")
           .select("team_id, captain_player_id, vice_captain_player_id")
-          .in("team_id", [team1Id, team2Id])
+          .in("team_id", [resolvedId1, resolvedId2])
           .eq("gameweek", gameweek),
       ]);
       if (teamsRes.error) {
@@ -8605,8 +8815,8 @@ fixturesHub.get("/matchup", async (c) => {
       (teamsRes.data || []).forEach((t: any) => {
         teamMap[String(t.id)] = t;
       });
-      team1 = teamMap[team1Id] || null;
-      team2 = teamMap[team2Id] || null;
+      team1 = teamMap[resolvedId1] || null;
+      team2 = teamMap[resolvedId2] || null;
       if (!team1 || !team2) {
         return jsonError(c, 404, "Could not resolve one or both teams");
       }
@@ -8661,18 +8871,53 @@ fixturesHub.get("/matchup", async (c) => {
       });
     }
 
-    const picks1 = await fetchDraftPicksForEntries([String(team1.entry_id)], gameweek, true);
-    const picks2 = await fetchDraftPicksForEntries([String(team2.entry_id)], gameweek, true);
-    let bootstrap: any = null;
-    try {
-      bootstrap = await fetchDraftBootstrap();
-    } catch {
-      try {
-        bootstrap = await fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`);
-      } catch {
-        bootstrap = null;
-      }
+    // After resolving teams and opponents, short-circuit for future gameweeks
+    if (currentGw != null && currentGw > 0 && gwNum > currentGw) {
+      const safeType = type === "cup" ? "cup" : "league";
+      return c.json({
+        type: safeType,
+        gameweek: gwNum,
+        current_gameweek: currentGw,
+        matchup: {
+          team_1_points: 0,
+          team_2_points: 0,
+          live_team_1_points: 0,
+          live_team_2_points: 0,
+          round: type === "cup" ? (cupRow?.round ?? null) : null,
+          matchup_id: type === "cup" ? (cupRow?.id ?? null) : (leagueRow?.id ?? null),
+          has_started: false,
+          is_ongoing: false,
+        },
+        team_1: {
+          id: String(team1.id ?? team1Id),
+          manager_name: team1.manager_name ?? "",
+          entry_name: team1.entry_name ?? "",
+          club_crest_url: team1.club_crest_url ?? null,
+          rank: rankMap[String(team1.id)] ?? null,
+          total_points: 0,
+          lineup: [],
+        },
+        team_2: {
+          id: String(team2.id ?? team2Id),
+          manager_name: team2.manager_name ?? "",
+          entry_name: team2.entry_name ?? "",
+          club_crest_url: team2.club_crest_url ?? null,
+          rank: rankMap[String(team2.id)] ?? null,
+          total_points: 0,
+          lineup: [],
+        },
+        team_1_opponents_by_gw: team1OpponentsByGw,
+        team_2_opponents_by_gw: team2OpponentsByGw,
+      });
     }
+
+    const [picks1, picks2, bootstrap, livePayload] = await Promise.all([
+      fetchDraftPicksForEntries([String(team1.entry_id)], gameweek, true).catch(() => null),
+      fetchDraftPicksForEntries([String(team2.entry_id)], gameweek, true).catch(() => null),
+      fetchBootstrap().catch(() => null),
+      fetchLiveGW(gameweek).catch(() => null),
+    ]);
+
     const playerMap = extractDraftPlayerMap(bootstrap || {});
     try {
       const fplBootstrap = await fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`);
@@ -8680,25 +8925,14 @@ fixturesHub.get("/matchup", async (c) => {
     } catch {
       // keep existing image_url when FPL unavailable
     }
+
     let liveMap: Record<number, number> = {};
     let liveStatsMap: Record<number, any> = {};
     let liveFixtures: any[] = [];
-    try {
-      const live = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${gameweek}/live`);
-      liveMap = extractLivePointsMap(live);
-      liveStatsMap = extractLivePlayerStatsMap(live);
-      liveFixtures = normalizeDraftList<any>(live?.fixtures ?? []);
-    } catch {
-      try {
-        const classicLive = await fetchJSON<any>(`${FPL_BASE_URL}/event/${gameweek}/live/`);
-        liveMap = extractLivePointsMap(classicLive);
-        liveStatsMap = extractLivePlayerStatsMap(classicLive);
-        liveFixtures = normalizeDraftList<any>(classicLive?.fixtures ?? []);
-      } catch {
-        liveMap = {};
-        liveStatsMap = {};
-        liveFixtures = [];
-      }
+    if (livePayload) {
+      liveMap = extractLivePointsMap(livePayload);
+      liveStatsMap = extractLivePlayerStatsMap(livePayload);
+      liveFixtures = normalizeDraftList<any>(livePayload?.fixtures ?? []);
     }
 
     const fixtureByTeamId: Record<number, { kickoff_time: string | null; elapsed: number }> = {};
@@ -8775,33 +9009,9 @@ fixturesHub.get("/matchup", async (c) => {
     let lineup1 = mapLineup(picks1?.picks, team1Id);
     let lineup2 = mapLineup(picks2?.picks, team2Id);
 
-    const fixturesByTeam: Record<number, { started: boolean; finished: boolean }> = {};
-    try {
-      const fplFixtures = await fetchJSON<any[]>(
-        `${FPL_BASE_URL}/fixtures/?event=${gameweek}`,
-      );
-      (fplFixtures || []).forEach((fix: any) => {
-        const started = !!fix.started;
-        const finished = !!fix.finished;
-        const updateTeam = (teamId: number) => {
-          const id = coerceNumber(teamId, 0);
-          if (!id) return;
-          const existing = fixturesByTeam[id];
-          if (!existing) {
-            fixturesByTeam[id] = { started, finished };
-          } else {
-            fixturesByTeam[id] = {
-              started: existing.started || started,
-              finished: existing.finished && finished,
-            };
-          }
-        };
-        updateTeam(fix.team_h);
-        updateTeam(fix.team_a);
-      });
-    } catch {
-      // non-fatal; autosubs will simply not apply without fixture status
-    }
+    const fixturesByTeam = Number(gameweek) <= currentGw
+      ? buildFixturesByTeam(await fetchFPLFixtures(gameweek).catch(() => []))
+      : {};
 
     const playerTeamMap: Record<number, number> = {};
     [...lineup1, ...lineup2].forEach((p: any) => {
@@ -8814,7 +9024,8 @@ fixturesHub.get("/matchup", async (c) => {
 
     let autoSubs1: SubEvent[] = [];
     let autoSubs2: SubEvent[] = [];
-    if (type === "league") {
+    const shouldApplyAutoSubs = Number(gameweek) <= currentGw;
+    if (type === "league" && shouldApplyAutoSubs) {
       const result1 = applyLeagueAutoSubs(lineup1, gameweek, fixturesByTeam, playerTeamMap);
       const result2 = applyLeagueAutoSubs(lineup2, gameweek, fixturesByTeam, playerTeamMap);
       lineup1 = result1.lineup;
@@ -8940,7 +9151,7 @@ fixturesHub.get("/lineup", async (c) => {
 
     let currentGw = gameweek;
     try {
-      const bootstrap = await fetchDraftBootstrap();
+      const bootstrap = await fetchBootstrap();
       currentGw = extractDraftCurrentEventId(bootstrap) || currentGw;
     } catch {
       currentGw = gameweek;
@@ -8984,7 +9195,7 @@ fixturesHub.get("/lineup", async (c) => {
 
     let bootstrap: any = null;
     try {
-      bootstrap = await fetchDraftBootstrap();
+      bootstrap = await fetchBootstrap();
     } catch {
       try {
         bootstrap = await fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`);
@@ -9155,7 +9366,7 @@ app.route("/api/entry", entryPicks);
 app.route("/api/h2h", liveH2H);
 app.get("/api/bootstrap", async (c) => {
   try {
-    const data = await fetchDraftBootstrap();
+    const data = await fetchBootstrap();
     return c.json(data);
   } catch (err: any) {
     return c.json({ error: { message: err.message } }, 500);
@@ -9194,6 +9405,30 @@ app.route("/server/captain-auth", captainAuth);
 app.route("/server/captain", captainPicks);
 app.route("/server/fixtures", fixturesHub);
 app.route("/server/league-activity", leagueActivity);
+
+app.get("/player-image", async (c) => {
+  const url = String(c.req.query("url") || "");
+  if (!url || !url.startsWith("https://resources.premierleague.com/")) {
+    return c.json({ error: "Invalid URL" }, 400);
+  }
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0" },
+    });
+    if (!res.ok) return c.json({ error: "Not found" }, 404);
+    const blob = await res.arrayBuffer();
+    const contentType = res.headers.get("content-type") ?? "image/png";
+    return new Response(blob, {
+      headers: {
+        "Content-Type": contentType,
+        "Cache-Control": "public, max-age=86400",
+        "Access-Control-Allow-Origin": "*",
+      },
+    });
+  } catch {
+    return c.json({ error: "Failed to fetch image" }, 500);
+  }
+});
 
 // --------------------
 // Legacy Statistics Endpoints

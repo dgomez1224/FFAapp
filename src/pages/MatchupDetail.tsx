@@ -627,7 +627,13 @@ export default function MatchupDetailPage() {
         <div className="mt-3 grid grid-cols-[1fr_auto_1fr] gap-4 items-center">
           <div className="text-right">
             <p className="font-semibold inline-flex items-center gap-2 justify-end">
-              {data.team_1.club_crest_url ? <img src={data.team_1.club_crest_url} alt="" className="h-5 w-5 rounded object-cover border" /> : null}
+              {data.team_1.club_crest_url ? (
+                <img
+                  src={data.team_1.club_crest_url}
+                  alt=""
+                  className="h-5 w-5 rounded object-cover border"
+                />
+              ) : null}
               {data.team_1.manager_name}
             </p>
             <p className="text-sm text-muted-foreground">{data.team_1.entry_name}</p>
@@ -640,7 +646,13 @@ export default function MatchupDetailPage() {
           </div>
           <div>
             <p className="font-semibold inline-flex items-center gap-2">
-              {data.team_2.club_crest_url ? <img src={data.team_2.club_crest_url} alt="" className="h-5 w-5 rounded object-cover border" /> : null}
+              {data.team_2.club_crest_url ? (
+                <img
+                  src={data.team_2.club_crest_url}
+                  alt=""
+                  className="h-5 w-5 rounded object-cover border"
+                />
+              ) : null}
               {data.team_2.manager_name}
             </p>
             <p className="text-sm text-muted-foreground">{data.team_2.entry_name}</p>

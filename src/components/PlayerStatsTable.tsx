@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { getProxiedImageUrl } from "../lib/playerImage";
 
 export interface PlayerStatsTableProps {
   players: Array<{
@@ -94,11 +95,42 @@ export default function PlayerStatsTable({
                         <div className="absolute inset-0 h-6 w-5 rounded bg-muted" aria-hidden="true" />
                         {player.image_url ? (
                           <img
-                            src={player.image_url}
+                            src={getProxiedImageUrl(player.image_url) ?? undefined}
                             alt=""
                             className="relative h-6 w-5 object-cover rounded"
                             onError={(e) => {
-                              e.currentTarget.style.display = "none";
+                              const target = e.currentTarget;
+                              (async () => {
+                                try {
+                                  const name = player.name;
+                                  const wikiRes = await fetch(
+                                    `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(name)}`,
+                                  );
+                                  const wikiData = wikiRes.ok ? await wikiRes.json() : null;
+                                  const wikiImg = wikiData?.thumbnail?.source;
+                                  if (wikiImg) {
+                                    target.src = wikiImg;
+                                    target.style.display = "";
+                                    return;
+                                  }
+                                } catch {
+                                  // fall through to initials
+                                }
+                                target.style.display = "none";
+                                const parent = target.parentElement;
+                                if (parent && !parent.querySelector(".img-fallback")) {
+                                  const fallback = document.createElement("div");
+                                  fallback.className =
+                                    "img-fallback absolute inset-0 flex items-center justify-center bg-muted rounded text-xs font-semibold text-muted-foreground";
+                                  fallback.textContent = (player.name || "?")
+                                    .split(" ")
+                                    .map((w: string) => w[0])
+                                    .slice(0, 2)
+                                    .join("")
+                                    .toUpperCase();
+                                  parent.appendChild(fallback);
+                                }
+                              })();
                             }}
                           />
                         ) : null}
@@ -200,11 +232,42 @@ export default function PlayerStatsTable({
                           <td className="py-1 px-1">
                             {player.image_url ? (
                               <img
-                                src={player.image_url}
+                                src={getProxiedImageUrl(player.image_url) ?? undefined}
                                 alt=""
                                 className="h-6 w-5 object-cover rounded"
                                 onError={(e) => {
-                                  e.currentTarget.style.display = "none";
+                                  const target = e.currentTarget;
+                                  (async () => {
+                                    try {
+                                      const name = player.name;
+                                      const wikiRes = await fetch(
+                                        `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(name)}`,
+                                      );
+                                      const wikiData = wikiRes.ok ? await wikiRes.json() : null;
+                                      const wikiImg = wikiData?.thumbnail?.source;
+                                      if (wikiImg) {
+                                        target.src = wikiImg;
+                                        target.style.display = "";
+                                        return;
+                                      }
+                                    } catch {
+                                      // fall through to initials
+                                    }
+                                    target.style.display = "none";
+                                    const parent = target.parentElement;
+                                    if (parent && !parent.querySelector(".img-fallback")) {
+                                      const fallback = document.createElement("div");
+                                      fallback.className =
+                                        "img-fallback absolute inset-0 flex items-center justify-center bg-muted rounded text-xs font-semibold text-muted-foreground";
+                                      fallback.textContent = (player.name || "?")
+                                        .split(" ")
+                                        .map((w: string) => w[0])
+                                        .slice(0, 2)
+                                        .join("")
+                                        .toUpperCase();
+                                      parent.appendChild(fallback);
+                                    }
+                                  })();
                                 }}
                               />
                             ) : (

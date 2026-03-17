@@ -22,6 +22,7 @@ interface IndexedPlayer {
 
 const imageCache: ImageCache = {};
 const idCache: Record<number, string | null> = {};
+const existsCache = new Map<string, boolean>();
 
 let indexReady = false;
 let indexById: Record<number, IndexedPlayer> = {};
@@ -65,16 +66,21 @@ function extractCodeFromUrl(url: string) {
 function buildUrlCandidates(code: string, directUrls: string[]) {
   const out = new Set<string>();
 
+  if (code) {
+    // Primary canonical source – Premier League player photos
+    out.add(`https://resources.premierleague.com/premierleague/photos/players/110x140/p${code}.png`);
+    out.add(`https://resources.premierleague.com/premierleague/photos/players/250x250/p${code}.png`);
+
+    // Legacy FPL CDN variants as additional fallbacks
+    out.add(`https://fantasy.premierleague.com/dist/img/photos/110x140/p${code}.png`);
+    out.add(`https://fantasy.premierleague.com/dist/img/photos/250x250/p${code}.png`);
+  }
+
+  // Any explicit URLs from upstream data come after our canonical patterns
   directUrls
     .map((u) => String(u || "").trim().replace(/^http:\/\//i, "https://"))
     .filter(Boolean)
     .forEach((u) => out.add(u));
-
-  if (code) {
-    out.add(`https://fantasy.premierleague.com/dist/img/photos/110x140/p${code}.png`);
-    out.add(`https://fantasy.premierleague.com/dist/img/photos/250x250/p${code}.png`);
-    out.add(`https://resources.premierleague.com/premierleague/photos/players/250x250/p${code}.png`);
-  }
 
   return Array.from(out);
 }
@@ -250,30 +256,125 @@ export async function fetchPlayerImage(playerName: string): Promise<string | nul
   }
 
   try {
+    // Try to resolve via FPL/PL bootstrap index first (Premier League images)
     const resolved = await resolveByName(playerName);
-    imageCache[playerName] = resolved;
-    return resolved;
+    if (resolved) {
+      imageCache[playerName] = resolved;
+      return resolved;
+    }
+
+    // Fallback to Wikipedia thumbnail only if no Premier League-style image is available
+    const wiki = await getWikipediaImage(playerName);
+    imageCache[playerName] = wiki;
+    return wiki;
   } catch {
     imageCache[playerName] = null;
     return null;
   }
 }
 
-export async function getPlayerImage(playerName: string): Promise<string | null> {
-  if (playerName in imageCache) {
-    return imageCache[playerName];
+async function getWikipediaImage(playerName: string): Promise<string | null> {
+  const cacheKey = `wiki:${playerName}`;
+  if (cacheKey in imageCache) {
+    return imageCache[cacheKey];
   }
-  return fetchPlayerImage(playerName);
+
+  // Build name variants to try: full name, first+last only, last name only
+  const parts = playerName.trim().split(/\s+/);
+  const variants = [
+    playerName,                                    // "Marcos Senesi Barón"
+    parts.length > 2 ? `${parts[0]} ${parts[1]}` : null,  // "Marcos Senesi"
+    parts.length > 1 ? `${parts[0]} ${parts[parts.length - 1]}` : null, // "Marcos Barón"
+    parts.length > 1 ? parts[parts.length - 1] : null,  // last name only as last resort
+  ].filter((v): v is string => !!v && v !== playerName || v === playerName);
+
+  // Deduplicate
+  const uniqueVariants = [...new Set(variants)];
+
+  for (const name of uniqueVariants) {
+    try {
+      const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(name)}`;
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const data = await res.json();
+      const image = data?.thumbnail?.source ?? null;
+      if (image) {
+        imageCache[cacheKey] = image;
+        return image;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  imageCache[cacheKey] = null;
+  return null;
 }
 
-export async function getPlayerImageByIdOrName(playerId: number, playerName: string): Promise<string | null> {
+async function imageExists(url: string): Promise<boolean> {
+  if (existsCache.has(url)) return existsCache.get(url)!;
   try {
-    const byId = await resolveById(playerId);
-    if (byId) return byId;
+    const res = await fetch(url, { method: "HEAD" });
+    existsCache.set(url, res.ok);
+    return res.ok;
   } catch {
-    // Continue to name lookup.
+    existsCache.set(url, false);
+    return false;
   }
-  return getPlayerImage(playerName);
+}
+
+export async function getPlayerImage(playerName: string): Promise<string | null> {
+  return getWikipediaImage(playerName);
+}
+
+export async function getPlayerImageByIdOrName(
+  playerId: number,
+  playerName: string,
+  knownUrl?: string | null,
+): Promise<string | null> {
+  // Return cached result immediately
+  if (Object.prototype.hasOwnProperty.call(idCache, playerId)) {
+    return idCache[playerId];
+  }
+
+  // Step 1: Prefer canonical Premier League image built from bootstrap `elements.code`
+  await loadIndex();
+  const indexed = indexById[playerId];
+  const primaryCode = indexed?.codes?.[0] || "";
+
+  if (primaryCode) {
+    const premierLeagueUrl = `https://resources.premierleague.com/premierleague/photos/players/110x140/p${primaryCode}.png`;
+    // Use Premier League image URL directly; let <img> onError handle any failures.
+    idCache[playerId] = premierLeagueUrl;
+    return premierLeagueUrl;
+  }
+
+  // Step 2: Fall back to any known CDN URL we already have for the player
+  if (knownUrl) {
+    const proxied = getProxiedImageUrl(knownUrl);
+    if (proxied) {
+      idCache[playerId] = proxied;
+      return proxied;
+    }
+  }
+
+  // Step 3: Last resort – Wikipedia thumbnail
+  const wikiImage = await getWikipediaImage(playerName);
+  if (wikiImage) {
+    idCache[playerId] = wikiImage;
+    return wikiImage;
+  }
+
+  // Step 4: Nothing found — caller shows initials
+  idCache[playerId] = null;
+  return null;
+}
+
+export function getProxiedImageUrl(originalUrl: string | null | undefined): string | null {
+  if (!originalUrl) return null;
+  const cleaned = String(originalUrl).replace(/^http:\/\//i, "https://");
+  // Avoid proxying to prevent CORB/CORS issues; return direct URL.
+  return cleaned;
 }
 
 export async function preloadPlayerImages(playerNames: string[]): Promise<void> {

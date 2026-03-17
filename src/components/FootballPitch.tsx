@@ -4,7 +4,7 @@
  */
 
 import React, { useState } from "react";
-import { getPlayerImage, getPlayerImageByIdOrName } from "../lib/playerImage";
+import { getPlayerImage, getPlayerImageByIdOrName, getProxiedImageUrl } from "../lib/playerImage";
 
 export interface PitchPlayer {
   player_id: number;
@@ -55,11 +55,11 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
       await Promise.all(
         players.map(async (player) => {
           const directImageUrl = String(player.player_image_url || "").replace(/^http:\/\//i, "https://");
-          if (directImageUrl) {
-            images[player.player_id] = directImageUrl;
-            return;
-          }
-          const byIdOrName = await getPlayerImageByIdOrName(player.player_id, player.player_name);
+          const byIdOrName = await getPlayerImageByIdOrName(
+            player.player_id,
+            player.player_name,
+            directImageUrl || null,
+          );
           if (byIdOrName) {
             images[player.player_id] = byIdOrName;
             return;
@@ -167,24 +167,42 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
                 >
                   {imageUrl ? (
                     <img
-                      src={imageUrl}
+                    src={imageUrl ?? undefined}
                       alt={player.player_name}
                       className="w-full h-full object-cover"
                       onError={(e) => {
                         const target = e.currentTarget;
-                        target.style.display = "none";
-                        const parent = target.parentElement;
-                        if (parent && !parent.querySelector(".img-fallback")) {
-                          const fallback = document.createElement("div");
-                          fallback.className = "img-fallback flex items-center justify-center w-full h-full rounded-full bg-muted text-xs font-bold text-muted-foreground";
-                          fallback.textContent = (player.player_name || (player as any).name || "?")
-                            .split(" ")
-                            .map((w: string) => w[0])
-                            .slice(0, 2)
-                            .join("")
-                            .toUpperCase();
-                          parent.appendChild(fallback);
-                        }
+                        (async () => {
+                          try {
+                            const name = player.player_name || (player as any).name || "";
+                            const wikiRes = await fetch(
+                              `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(name)}`,
+                            );
+                            const wikiData = wikiRes.ok ? await wikiRes.json() : null;
+                            const wikiImg = wikiData?.thumbnail?.source;
+                            if (wikiImg) {
+                              target.src = wikiImg;
+                              target.style.display = "";
+                              return;
+                            }
+                          } catch {
+                            // fall through to initials
+                          }
+                          target.style.display = "none";
+                          const parent = target.parentElement;
+                          if (parent && !parent.querySelector(".img-fallback")) {
+                            const fallback = document.createElement("div");
+                            fallback.className =
+                              "img-fallback flex items-center justify-center w-full h-full rounded-full bg-muted text-xs font-bold text-muted-foreground";
+                            fallback.textContent = (player.player_name || (player as any).name || "?")
+                              .split(" ")
+                              .map((w: string) => w[0])
+                              .slice(0, 2)
+                              .join("")
+                              .toUpperCase();
+                            parent.appendChild(fallback);
+                          }
+                        })();
                       }}
                     />
                   ) : (
@@ -198,7 +216,8 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
                         const parent = target.parentElement;
                         if (parent && !parent.querySelector(".img-fallback")) {
                           const fallback = document.createElement("div");
-                          fallback.className = "img-fallback flex items-center justify-center w-full h-full rounded-full bg-muted text-xs font-bold text-muted-foreground";
+                          fallback.className =
+                            "img-fallback flex items-center justify-center w-full h-full rounded-full bg-muted text-xs font-bold text-muted-foreground";
                           fallback.textContent = (player.player_name || (player as any).name || "?")
                             .split(" ")
                             .map((w: string) => w[0])
