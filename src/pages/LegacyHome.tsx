@@ -263,11 +263,17 @@ export default function Home() {
   const allTimeSortLabel = (key: string) =>
     allTimeSort.key === key ? (allTimeSort.dir === "asc" ? " ↑" : " ↓") : "";
 
-  const renderLeader = (row?: LeaderMetric) => {
+  /** Strip season (e.g. "2024/25 - ") from details for season-by-season view where it's implied by the header. */
+  const stripSeasonFromDetails = (details: string) =>
+    String(details || "").replace(/\d{4}\/\d{2}\s*-\s*/g, "").replace(/\s+/g, " ").trim();
+
+  const renderLeader = (row?: LeaderMetric, options?: { stripSeason?: boolean }) => {
     if (!row || !row.leaders?.length) return "—";
+    const stripSeason = options?.stripSeason ?? false;
     return row.leaders
       .map((l) => {
-        const details = l.details || "";
+        let details = l.details || "";
+        if (stripSeason) details = stripSeasonFromDetails(details);
         const isPointsInGwFormat = details.startsWith(`${l.value}:`);
         if (isPointsInGwFormat) return `${l.manager_name} (${details})`;
         return `${l.manager_name} (${l.value} GW${details ? `: ${details}` : ""})`;
@@ -427,6 +433,7 @@ export default function Home() {
                       standings={gobletTableData}
                       title={`${selectedSeason} Goblet Standings`}
                       showPointsFor={true}
+                      showPts={false}
                     />
                   </Card>
                   <Card className="p-4">
@@ -435,27 +442,27 @@ export default function Home() {
                       <TableBody>
                         <TableRow>
                           <TableCell className="font-medium">Points in a GW</TableCell>
-                          <TableCell>{renderLeader(leaders?.season_leaders.points_in_gameweek)}</TableCell>
+                          <TableCell>{renderLeader(leaders?.season_leaders.points_in_gameweek, { stripSeason: true })}</TableCell>
                         </TableRow>
                         <TableRow>
                           <TableCell className="font-medium">Most 50+ GW&apos;s</TableCell>
-                          <TableCell>{renderLeader(leaders?.season_leaders.most_50_plus_gws)}</TableCell>
+                          <TableCell>{renderLeader(leaders?.season_leaders.most_50_plus_gws, { stripSeason: true })}</TableCell>
                         </TableRow>
                         <TableRow>
                           <TableCell className="font-medium">Longest Win Streak</TableCell>
-                          <TableCell>{renderLeader(leaders?.season_leaders.longest_win_streak)}</TableCell>
+                          <TableCell>{renderLeader(leaders?.season_leaders.longest_win_streak, { stripSeason: true })}</TableCell>
                         </TableRow>
                         <TableRow>
                           <TableCell className="font-medium">Longest Unbeaten Streak</TableCell>
-                          <TableCell>{renderLeader(leaders?.season_leaders.longest_unbeaten_streak)}</TableCell>
+                          <TableCell>{renderLeader(leaders?.season_leaders.longest_unbeaten_streak, { stripSeason: true })}</TableCell>
                         </TableRow>
                         <TableRow>
                           <TableCell className="font-medium">Longest Losing Streak</TableCell>
-                          <TableCell>{renderLeader(leaders?.season_leaders.longest_losing_streak)}</TableCell>
+                          <TableCell>{renderLeader(leaders?.season_leaders.longest_losing_streak, { stripSeason: true })}</TableCell>
                         </TableRow>
                         <TableRow>
                           <TableCell className="font-medium">Longest Winless Streak</TableCell>
-                          <TableCell>{renderLeader(leaders?.season_leaders.longest_winless_streak)}</TableCell>
+                          <TableCell>{renderLeader(leaders?.season_leaders.longest_winless_streak, { stripSeason: true })}</TableCell>
                         </TableRow>
                       </TableBody>
                     </Table>

@@ -18,11 +18,17 @@ type Payload = {
   };
 };
 
+/** Strip season (e.g. "2025/26 - ") from details; current season is implied by the "Season Stat Leaders" header. */
+function stripSeasonFromDetails(details: string) {
+  return String(details || "").replace(/\d{4}\/\d{2}\s*-\s*/g, "").replace(/\s+/g, " ").trim();
+}
+
 function leaderText(metric?: LeaderMetric) {
   if (!metric?.leaders?.length) return "—";
   return metric.leaders
     .map((l) => {
-      const details = l.details || "";
+      let details = l.details || "";
+      details = stripSeasonFromDetails(details);
       const isPointsInGwFormat = details.startsWith(`${l.value}:`);
       if (isPointsInGwFormat) return `${l.manager_name} (${details})`;
       return `${l.manager_name} (${l.value} GW${details ? `: ${details}` : ""})`;

@@ -11,6 +11,7 @@ import { Card } from "./ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import { useManagerCrestMap } from "../lib/useManagerCrestMap";
+import gobletTrophy from "../assets/trophies/Goblet Icon.png";
 
 interface GobletStanding {
   team_id: string;
@@ -228,11 +229,14 @@ export default function GobletStandings() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="font-heading text-2xl font-semibold">Goblet Standings</h1>
-          <p className="text-sm text-muted-foreground">
-            Ranked by points for. Data source: {data.source}
-          </p>
+        <div className="flex items-center gap-3">
+          <img src={gobletTrophy} alt="" className="h-10 w-10 object-contain" aria-hidden />
+          <div>
+            <h1 className="font-heading text-2xl font-semibold">Goblet Standings</h1>
+            <p className="text-sm text-muted-foreground">
+              Ranked by points for. Data source: {data.source}
+            </p>
+          </div>
         </div>
         <button
           type="button"

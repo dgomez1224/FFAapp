@@ -14,6 +14,7 @@ import { useTournamentContext } from "../lib/tournamentContext";
 import { EDGE_FUNCTIONS_BASE, CURRENT_SEASON } from "../lib/constants";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { useManagerCrestMap } from "../lib/useManagerCrestMap";
+import cupTrophy from "../assets/trophies/FFA Cup Icon + Year.png";
 
 /** Cup knockout starts at GW 29; use for lineup links from bracket. */
 const CUP_LINEUP_GAMEWEEK = 29;
@@ -376,11 +377,14 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">FFA Bench Boost Cup</h1>
-          <p className="text-sm text-muted-foreground">
-            Two-leg ties with automatic progression based on aggregate score.
-          </p>
+        <div className="flex items-center gap-3">
+          <img src={cupTrophy} alt="" className="h-10 w-10 object-contain" aria-hidden />
+          <div>
+            <h1 className="text-2xl font-semibold">FFA Bench Boost Cup</h1>
+            <p className="text-sm text-muted-foreground">
+              Two-leg ties with automatic progression based on aggregate score.
+            </p>
+          </div>
         </div>
         {showLegacySelector && (
           <div className="flex items-center gap-2">

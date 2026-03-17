@@ -22,6 +22,7 @@ export interface StandingRow {
 interface Props {
   standings: StandingRow[];
   showPointsFor?: boolean;
+  showPts?: boolean;
   title?: string;
   className?: string;
 }
@@ -29,6 +30,7 @@ interface Props {
 export function LegacyStandingsTable({ 
   standings, 
   showPointsFor = true, 
+  showPts = true,
   title,
   className 
 }: Props) {
@@ -49,7 +51,9 @@ export function LegacyStandingsTable({
               {showPointsFor && (
                 <TableHead className="text-right">+</TableHead>
               )}
-              <TableHead className="text-right font-semibold">PTS</TableHead>
+              {showPts && (
+                <TableHead className="text-right font-semibold">PTS</TableHead>
+              )}
             </TableRow>
           </TableHeader>
           <TableBody className="fpl-table-body">
@@ -79,9 +83,11 @@ export function LegacyStandingsTable({
                       {standing.points_for ?? "–"}
                     </TableCell>
                   )}
-                  <TableCell className="fpl-points">
-                    {standing.points}
-                  </TableCell>
+                  {showPts && (
+                    <TableCell className="fpl-points">
+                      {standing.points}
+                    </TableCell>
+                  )}
                 </TableRow>
               );
             })}

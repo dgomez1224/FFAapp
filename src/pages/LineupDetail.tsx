@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { Card } from "../components/ui/card";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
@@ -10,8 +10,12 @@ import { PlayerStats, PlayerStatsModal } from "../components/PlayerStatsModal";
 type Payload = {
   type: "cup" | "league";
   gameweek: number;
+  current_gameweek: number;
   has_started: boolean;
   total_points: number;
+  opponents_by_gw?: Record<string, string>;
+  status?: string;
+  status_message?: string;
   team: {
     id: string;
     entry_name: string | null;
@@ -36,6 +40,7 @@ type Payload = {
 
 export default function LineupDetailPage() {
   const { type, gameweek, teamId } = useParams<{ type: "cup" | "league"; gameweek: string; teamId: string }>();
+  const navigate = useNavigate();
   const [data, setData] = useState<Payload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -151,6 +156,35 @@ export default function LineupDetailPage() {
   if (error || !data) return <Card className="p-6"><p className="text-sm text-destructive">{error || "Failed to load lineup"}</p></Card>;
 
   const players: PitchPlayer[] = data.lineup.map((p) => ({ ...p }));
+  const gwNum = data.gameweek;
+  const isCup = data.type === "cup";
+  const opponentsByGw = data.opponents_by_gw || {};
+  let gwKeys = Object.keys(opponentsByGw)
+    .map((g) => Number(g))
+    .filter((n) => Number.isFinite(n))
+    .sort((a, b) => a - b);
+  const isCupGroupStage = isCup && gwNum >= 29 && gwNum <= 32;
+  if (isCupGroupStage && gwKeys.length === 0) {
+    // Fallback: treat the first four cup gameweeks as 29–32 even if
+    // we don't have explicit opponents yet, so lineup navigation works.
+    gwKeys = [29, 30, 31, 32];
+  }
+  const currentIdx = gwKeys.indexOf(gwNum);
+  const prevGw = currentIdx > 0 ? gwKeys[currentIdx - 1] : undefined;
+  const nextGw = currentIdx >= 0 && currentIdx + 1 < gwKeys.length ? gwKeys[currentIdx + 1] : undefined;
+  const opponentThisGw = opponentsByGw[String(gwNum)];
+
+  const goToLineupGw = (targetGw: number | undefined) => {
+    if (!targetGw || !type || !teamId) return;
+    navigate(`/lineup/${type}/${targetGw}/${teamId}`);
+  };
+
+  const goToMatchupGw = (targetGw: number) => {
+    if (!type || !teamId) return;
+    const opp = opponentsByGw[String(targetGw)];
+    if (!opp) return;
+    navigate(`/matchup/${type}/${targetGw}/${teamId}/${opp}`);
+  };
 
   return (
     <div className="space-y-4">
@@ -161,26 +195,80 @@ export default function LineupDetailPage() {
         <h1 className="text-2xl font-semibold mt-2">
           {data.team.manager_name || "Manager"} • GW {data.gameweek} {data.type === "cup" ? "Cup" : "League"} Lineup
         </h1>
+        {isCup && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+            <span className="font-medium">Cup nav:</span>
+            <button
+              type="button"
+              onClick={() => goToLineupGw(prevGw)}
+              disabled={!prevGw}
+              className="px-2 py-0.5 rounded border hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              ← Prev GW
+            </button>
+            <button
+              type="button"
+              onClick={() => goToLineupGw(nextGw)}
+              disabled={!nextGw}
+              className="px-2 py-0.5 rounded border hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              Next GW →
+            </button>
+            {!isCupGroupStage && gwKeys.length > 0 && (
+              <select
+                value={gwNum}
+                onChange={(e) => goToLineupGw(Number(e.target.value))}
+                className="rounded border px-1.5 py-0.5 bg-background"
+              >
+                {gwKeys.map((g) => (
+                  <option key={g} value={g}>
+                    GW {g}
+                  </option>
+                ))}
+              </select>
+            )}
+            <button
+              type="button"
+              onClick={() => goToMatchupGw(gwNum)}
+              disabled={!opponentThisGw}
+              className="ml-auto text-[11px] text-primary hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              View matchup vs opponent in GW {gwNum}
+            </button>
+          </div>
+        )}
       </div>
 
       <Card className="p-6">
         <div className="mb-3">
           <p className="text-sm text-muted-foreground">{data.team.entry_name || "Team"}</p>
-          <p className="text-lg font-semibold">Total Points: {Number(data.total_points || 0).toFixed(1)}</p>
+          {data.lineup.length === 0 && data.status === "none" ? (
+            <p className="text-lg font-semibold">None scheduled / not started</p>
+          ) : (
+            <p className="text-lg font-semibold">Total Points: {Number(data.total_points || 0).toFixed(1)}</p>
+          )}
         </div>
-        <FootballPitch players={players} onPlayerClick={handlePlayerClick} showCaptain={true} />
-        <PlayerStatsTable
-          players={(data.lineup || []).map((p) => ({
-            id: p.player_id,
-            name: p.player_name,
-            image_url: p.player_image_url,
-            position: p.position,
-          }))}
-          livePoints={livePoints}
-          liveStats={liveStats}
-          captainId={(data.lineup.find((p) => p.is_cup_captain || p.is_captain))?.player_id ?? null}
-          gameweek={data.gameweek}
-        />
+        {data.lineup.length === 0 && data.status === "none" ? (
+          <p className="mt-4 text-sm text-muted-foreground">
+            Not started / none scheduled for this gameweek.
+          </p>
+        ) : (
+          <>
+            <FootballPitch players={players} onPlayerClick={handlePlayerClick} showCaptain={true} />
+            <PlayerStatsTable
+              players={(data.lineup || []).map((p) => ({
+                id: p.player_id,
+                name: p.player_name,
+                image_url: p.player_image_url,
+                position: p.position,
+              }))}
+              livePoints={livePoints}
+              liveStats={liveStats}
+              captainId={(data.lineup.find((p) => p.is_cup_captain || p.is_captain))?.player_id ?? null}
+              gameweek={data.gameweek}
+            />
+          </>
+        )}
       </Card>
 
       <PlayerStatsModal

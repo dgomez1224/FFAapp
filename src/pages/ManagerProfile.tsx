@@ -439,6 +439,22 @@ export default function ManagerProfile() {
 
   return (
     <div className="space-y-6 rounded-2xl bg-zinc-300/60 p-4 md:p-6">
+      {/* Manager Navigation */}
+      <Card className="p-4">
+        <h3 className="text-sm font-semibold mb-3">Other Managers</h3>
+        <div className="flex flex-wrap gap-2">
+          {CANONICAL_MANAGERS.filter((m) => m !== data.manager_name).map((manager) => (
+            <Link
+              key={manager}
+              to={`/manager/${manager.toLowerCase()}`}
+              className="px-3 py-1 text-sm border rounded-md hover:bg-muted transition-colors"
+            >
+              {manager}
+            </Link>
+          ))}
+        </div>
+      </Card>
+
       {/* Header */}
       <div>
         <div className="flex items-center gap-4 mb-2">
@@ -832,22 +848,6 @@ export default function ManagerProfile() {
             </Card>
         </TabsContent>
       </Tabs>
-
-      {/* Manager Navigation */}
-      <Card className="p-4">
-        <h3 className="text-sm font-semibold mb-3">Other Managers</h3>
-        <div className="flex flex-wrap gap-2">
-          {CANONICAL_MANAGERS.filter((m) => m !== data.manager_name).map((manager) => (
-            <Link
-              key={manager}
-              to={`/manager/${manager.toLowerCase()}`}
-              className="px-3 py-1 text-sm border rounded-md hover:bg-muted transition-colors"
-            >
-              {manager}
-            </Link>
-          ))}
-        </div>
-      </Card>
     </div>
   );
 }

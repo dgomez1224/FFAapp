@@ -88,10 +88,11 @@ export function LiveMatchups() {
   // Fetch H2H matchups once
   useEffect(() => {
     if (!context || !entryId) return;
+    const ctx = context;
 
     async function fetchH2H() {
       try {
-        const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/api/h2h?entryId=${entryId}&event=${context!.currentEvent}`;
+        const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/api/h2h?entryId=${entryId}&event=${ctx.currentEvent}`;
         const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
         if (!res.ok) throw new Error("Failed to fetch H2H matchups");
         const data: H2HResponse = await res.json();

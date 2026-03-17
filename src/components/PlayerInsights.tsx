@@ -49,6 +49,7 @@ interface PlayerInsight {
   owner_team?: string | null;
   owned_by?: string[];
   total_minutes?: number;
+  clean_sheets?: number;
 }
 
 interface PlayerInsightsResponse {
@@ -373,6 +374,7 @@ export default function PlayerInsights() {
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("games_started")}>GS{sortLabel("games_started")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("games_played")}>GP{sortLabel("games_played")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("total_minutes")}>Total Min{sortLabel("total_minutes")}</TableHead>
+                <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("clean_sheets")}>CS{sortLabel("clean_sheets")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("defensive_contribution_returns")}>Def Returns{sortLabel("defensive_contribution_returns")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("defensive_contributions")}>Def Contrib{sortLabel("defensive_contributions")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("bonus")}>
@@ -419,6 +421,7 @@ export default function PlayerInsights() {
                   <TableCell className="text-right">{p.games_started ?? 0}</TableCell>
                   <TableCell className="text-right">{p.games_played ?? 0}</TableCell>
                   <TableCell className="text-right">{p.total_minutes ?? 0}</TableCell>
+                  <TableCell className="text-right">{p.clean_sheets ?? 0}</TableCell>
                   <TableCell className="text-right">{p.defensive_contribution_returns ?? 0}</TableCell>
                   <TableCell className="text-right">{p.defensive_contributions ?? 0}</TableCell>
                   <TableCell className="text-right">{p.bonus ?? 0}</TableCell>

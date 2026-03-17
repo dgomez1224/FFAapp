@@ -11,6 +11,7 @@ import { Card } from "./ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { EDGE_FUNCTIONS_BASE, DRAFT_BASE_URL, LEAGUE_ID } from "../lib/constants";
 import { useManagerCrestMap } from "../lib/useManagerCrestMap";
+import leagueTrophy from "../assets/trophies/League Cup Icon.png";
 
 interface Standing {
   team_id: string;
@@ -440,9 +441,12 @@ export default function LeagueStandings() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="font-heading text-2xl font-semibold">League Standings</h1>
-          <p className="text-sm text-muted-foreground">Ranked by league points, then points for.</p>
+        <div className="flex items-center gap-3">
+          <img src={leagueTrophy} alt="" className="h-10 w-10 object-contain" aria-hidden />
+          <div>
+            <h1 className="font-heading text-2xl font-semibold">League Standings</h1>
+            <p className="text-sm text-muted-foreground">Ranked by league points, then points for.</p>
+          </div>
         </div>
         <button
           type="button"

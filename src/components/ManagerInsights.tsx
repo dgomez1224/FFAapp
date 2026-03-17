@@ -130,16 +130,16 @@ export default function ManagerInsights() {
   };
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold">Manager Insights</h1>
-        <p className="text-sm text-muted-foreground">
-          Detailed analytics for each manager including consistency, captain efficiency, performance trends, and ratings.
-        </p>
-      </div>
+  <div className="space-y-4">
+    {/* Manager Rating Ticker */}
+    <ManagerRatingTicker compact={false} showDelta={true} />
 
-      {/* Manager Rating Ticker */}
-      <ManagerRatingTicker compact={false} showDelta={true} />
+    <div>
+      <h1 className="text-2xl font-semibold">Manager Insights</h1>
+      <p className="text-sm text-muted-foreground">
+        Detailed analytics for each manager including consistency, captain efficiency, performance trends, and ratings.
+      </p>
+    </div>
 
       <Tabs defaultValue="overview" className="w-full">
         <TabsList>

@@ -68,7 +68,7 @@ const getSupabaseAdmin = () =>
   );
 
 // --------------------
-// Helpers
+// HTTP / Fetch helpers
 // --------------------
 
 async function fetchJSON<T>(url: string): Promise<T> {
@@ -90,6 +90,8 @@ async function fetchDraftGame(): Promise<{ current_event: number; current_event_
     return null;
   }
 }
+
+// ── Draft bootstrap and event helpers ──
 
 function normalizeDraftList<T = any>(value: unknown): T[] {
   if (Array.isArray(value)) return value as T[];
@@ -144,6 +146,8 @@ function resolveDisplayGameweek(currentEvent: number | null, latestCompletedEven
   // If current event is already completed, move the "this week" view to upcoming fixtures.
   return latestCompletedEvent >= current ? latestCompletedEvent + 1 : current;
 }
+
+// ── Draft entry and league extraction ──
 
 function unwrapDraftEntry(payload: any) {
   if (!payload || typeof payload !== "object") return payload;
@@ -226,6 +230,8 @@ function formatDraftTeamName(entry: any) {
   return candidate;
 }
 
+// ── Generic utilities ──
+
 function coerceNumber(value: any, fallback = 0) {
   const num = typeof value === "string" ? Number.parseFloat(value) : value;
   return Number.isFinite(num) ? num : fallback;
@@ -243,9 +249,13 @@ function isMissingRelationError(error: any) {
   );
 }
 
+// ── Bootstrap fetch (single cached entry point for draft bootstrap-static) ──
+
 async function fetchDraftBootstrap() {
   return fetchJSON<any>(`${DRAFT_BASE_URL}/bootstrap-static`);
 }
+
+// ── League and config resolution ──
 
 let cachedLeagueId: number | null = null;
 
@@ -276,6 +286,8 @@ async function resolveLeagueId(): Promise<number> {
   return leagueId;
 }
 
+// ── Email and image utilities ──
+
 function normalizeEmail(value: unknown) {
   return String(value ?? "").trim().toLowerCase();
 }
@@ -299,6 +311,8 @@ function parseDataUrlImage(dataUrl: string) {
     : "jpg";
   return { contentType, bytes, ext };
 }
+
+// ── Lineup, captain session, and squad fetch ──
 
 async function fetchLastLineupForTeam(supabase: ReturnType<typeof getSupabaseAdmin>, teamId: string, beforeGameweek: number) {
   try {
@@ -484,6 +498,8 @@ async function resolveDraftEntryCandidatesForManager(
   return Array.from(candidates);
 }
 
+// ── Player name and image resolution ──
+
 function toCanonicalPlayerName(value: unknown): string {
   return String(value ?? "")
     .normalize("NFD")
@@ -582,6 +598,8 @@ function extractDraftPlayerMap(bootstrap: any) {
   });
   return map;
 }
+
+// ── Live points and cup gameweek scoring ──
 
 function extractLivePointsMap(payload: any) {
   const pointsByPlayerId: Record<number, number> = {};
@@ -729,6 +747,8 @@ function extractLivePlayerStatsMap(payload: any) {
   return statsByPlayerId;
 }
 
+// ── Manager name normalization and canonical keys ──
+
 function normalizeManagerName(value: unknown): string {
   return String(value ?? "").trim().toUpperCase();
 }
@@ -766,6 +786,8 @@ type H2HRecord = {
 function canonicalManagerKey(value: unknown) {
   return toCanonicalManagerName(value) || normalizeManagerName(value) || "";
 }
+
+// ── Legacy stats: types and derived gameweek stats ──
 
 type FormResult = "W" | "D" | "L";
 
@@ -844,7 +866,7 @@ function formatBestGameweekDetails(
 ) {
   if (points === null || rows.length === 0) return null;
   const ordered = [...rows].sort(compareSeasonAndGw);
-  return `${points}: ${ordered.map((r) => `GW${r.gameweek}`).join(", ")}`;
+  return `${points}: ${ordered.map((r) => `${r.season} - GW${r.gameweek}`).join(", ")}`;
 }
 
 function longestRun(results: string[], predicate: (r: string) => boolean) {
@@ -863,10 +885,10 @@ function longestRun(results: string[], predicate: (r: string) => boolean) {
 
 function formatStreakSpan(span: StreakSpan) {
   if (span.startSeason === span.endSeason) {
-    if (span.startGw === span.endGw) return `GW${span.startGw}`;
-    return `GW${span.startGw}-GW${span.endGw}`;
+    if (span.startGw === span.endGw) return `${span.startSeason} - GW${span.startGw}`;
+    return `${span.startSeason} - GW${span.startGw}-GW${span.endGw}`;
   }
-  return `GW${span.startGw} -> GW${span.endGw}`;
+  return `${span.startSeason} - GW${span.startGw} → ${span.endSeason} - GW${span.endGw}`;
 }
 
 function longestRunWithSpans(
@@ -1153,8 +1175,7 @@ async function fetchDerivedGameweekStats(
   });
 
   type LeaderRow = { manager_name: string; value: number; details: string | null };
-  const stripSeasonFromDetails = (s: string) =>
-    String(s || "").replace(/\s*\d{4}\/\d{2}\s*/g, " ").replace(/\s+/g, " ").trim();
+  const normalizeDetails = (s: string) => String(s || "").replace(/\s+/g, " ").trim();
 
   const buildLeaderRows = (metric: keyof ManagerDerivedGwStats, detailsMetric?: keyof ManagerDerivedGwStats) => {
     const all: LeaderRow[] = managers.map((manager) => {
@@ -1163,7 +1184,7 @@ async function fetchDerivedGameweekStats(
       let details = Array.isArray(rawDetails)
         ? rawDetails.filter(Boolean).join(", ")
         : String(rawDetails || "");
-      details = stripSeasonFromDetails(details);
+      details = normalizeDetails(details);
       return { manager_name: manager, value, details: details || null };
     });
     const max = all.reduce((acc, row) => Math.max(acc, row.value), 0);
@@ -1244,6 +1265,8 @@ async function fetchDraftPicksForEntries(
   }
   return null;
 }
+
+// ── League rank map and draft league details ──
 
 async function buildLeagueRankMap(
   supabase: ReturnType<typeof getSupabaseAdmin>,
@@ -2131,6 +2154,8 @@ async function resolveDraftLeagueDetails(entryOrLeague: string | number, leagueI
   };
 }
 
+// ── Error and league context helpers ──
+
 function jsonError(c: any, status: number, message: string, details?: unknown) {
   return c.json({ error: { message, details } }, status);
 }
@@ -2230,6 +2255,8 @@ function requireAdminToken(c: any) {
   }
   return true;
 }
+
+// ── Manager rating and rank map helpers ──
 
 function computeManagerRating(
   placements: number[],
@@ -2981,15 +3008,10 @@ function applyLeagueAutoSubs(
 
 /** Compute live points per entry for current GW only (starters only). */
 async function computeLiveEntryPoints(currentGw: number): Promise<Record<string, number>> {
-  console.log("[CLEP] called for GW:", currentGw);
   const liveEntryPoints: Record<string, number> = {};
   try {
     const livePayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${currentGw}/live`);
     const liveMap = extractLivePointsMap(livePayload);
-    console.log(
-      "[CLEP] livePayload elements count:",
-      Object.keys((livePayload as any)?.elements ?? {}).length,
-    );
     // Build liveStatsMap from live payload if not already present
     const liveStatsMap: Record<number, any> = {};
     const liveElements = (livePayload && (livePayload as any).elements) || {};
@@ -3025,7 +3047,6 @@ async function computeLiveEntryPoints(currentGw: number): Promise<Record<string,
       if (!id) return;
       playerMap[id] = el;
     });
-    console.log("[CLEP] playerMap size:", Object.keys(playerMap ?? {}).length);
 
     // Fetch FPL fixtures once to drive auto-sub logic
     const fixturesArr: any[] = await fetch(
@@ -3051,7 +3072,6 @@ async function computeLiveEntryPoints(currentGw: number): Promise<Record<string,
       upd(fix.team_h);
       upd(fix.team_a);
     }
-    console.log("[CLEP] fixturesArr length:", fixturesArr?.length ?? 0);
 
     const picksResults = await Promise.all(
       Array.from(currentGwEntryKeys).map(async (matchKey) => {
@@ -3115,7 +3135,7 @@ async function computeLiveEntryPoints(currentGw: number): Promise<Record<string,
                 0,
               );
           } catch (subErr) {
-            console.error("[CLEP] auto-sub failed, falling back:", subErr);
+            console.error("computeLiveEntryPoints auto-sub failed, falling back:", subErr);
             // Fallback: sum starters without auto-sub
             total = lineup
               .filter((p: any) => !p.is_bench)
@@ -3125,9 +3145,6 @@ async function computeLiveEntryPoints(currentGw: number): Promise<Record<string,
               );
           }
 
-          console.log("[CLEP] first entry picks count:", entryPicks?.length);
-          console.log("[CLEP] first entry total:", total);
-
           return { matchKey, total };
         } catch {
           return { matchKey, total: 0 };
@@ -3135,7 +3152,6 @@ async function computeLiveEntryPoints(currentGw: number): Promise<Record<string,
       }),
     );
     picksResults.forEach((r) => { liveEntryPoints[r.matchKey] = r.total; });
-    console.log("[CLEP] liveEntryPoints:", JSON.stringify(liveEntryPoints));
   } catch {
     // non-fatal
   }
@@ -3324,7 +3340,6 @@ async function syncH2hAndGobletWithLive(supabase: ReturnType<typeof getSupabaseA
 }
 
 gobletStandings.get("/", async (c) => {
-  console.log("📦 GOBLET ROUTE START");
   try {
     const gobletSort = (a: any, b: any) =>
       coerceNumber(b.points_for, 0) - coerceNumber(a.points_for, 0) ||
@@ -3896,17 +3911,13 @@ playerInsights.get("/", async (c) => {
       return value >= min && value <= max;
     };
 
-    // Use draft.premierleague.com bootstrap-static for full player list (all players fetchable)
+    // Single fetch for draft bootstrap-static; FPL bootstrap in parallel for classic fallback only
     const [draftBootstrapRes, classicBootstrapRes] = await Promise.allSettled([
-      fetchJSON<any>(`${DRAFT_BASE_URL}/bootstrap-static`).catch(() => fetchDraftBootstrap()),
+      fetchDraftBootstrap(),
       fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`),
     ]);
     const draftBootstrap = draftBootstrapRes.status === "fulfilled" ? draftBootstrapRes.value : null;
     const classicBootstrap = classicBootstrapRes.status === "fulfilled" ? classicBootstrapRes.value : null;
-    const _piElements = Array.isArray(draftBootstrap?.elements) ? draftBootstrap.elements : (draftBootstrap?.elements?.data ?? draftBootstrap?.elements ?? []);
-    const _piEvents = Array.isArray(draftBootstrap?.events) ? draftBootstrap.events : (draftBootstrap?.events?.data ?? []);
-    console.log("[PI] bootstrap elements count:", (Array.isArray(_piElements) ? _piElements : Object.values(_piElements)).length, "events count:", (Array.isArray(_piEvents) ? _piEvents : []).length);
-
     const draftPlayers = normalizeDraftList<any>(
       draftBootstrap?.elements?.data ??
         draftBootstrap?.elements ??
@@ -3953,12 +3964,6 @@ playerInsights.get("/", async (c) => {
     const bootstrapElements = Array.isArray(draftBootstrap?.elements)
       ? draftBootstrap?.elements
       : (draftBootstrap?.elements?.data ?? []);
-    const sampleEl = Array.isArray(bootstrapElements)
-      ? bootstrapElements.find((e: any) => (e?.id ?? e?.element) === 355)
-      : null;
-    console.log("bootstrap element keys:", Object.keys(sampleEl ?? {}).join(", "));
-    console.log("bootstrap element full:", JSON.stringify(sampleEl));
-
     const bootstrap = draftBootstrap;
     const events = Array.isArray(bootstrap?.events) ? bootstrap.events : (bootstrap?.events?.data ?? []);
     const eventsList = Array.isArray(events) ? events : [];
@@ -3967,13 +3972,8 @@ playerInsights.get("/", async (c) => {
     const game = await fetchDraftGame();
     const _currentGw = game?.current_event ?? currentEvent?.id ?? lastFinished?.id ?? extractDraftCurrentEventId(draftBootstrap) ?? 29;
     const currentGw = (_currentGw && Number(_currentGw) > 0) ? Number(_currentGw) : 29;
-    console.log("[PI] currentGw:", currentGw);
-    console.log("player-insights currentGw:", currentGw, "is_current event:", currentEvent?.id, "last finished:", lastFinished?.id);
 
     const gwRange = Array.from({ length: currentGw }, (_, i) => i + 1);
-    console.log("[PI] gwRange:", gwRange.length, "GWs to fetch");
-    console.log("player-insights currentGw:", currentGw, "gwRange length:", gwRange?.length);
-    console.log("player-insights fetching", gwRange.length, "GWs");
 
     const liveAndFixtureResponses = await Promise.all(
       gwRange.map((gw) =>
@@ -3991,8 +3991,6 @@ playerInsights.get("/", async (c) => {
         ])
       )
     );
-    console.log("[PI] gwResponses received:", liveAndFixtureResponses.length);
-    console.log("player-insights live responses received:", liveAndFixtureResponses.length);
 
     const playerTotals: Record<number, {
       games_played: number;
@@ -4008,12 +4006,6 @@ playerInsights.get("/", async (c) => {
     for (let gwIdx = 0; gwIdx < liveAndFixtureResponses.length; gwIdx++) {
       const [liveData, fixtureData] = liveAndFixtureResponses[gwIdx] ?? [null, null];
       const gw = gwRange[gwIdx];
-      if (gw === 1) {
-        console.log("[PI] GW1 fixtureData:", JSON.stringify(fixtureData)?.slice(0, 500));
-        console.log("[PI] GW1 fixtureData length:", Array.isArray(fixtureData) ? fixtureData.length : (fixtureData?.fixtures?.length ?? "null"));
-        console.log("[PI] teamByPlayerId[5]:", teamByPlayerId[5]);
-        console.log("[PI] teamByPlayerId[636]:", teamByPlayerId[636]);
-      }
       if (!liveData) continue;
 
       const rawFixtures = Array.isArray(fixtureData) ? fixtureData : (fixtureData?.fixtures ?? []);
@@ -4048,26 +4040,11 @@ playerInsights.get("/", async (c) => {
         playerTotals[id].games_started = (playerTotals[id].games_started ?? 0) + matchesStarted;
         playerTotals[id].games_played = (playerTotals[id].games_played ?? 0) + matchesPlayed;
 
-        if (id === 636 || id === 5) {
-          console.log(`[PI] player ${id} GW${gw}: minutes=${minutes}, starts=${starts}, total_points=${(stats as any).total_points}, games_played_so_far=${playerTotals[id]?.games_played ?? 0}`);
-        }
-        if (matchesPlayed > 0 && (id === 636 || id === 5)) {
-          console.log(`[PI] player ${id} GW${gw}: COUNTED games_played=${playerTotals[id].games_played}`);
-        }
-
         const gwPoints = Number(stats.total_points ?? 0);
         const defContrib = Number(stats.defensive_contribution ?? 0);
         const pos = positionByPlayerId[id];
         const playerTeam = teamByPlayerId[id];
         const threshold = pos === 2 ? 10 : (pos === 3 || pos === 4) ? 12 : 0;
-
-        if (id === 5 && gw === 1) {
-          const gw1TeamFixtures = rawFixtures.filter((f: any) =>
-            Number((f as any).team_h) === playerTeam || Number((f as any).team_a) === playerTeam
-          );
-          console.log("[PI] Gabriel GW1 playerTeam:", playerTeam);
-          console.log("[PI] Gabriel GW1 teamFixtures:", JSON.stringify(gw1TeamFixtures));
-        }
 
         const teamFixtures = rawFixtures.filter((f: any) =>
           Number((f as any).team_h) === playerTeam || Number((f as any).team_a) === playerTeam
@@ -4102,11 +4079,6 @@ playerInsights.get("/", async (c) => {
         }
       }
     }
-    console.log("[PI] final Bueno(636) totals:", JSON.stringify(playerTotals[636]));
-    console.log("[PI] final Gabriel(5) totals:", JSON.stringify(playerTotals[5]));
-    console.log("[PI] totals built for", Object.keys(playerTotals).length, "players");
-    console.log("[PI] sample totals[355]:", JSON.stringify(playerTotals[355]));
-    console.log("player-insights playerTotals count:", Object.keys(playerTotals).length);
 
     const byPlayerFromBootstrap: Record<number, any> = {};
     rawPlayers.forEach((p: any) => {
@@ -4118,12 +4090,6 @@ playerInsights.get("/", async (c) => {
       ) || {};
       const merged = { ...pClassic, ...draftRow, ...p };
       const el = merged;
-      if (playerId === 355) console.log("[PI] Haaland row:", JSON.stringify({
-        games_played: playerTotals[playerId]?.games_played,
-        home_games: playerTotals[playerId]?.home_games,
-        away_games: playerTotals[playerId]?.away_games,
-        games_started: playerTotals[playerId]?.games_started,
-      }));
       const mergedFullName = `${el?.first_name ?? ""} ${el?.second_name ?? ""}`.trim();
 
       const playerName =
@@ -4146,6 +4112,7 @@ playerInsights.get("/", async (c) => {
       const expected_goal_involvements = Number(el?.expected_goal_involvements ?? 0);
       const expected_goals_conceded = Number(el?.expected_goals_conceded ?? 0);
       const goals_conceded = Number(el?.goals_conceded ?? el?.stats?.goals_conceded ?? 0);
+      const clean_sheets = Number(el?.clean_sheets ?? el?.stats?.clean_sheets ?? 0);
 
       // SOURCE B: Per-GW live loop accumulator only
       const gamesStarted = playerTotals[playerId]?.games_started ?? 0;
@@ -4181,6 +4148,7 @@ playerInsights.get("/", async (c) => {
         assists,
         own_goals,
         goals_conceded,
+        clean_sheets,
         bonus,
         expected_goals,
         expected_assists,
@@ -5001,7 +4969,6 @@ h2hStandings.get("/", async (c) => {
 });
 
 h2hMatchups.get("/", async (c) => {
-  console.log("📦 THIS WEEK ROUTE START");
   try {
     const gameweekParam = c.req.query("gameweek");
     let gameweek = gameweekParam ? Number(gameweekParam) : 1;
@@ -5011,18 +4978,20 @@ h2hMatchups.get("/", async (c) => {
     } catch {
       // Continue with live reads even if legacy sync fails.
     }
+    let bootstrap: any = null;
+    try {
+      bootstrap = await fetchDraftBootstrap();
+    } catch {
+      // Fall back to DB or query param below.
+    }
     if (!gameweekParam) {
-      let currentEvent: number | null = null;
-      let latestCompletedEvent: number | null = null;
-      try {
-        const bootstrap = await fetchDraftBootstrap();
-        currentEvent = extractDraftCurrentEventId(bootstrap);
-        latestCompletedEvent = extractLatestCompletedDraftEventId(bootstrap);
+      if (bootstrap) {
+        const currentEvent = extractDraftCurrentEventId(bootstrap);
+        const latestCompletedEvent = extractLatestCompletedDraftEventId(bootstrap);
         gameweek = resolveDisplayGameweek(currentEvent, latestCompletedEvent);
-      } catch {
+      } else {
         const context = await resolveLeagueContextFromDb(supabase);
-        const fallbackCurrent = context.currentGameweek || 1;
-        gameweek = fallbackCurrent;
+        gameweek = context.currentGameweek || 1;
       }
     }
 
@@ -5030,13 +4999,9 @@ h2hMatchups.get("/", async (c) => {
       return jsonError(c, 400, "Missing gameweek");
     }
 
-    let latestCompletedForRanks: number | null = null;
-    try {
-      const bootstrap = await fetchDraftBootstrap();
-      latestCompletedForRanks = extractLatestCompletedDraftEventId(bootstrap);
-    } catch {
-      latestCompletedForRanks = gameweek > 1 ? gameweek - 1 : null;
-    }
+    const latestCompletedForRanks: number | null = bootstrap
+      ? extractLatestCompletedDraftEventId(bootstrap)
+      : (gameweek > 1 ? gameweek - 1 : null);
 
     let rankMap: Record<string, number> = {};
     try {
@@ -6209,7 +6174,7 @@ bracket.get("/", async (c) => {
         const scoredGws = new Set((scoreRows ?? []).map((r: any) => r.gameweek));
         let eventFinished = false;
         try {
-          const bootstrap = await fetch(`${DRAFT_BASE_URL}/bootstrap-static`, { headers: { "User-Agent": "Mozilla/5.0" } }).then((r) => r.json());
+          const bootstrap = await fetchDraftBootstrap();
           const events = Array.isArray(bootstrap?.events) ? bootstrap.events : [];
           const currentEvent = events.find((e: any) => e.is_current);
           eventFinished = currentEvent?.finished === true || currentEvent?.data_checked === true;
@@ -6357,7 +6322,7 @@ liveContext.get("/", async (c) => {
     // Fetch bootstrap static for metadata versioning
     let bootstrapVersion: string | null = null;
     try {
-      const bootstrap = await fetchJSON<any>(`${DRAFT_BASE_URL}/bootstrap-static`);
+      const bootstrap = await fetchDraftBootstrap();
       const bootstrapEvents = extractDraftEvents(bootstrap);
       bootstrapVersion =
         extractDraftCurrentEventId(bootstrap)?.toString() ||
@@ -6776,9 +6741,7 @@ adminRefresh.post("/score-cup-gameweek-auto", async (c) => {
   }
   try {
     const supabase = getSupabaseAdmin();
-    const bootstrap = await fetch("https://draft.premierleague.com/api/bootstrap-static", {
-      headers: { "User-Agent": "Mozilla/5.0" },
-    }).then((r) => r.json());
+    const bootstrap = await fetchDraftBootstrap();
     const events = Array.isArray(bootstrap?.events) ? bootstrap.events : [];
     const currentEvent = events.find((e: any) => e.is_current);
     const currentGw = currentEvent?.id ?? 0;
@@ -7522,12 +7485,6 @@ captainPicks.post("/select", async (c) => {
     const teamId = session.team_id;
     const managerName = session.manager_name ?? "";
     const entryId = squad.entryId ?? session.entry_id ?? "";
-    console.log("cup_captain_selections upsert:", {
-      teamId,
-      targetGameweek,
-      captain_player_id: captainPlayerId,
-      vice_captain_player_id: viceCaptainPlayerId,
-    });
 
     const TABLE = "cup_captain_selections";
     let { error: upsertErr } = await supabase
@@ -7597,7 +7554,6 @@ const fixturesHub = new Hono();
 const leagueActivity = new Hono();
 
 fixturesHub.get("/", async (c) => {
-  console.log("📦 FIXTURES ROUTE START");
   try {
     const supabase = getSupabaseAdmin();
     try {
@@ -8015,11 +7971,6 @@ fixturesHub.get("/", async (c) => {
         team_2_points: m.team_2_points,
       }))
     );
-    console.log(
-      "Fixtures final scores:",
-      leagueMatches.map((m: any) => ({ gw: m.gameweek, t1: m.team_1_points, t2: m.team_2_points }))
-    );
-
     return c.json({
       season: CURRENT_SEASON,
       current_gameweek: currentGw,
@@ -8233,6 +8184,8 @@ fixturesHub.get("/matchup", async (c) => {
     let team1: any = null;
     let team2: any = null;
     let leagueRow: any = null;
+    let team1OpponentsByGw: Record<number, string> = {};
+    let team2OpponentsByGw: Record<number, string> = {};
 
     if (type === "league") {
       let entries: any[] = [];
@@ -8375,6 +8328,15 @@ fixturesHub.get("/matchup", async (c) => {
           (left === resolvedTeam2Id && right === resolvedTeam1Id);
         return samePair && coerceNumber(m.event) === gameweek;
       }) || null;
+      matches.forEach((m: any) => {
+        const gw = coerceNumber(m.event);
+        const e1 = toFplId(m?.league_entry_1 ?? m?.entry_1 ?? m?.home ?? "");
+        const e2 = toFplId(m?.league_entry_2 ?? m?.entry_2 ?? m?.away ?? "");
+        if (e1 === resolvedTeam1Id) team1OpponentsByGw[gw] = e2;
+        if (e2 === resolvedTeam1Id) team1OpponentsByGw[gw] = e1;
+        if (e1 === resolvedTeam2Id) team2OpponentsByGw[gw] = e2;
+        if (e2 === resolvedTeam2Id) team2OpponentsByGw[gw] = e1;
+      });
     } else {
       const [teamsRes, cupSelectionRes] = await Promise.all([
         supabase
@@ -8435,6 +8397,25 @@ fixturesHub.get("/matchup", async (c) => {
           return sameTeams && sameGw;
         }) || null;
       }
+      const { data: allCupMatchups } = await supabase
+        .from("matchups")
+        .select("leg_1_gameweek, leg_2_gameweek, team_1_id, team_2_id")
+        .or(`team_1_id.eq."${team1Id}",team_2_id.eq."${team1Id}",team_1_id.eq."${team2Id}",team_2_id.eq."${team2Id}"`);
+      (allCupMatchups || []).forEach((row: any) => {
+        const t1 = String(row.team_1_id);
+        const t2 = String(row.team_2_id);
+        const gw1 = coerceNumber(row.leg_1_gameweek);
+        const gw2 = coerceNumber(row.leg_2_gameweek);
+        const other = (tid: string) => (tid === t1 ? t2 : t1);
+        if (t1 === team1Id || t2 === team1Id) {
+          team1OpponentsByGw[gw1] = other(team1Id);
+          team1OpponentsByGw[gw2] = other(team1Id);
+        }
+        if (t1 === team2Id || t2 === team2Id) {
+          team2OpponentsByGw[gw1] = other(team2Id);
+          team2OpponentsByGw[gw2] = other(team2Id);
+        }
+      });
     }
 
     const picks1 = await fetchDraftPicksForEntries([String(team1.entry_id)], gameweek, true);
@@ -8666,6 +8647,8 @@ fixturesHub.get("/matchup", async (c) => {
         lineup: lineup2,
         auto_subs: autoSubs2,
       },
+      team_1_opponents_by_gw: team1OpponentsByGw,
+      team_2_opponents_by_gw: team2OpponentsByGw,
     });
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to fetch matchup detail");
@@ -8674,26 +8657,43 @@ fixturesHub.get("/matchup", async (c) => {
 
 fixturesHub.get("/lineup", async (c) => {
   try {
-    const teamId = String(c.req.query("team") || "").trim();
+    const teamIdParam = String(c.req.query("team") || "").trim();
     const gameweek = coerceNumber(c.req.query("gameweek"));
     const type = String(c.req.query("type") || "cup").toLowerCase() === "league" ? "league" : "cup";
 
-    if (!teamId || !gameweek) {
+    if (!teamIdParam || !gameweek) {
       return jsonError(c, 400, "Missing required query params: team, gameweek");
     }
 
     const supabase = getSupabaseAdmin();
-    const { data: team, error: teamError } = await supabase
-      .from("teams")
-      .select("id, entry_id, entry_name, manager_name")
-      .eq("id", teamId)
-      .maybeSingle();
+    const isUuid = /^[0-9a-f-]{36}$/i.test(teamIdParam);
+    let team: { id: string; entry_id: string | null; entry_name: string; manager_name: string } | null = null;
+    let teamError: any = null;
+
+    if (isUuid) {
+      const res = await supabase
+        .from("teams")
+        .select("id, entry_id, entry_name, manager_name")
+        .eq("id", teamIdParam)
+        .maybeSingle();
+      team = res.data;
+      teamError = res.error;
+    } else {
+      const res = await supabase
+        .from("teams")
+        .select("id, entry_id, entry_name, manager_name")
+        .eq("entry_id", teamIdParam)
+        .maybeSingle();
+      team = res.data;
+      teamError = res.error;
+    }
     if (teamError) {
       return jsonError(c, 500, "Failed to fetch team", teamError.message);
     }
     if (!team) {
       return jsonError(c, 404, "Team not found");
     }
+    const teamId = String(team.id);
 
     let currentGw = gameweek;
     try {
@@ -8718,7 +8718,25 @@ fixturesHub.get("/lineup", async (c) => {
 
     const picks = await fetchDraftPicksForEntries([String(team.entry_id)], gameweek, true);
     if (!picks) {
-      return jsonError(c, 404, "No lineup found for this team and gameweek");
+      return c.json({
+        type,
+        gameweek,
+        current_gameweek: currentGw,
+        has_started: false,
+        captain_player_id: captainPlayerId || null,
+        vice_captain_player_id: viceCaptainPlayerId || null,
+        total_points: 0,
+        team: {
+          id: String(team.id),
+          entry_id: String(team.entry_id),
+          entry_name: team.entry_name,
+          manager_name: team.manager_name,
+        },
+        lineup: [],
+        opponents_by_gw: {},
+        status: "none",
+        status_message: "None scheduled or not started",
+      });
     }
 
     let bootstrap: any = null;
@@ -8796,6 +8814,25 @@ fixturesHub.get("/lineup", async (c) => {
       };
     });
 
+    let opponentsByGw: Record<number, string> = {};
+    if (type === "cup") {
+      const { data: allCupMatchups } = await supabase
+        .from("matchups")
+        .select("team_1_id, team_2_id, leg_1_gameweek, leg_2_gameweek")
+        .or(`team_1_id.eq.\"${teamId}\",team_2_id.eq.\"${teamId}\"`);
+      (allCupMatchups || []).forEach((row: any) => {
+        const t1 = String(row.team_1_id);
+        const t2 = String(row.team_2_id);
+        const gw1 = coerceNumber(row.leg_1_gameweek);
+        const gw2 = coerceNumber(row.leg_2_gameweek);
+        const otherFor = (tid: string) => (tid === t1 ? t2 : t1);
+        if (t1 === teamId || t2 === teamId) {
+          if (gw1 > 0) opponentsByGw[gw1] = otherFor(teamId);
+          if (gw2 > 0) opponentsByGw[gw2] = otherFor(teamId);
+        }
+      });
+    }
+
     return c.json({
       type,
       gameweek,
@@ -8814,6 +8851,7 @@ fixturesHub.get("/lineup", async (c) => {
         manager_name: team.manager_name,
       },
       lineup,
+      opponents_by_gw: opponentsByGw,
     });
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to fetch lineup");
@@ -8874,11 +8912,7 @@ app.route("/api/entry", entryPicks);
 app.route("/api/h2h", liveH2H);
 app.get("/api/bootstrap", async (c) => {
   try {
-    const res = await fetch("https://draft.premierleague.com/api/bootstrap-static", {
-      headers: { "User-Agent": "Mozilla/5.0" },
-    });
-    if (!res.ok) throw new Error("Bootstrap fetch failed");
-    const data = await res.json();
+    const data = await fetchDraftBootstrap();
     return c.json(data);
   } catch (err: any) {
     return c.json({ error: { message: err.message } }, 500);

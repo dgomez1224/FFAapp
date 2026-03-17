@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useParams, useSearchParams, useNavigate } from "react-router-dom";
 import { Card } from "../components/ui/card";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
@@ -67,7 +67,123 @@ type Payload = {
   };
   team_1: TeamDetail;
   team_2: TeamDetail;
+  team_1_opponents_by_gw?: Record<string, string>;
+  team_2_opponents_by_gw?: Record<string, string>;
 };
+
+function GwNav({
+  label,
+  gw,
+  minGw,
+  maxGw,
+  onChange,
+}: {
+  label: string;
+  gw: number;
+  minGw: number;
+  maxGw: number;
+  onChange: (gw: number) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between px-1 py-2">
+      <span className="text-sm font-medium text-muted-foreground">{label}</span>
+      <div className="flex items-center gap-1">
+        <button
+          onClick={() => onChange(gw - 1)}
+          disabled={gw <= minGw}
+          className="px-2 py-0.5 text-sm rounded border hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          ←
+        </button>
+        <select
+          value={gw}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="text-xs rounded border px-1 py-0.5 bg-background"
+        >
+          {Array.from({ length: maxGw - minGw + 1 }, (_, i) => minGw + i).map((g) => (
+            <option key={g} value={g}>
+              GW {g}
+            </option>
+          ))}
+        </select>
+        <button
+          onClick={() => onChange(gw + 1)}
+          disabled={gw >= maxGw}
+          className="px-2 py-0.5 text-sm rounded border hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ViewMatchupLink({
+  type,
+  gw,
+  teamId,
+  opponentsByGw,
+}: {
+  type: "league" | "cup";
+  gw: number;
+  teamId: string;
+  opponentsByGw?: Record<string, string>;
+}) {
+  const navigate = useNavigate();
+  const entries = Object.entries(opponentsByGw || {});
+  const gameweeks = entries
+    .map(([g]) => Number(g))
+    .filter((n) => Number.isFinite(n))
+    .sort((a, b) => a - b);
+  const currentIdx = gameweeks.indexOf(gw);
+  const prevGw = currentIdx > 0 ? gameweeks[currentIdx - 1] : undefined;
+  const nextGw = currentIdx >= 0 && currentIdx + 1 < gameweeks.length ? gameweeks[currentIdx + 1] : undefined;
+  const opponentId = opponentsByGw?.[String(gw)];
+  const disabled = !opponentId;
+
+  const goTo = (targetGw: number | undefined) => {
+    if (!targetGw) return;
+    const opp = opponentsByGw?.[String(targetGw)];
+    if (!opp) return;
+    navigate(`/matchup/${type}/${targetGw}/${teamId}/${opp}`);
+  };
+
+  return (
+    <div className="px-1 pb-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => goTo(prevGw)}
+            disabled={!prevGw}
+            className="px-1.5 py-0.5 text-[11px] rounded border hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            ← Prev GW
+          </button>
+          <button
+            type="button"
+            onClick={() => goTo(nextGw)}
+            disabled={!nextGw}
+            className="px-1.5 py-0.5 text-[11px] rounded border hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            Next GW →
+          </button>
+        </div>
+        <button
+          type="button"
+          onClick={() => goTo(gw)}
+          disabled={disabled}
+          className="text-xs text-primary hover:underline font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          View matchup vs opponent in GW {gw} →
+        </button>
+      </div>
+      <p className="text-[10px] text-muted-foreground mt-0.5">
+        Use the arrows to jump to this manager’s previous/next fixture, or the link to open this gameweek’s matchup.
+      </p>
+    </div>
+  );
+}
 
 function TeamPitchDisplay({
   team,
@@ -281,6 +397,7 @@ function TeamPitchDisplay({
 }
 
 export default function MatchupDetailPage() {
+  const navigate = useNavigate();
   const { type, gameweek, team1, team2 } = useParams<{ type: "league" | "cup"; gameweek: string; team1: string; team2: string }>();
   const [searchParams] = useSearchParams();
   const [data, setData] = useState<Payload | null>(null);
@@ -289,6 +406,10 @@ export default function MatchupDetailPage() {
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const [livePoints, setLivePoints] = useState<Record<number, number>>({});
   const [liveStats, setLiveStats] = useState<Record<number, any>>({});
+  const [gw1, setGw1] = useState<number>(Number(gameweek) || 1);
+  const [gw2, setGw2] = useState<number>(Number(gameweek) || 1);
+  const [team1Data, setTeam1Data] = useState<TeamDetail | null>(null);
+  const [team2Data, setTeam2Data] = useState<TeamDetail | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -334,6 +455,8 @@ export default function MatchupDetailPage() {
         }
         if (!mounted) return false;
         setData(payload);
+        setTeam1Data(payload.team_1);
+        setTeam2Data(payload.team_2);
         setLastUpdated(Date.now());
 
         try {
@@ -386,8 +509,60 @@ export default function MatchupDetailPage() {
     };
   }, [type, gameweek, team1, team2, searchParams]);
 
+  // Sync per-team GW from URL when route gameweek changes
+  useEffect(() => {
+    const gw = Number(gameweek) || 1;
+    setGw1(gw);
+    setGw2(gw);
+  }, [gameweek]);
+
+  const fetchTeamLineup = async (
+    teamId: string,
+    gw: number,
+    setTeamData: React.Dispatch<React.SetStateAction<TeamDetail | null>>
+  ) => {
+    if (!type) return;
+    try {
+      const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/fixtures/lineup?team=${encodeURIComponent(teamId)}&gameweek=${gw}&type=${type}`;
+      const res = await fetch(url, { headers: getSupabaseFunctionHeaders() as HeadersInit });
+      if (res.ok) {
+        const payload = await res.json();
+        setTeamData((prev) =>
+          prev ? { ...prev, lineup: (payload.lineup ?? []) as LineupPlayer[] } : prev
+        );
+      }
+    } catch {
+      /* non-fatal */
+    }
+  };
+
+  useEffect(() => {
+    if (!team1 || !type || gw1 === Number(gameweek)) return;
+    if (data?.team_1) {
+      fetchTeamLineup(team1, gw1, setTeam1Data);
+    }
+  }, [gw1, team1, type, gameweek, data?.team_1]);
+
+  useEffect(() => {
+    if (!team2 || !type || gw2 === Number(gameweek)) return;
+    if (data?.team_2) {
+      fetchTeamLineup(team2, gw2, setTeam2Data);
+    }
+  }, [gw2, team2, type, gameweek, data?.team_2]);
+
   if (loading) return <Card className="p-6"><p className="text-sm text-muted-foreground">Loading matchup…</p></Card>;
   if (error || !data) return <Card className="p-6"><p className="text-sm text-destructive">{error || "Failed to load matchup"}</p></Card>;
+
+  const currentGwNum = Number(gameweek);
+  const minGw = data.type === "cup" ? 29 : 1;
+  const maxGw = data.current_gameweek ?? currentGwNum;
+  const isCupGroupStage = data.type === "cup" && currentGwNum >= 29 && currentGwNum <= 32;
+  const goToGw = (gw: number) => {
+    if (gw < minGw || gw > maxGw) return;
+    setGw1(gw);
+    setGw2(gw);
+    navigate(`/matchup/${type}/${gw}/${team1}/${team2}`);
+  };
 
   const leagueLiveTeam1 = (data.team_1.lineup || []).reduce(
     (sum, player) => sum + (player.is_bench ? 0 : Number(player.effective_points || 0)),
@@ -405,13 +580,50 @@ export default function MatchupDetailPage() {
   return (
     <div className="space-y-6">
       <div>
-        <Link to="/fixtures" className="text-sm text-muted-foreground hover:underline">
-          ← Back to Fixtures
-        </Link>
+        <div className="flex items-center justify-between">
+          <Link to="/fixtures" className="text-sm text-muted-foreground hover:underline">
+            ← Back to Fixtures
+          </Link>
+
+          {/* Shared GW Navigation (updates both teams and URL) */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => goToGw(currentGwNum - 1)}
+              disabled={currentGwNum <= minGw}
+              className="px-2 py-1 text-sm rounded border hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed"
+              title="Previous gameweek"
+            >
+              ←
+            </button>
+            <select
+              value={currentGwNum}
+              onChange={(e) => goToGw(Number(e.target.value))}
+              className="text-sm rounded border px-2 py-1 bg-background"
+            >
+              {Array.from({ length: maxGw - minGw + 1 }, (_, i) => minGw + i).map((gw) => (
+                <option key={gw} value={gw}>GW {gw}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => goToGw(currentGwNum + 1)}
+              disabled={currentGwNum >= maxGw}
+              className="px-2 py-1 text-sm rounded border hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed"
+              title="Next gameweek"
+            >
+              →
+            </button>
+          </div>
+        </div>
+
         <h1 className="text-3xl font-bold mt-2">{data.type === "cup" ? "Cup Matchup" : "League Matchup"} • GW {data.gameweek}</h1>
         <p className="mt-1 text-xs text-muted-foreground">
           Live updates every 10s{lastUpdated ? ` • Last refresh ${new Date(lastUpdated).toLocaleTimeString()}` : ""}
         </p>
+        {(data.type === "league" || !isCupGroupStage) && (
+          <p className="mt-2 text-xs text-muted-foreground max-w-2xl">
+            Each manager’s dropdown changes <strong>which lineup is shown</strong> for that side only. Use <strong>«View matchup vs opponent in GW X»</strong> below to jump to that manager’s actual fixture that gameweek (according to the schedule).
+          </p>
+        )}
         <div className="mt-3 grid grid-cols-[1fr_auto_1fr] gap-4 items-center">
           <div className="text-right">
             <p className="font-semibold inline-flex items-center gap-2 justify-end">
@@ -437,22 +649,46 @@ export default function MatchupDetailPage() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <TeamPitchDisplay
-          team={data.team_1}
-          matchupType={data.type}
-          showGameweekStats={data.gameweek <= data.current_gameweek || !!data.matchup?.has_started}
-          gameweek={data.gameweek}
-          livePoints={livePoints}
-          liveStats={liveStats}
-        />
-        <TeamPitchDisplay
-          team={data.team_2}
-          matchupType={data.type}
-          showGameweekStats={data.gameweek <= data.current_gameweek || !!data.matchup?.has_started}
-          gameweek={data.gameweek}
-          livePoints={livePoints}
-          liveStats={liveStats}
-        />
+        <div>
+          {data.type === "league" || !isCupGroupStage ? (
+            <GwNav
+              label={data.team_1.manager_name}
+              gw={gw1}
+              minGw={minGw}
+              maxGw={maxGw}
+              onChange={setGw1}
+            />
+          ) : null}
+          <ViewMatchupLink type={data.type} gw={gw1} teamId={team1!} opponentsByGw={data.team_1_opponents_by_gw} />
+          <TeamPitchDisplay
+            team={gw1 === Number(gameweek) ? data.team_1 : (team1Data ?? data.team_1)}
+            matchupType={data.type}
+            showGameweekStats={gw1 <= data.current_gameweek || !!data.matchup?.has_started}
+            gameweek={gw1}
+            livePoints={livePoints}
+            liveStats={liveStats}
+          />
+        </div>
+        <div>
+          {data.type === "league" || !isCupGroupStage ? (
+            <GwNav
+              label={data.team_2.manager_name}
+              gw={gw2}
+              minGw={minGw}
+              maxGw={maxGw}
+              onChange={setGw2}
+            />
+          ) : null}
+          <ViewMatchupLink type={data.type} gw={gw2} teamId={team2!} opponentsByGw={data.team_2_opponents_by_gw} />
+          <TeamPitchDisplay
+            team={gw2 === Number(gameweek) ? data.team_2 : (team2Data ?? data.team_2)}
+            matchupType={data.type}
+            showGameweekStats={gw2 <= data.current_gameweek || !!data.matchup?.has_started}
+            gameweek={gw2}
+            livePoints={livePoints}
+            liveStats={liveStats}
+          />
+        </div>
       </div>
     </div>
   );
