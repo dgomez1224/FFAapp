@@ -10,6 +10,7 @@ import { Button } from "./ui/button";
 export interface PlayerStats {
   player_id: number;
   player_name: string;
+  player_image_url?: string | null;
   position: number;
   raw_points: number;
   effective_points: number;
@@ -36,6 +37,7 @@ export interface PlayerStats {
     gameweek: number;
     points: number;
     goals?: number;
+    own_goals?: number;
     assists?: number;
     minutes?: number;
     clean_sheets?: number;
@@ -47,6 +49,10 @@ export interface PlayerStats {
     penalties_saved?: number;
     penalties_missed?: number;
     defensive_contributions?: number;
+    expected_goals?: number;
+    expected_assists?: number;
+    expected_goal_involvements?: number;
+    expected_goals_conceded?: number;
     fixture_difficulty?: number | null;
     is_upcoming?: boolean;
     opponent_team_name?: string | null;
@@ -94,7 +100,26 @@ export function PlayerStatsModal({
         <div className="p-6">
           {/* Close button */}
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xl font-bold">{player.player_name}</h2>
+            <div className="flex items-center gap-3">
+              {player.player_image_url && (
+                <img
+                  src={player.player_image_url}
+                  alt={player.player_name}
+                  className="h-14 w-12 object-cover rounded-md border"
+                  onError={(e) => {
+                    e.currentTarget.style.display = "none";
+                  }}
+                />
+              )}
+              <div>
+                <h2 className="text-xl font-bold">{player.player_name}</h2>
+                <p className="text-sm text-muted-foreground">
+                  {player.position === 1 ? "GK" :
+                   player.position === 2 ? "DEF" :
+                   player.position === 3 ? "MID" : "FWD"}
+                </p>
+              </div>
+            </div>
             <button
               onClick={onClose}
               className="text-2xl font-bold text-muted-foreground hover:text-foreground transition-colors"
@@ -232,35 +257,138 @@ export function PlayerStatsModal({
               <h3 className="font-semibold mb-3">Gameweek History</h3>
               {player.history && player.history.length > 0 ? (
                 <div className="space-y-2 max-h-80 overflow-y-auto">
-                    {player.history.map((entry) => {
-                      const statParts: string[] = [];
-                      if ((entry.goals ?? 0) >= 1) statParts.push(`${entry.goals}G`);
-                      if ((entry.assists ?? 0) >= 1) statParts.push(`${entry.assists}A`);
-                      if ((entry.minutes ?? 0) >= 1) statParts.push(`${entry.minutes}M`);
-                      if ((entry.clean_sheets ?? 0) >= 1) statParts.push(`${entry.clean_sheets}CS`);
-                      if ((entry.goals_conceded ?? 0) >= 1) statParts.push(`${entry.goals_conceded}GC`);
-                      if ((entry.penalties_saved ?? 0) >= 1) statParts.push(`${entry.penalties_saved}PSv`);
-                      if ((entry.penalties_missed ?? 0) >= 1) statParts.push(`${entry.penalties_missed}PM`);
-                      return (
-                        <div key={entry.gameweek} className="p-2 bg-muted rounded flex justify-between items-center">
-                          <div>
-                            <p className="font-medium">GW {entry.gameweek}{entry.is_upcoming ? " (Upcoming)" : ""}</p>
-                            {(entry.opponent_team_name || entry.fixture || entry.result) && (
-                              <p className="text-xs text-muted-foreground">
-                                {entry.was_home != null ? (entry.was_home ? "vs " : "@ ") : ""}
-                                {entry.opponent_team_name || entry.fixture || "Fixture"}
-                                {entry.fixture_difficulty != null ? ` (FDR: ${entry.fixture_difficulty})` : ""}
-                                {entry.result ? ` • ${entry.result}` : ""}
-                              </p>
+                  {player.history.map((entry) => {
+                    const pos = player.position ?? 3;
+                    const mins = entry.minutes ?? 0;
+                    const goals = entry.goals ?? 0;
+                    const assists = entry.assists ?? 0;
+                    const ownGoals = entry.own_goals ?? 0;
+                    const bonus = entry.bonus ?? 0;
+                    const yellowCards = entry.yellow_cards ?? 0;
+                    const redCards = entry.red_cards ?? 0;
+                    const penMissed = entry.penalties_missed ?? 0;
+                    const penSaved = entry.penalties_saved ?? 0;
+                    const saves = entry.saves ?? 0;
+                    const cleanSheets = entry.clean_sheets ?? 0;
+                    const goalsConceded = entry.goals_conceded ?? 0;
+                    const defContrib = entry.defensive_contributions ?? 0;
+                    const xG = entry.expected_goals ?? 0;
+                    const xA = entry.expected_assists ?? 0;
+                    const xGA = entry.expected_goal_involvements ?? 0;
+                    const xGC = entry.expected_goals_conceded ?? 0;
+
+                    // FDR color
+                    const fdr = entry.fixture_difficulty;
+                    const fdrBg =
+                      fdr === 5 ? "bg-red-700 text-white" :
+                      fdr === 4 ? "bg-red-400 text-white" :
+                      fdr === 3 ? "bg-amber-400 text-black" :
+                      fdr === 2 ? "bg-green-400 text-black" :
+                      fdr === 1 ? "bg-green-700 text-white" :
+                      "bg-muted text-muted-foreground";
+
+                    // Build stat chips — each is { icon, label, color }
+                    type Chip = { icon: string; label: string; color?: string };
+                    const chips: Chip[] = [];
+
+                    // Universal stats (all positions)
+                    if (redCards >= 1) chips.push({ icon: "🟥", label: String(redCards), color: "text-red-600" });
+                    if (yellowCards >= 1) chips.push({ icon: "🟨", label: String(yellowCards) });
+                    if (mins >= 1) chips.push({ icon: "⏱", label: `${mins}` });
+                    if (goals >= 1) chips.push({ icon: "⚽", label: String(goals), color: "text-green-600 font-bold" });
+                    if (assists >= 1) chips.push({ icon: "👟", label: String(assists), color: "text-blue-500" });
+                    if (ownGoals >= 1) chips.push({ icon: "⚽❌", label: String(ownGoals), color: "text-red-500" });
+                    if (penMissed >= 1) chips.push({ icon: "❌", label: `${penMissed}PM`, color: "text-red-500" });
+                    if (bonus >= 1) chips.push({ icon: "⭐", label: String(bonus), color: "text-amber-500" });
+
+                    // Position-specific stats
+                    if (pos === 1) {
+                      // GK
+                      if (saves >= 3) chips.push({ icon: "🧤", label: `${saves}Sv`, color: "text-blue-600" });
+                      if (cleanSheets >= 1) chips.push({ icon: "🛡️", label: "CS", color: "text-green-600" });
+                      if (penSaved >= 1) chips.push({ icon: "🧤", label: `${penSaved}PSv`, color: "text-purple-600" });
+                      if (goalsConceded >= 1) chips.push({ icon: "🥅", label: `${goalsConceded}GC`, color: "text-red-400" });
+                      if (xGC > 0) chips.push({ icon: "", label: `xGC:${xGC.toFixed(1)}`, color: "text-muted-foreground text-[10px]" });
+                    }
+                    if (pos === 2) {
+                      // DEF
+                      if (cleanSheets >= 1) chips.push({ icon: "🛡️", label: "CS", color: "text-green-600" });
+                      if (defContrib >= 10) chips.push({ icon: "🔒", label: `DR(${defContrib})`, color: "text-green-600 font-bold" });
+                      else if (defContrib >= 5) chips.push({ icon: "🔒", label: `DC:${defContrib}`, color: "text-muted-foreground" });
+                      if (goalsConceded >= 1) chips.push({ icon: "🥅", label: `${goalsConceded}GC`, color: "text-red-400" });
+                      if (xGC > 0) chips.push({ icon: "", label: `xGC:${xGC.toFixed(1)}`, color: "text-muted-foreground text-[10px]" });
+                    }
+                    if (pos === 3) {
+                      // MID
+                      if (cleanSheets >= 1) chips.push({ icon: "🛡️", label: "CS", color: "text-green-600" });
+                      if (defContrib >= 12) chips.push({ icon: "🔒", label: `DR(${defContrib})`, color: "text-green-600 font-bold" });
+                      else if (defContrib >= 7) chips.push({ icon: "🔒", label: `DC:${defContrib}`, color: "text-muted-foreground" });
+                      if (xG > 0) chips.push({ icon: "", label: `xG:${xG.toFixed(2)}`, color: "text-muted-foreground text-[10px]" });
+                      if (xA > 0) chips.push({ icon: "", label: `xA:${xA.toFixed(2)}`, color: "text-muted-foreground text-[10px]" });
+                      if (xGA > 0) chips.push({ icon: "", label: `xG+A:${xGA.toFixed(2)}`, color: "text-muted-foreground text-[10px]" });
+                    }
+                    if (pos === 4) {
+                      // FWD
+                      if (cleanSheets >= 1) chips.push({ icon: "🛡️", label: "CS", color: "text-green-600" });
+                      if (defContrib >= 12) chips.push({ icon: "🔒", label: `DR(${defContrib})`, color: "text-green-600 font-bold" });
+                      else if (defContrib >= 7) chips.push({ icon: "🔒", label: `DC:${defContrib}`, color: "text-muted-foreground" });
+                      if (xG > 0) chips.push({ icon: "", label: `xG:${xG.toFixed(2)}`, color: "text-muted-foreground text-[10px]" });
+                      if (xA > 0) chips.push({ icon: "", label: `xA:${xA.toFixed(2)}`, color: "text-muted-foreground text-[10px]" });
+                      if (xGA > 0) chips.push({ icon: "", label: `xG+A:${xGA.toFixed(2)}`, color: "text-muted-foreground text-[10px]" });
+                    }
+
+                    return (
+                      <div
+                        key={entry.gameweek}
+                        className="p-2 rounded flex justify-between items-start gap-2 bg-muted"
+                      >
+                        <div className="flex-1 min-w-0">
+                          {/* GW header row */}
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-medium text-xs">
+                              GW {entry.gameweek}{entry.is_upcoming ? " (Upcoming)" : ""}
+                            </span>
+                            {/* FDR badge */}
+                            {fdr != null && (
+                              <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${fdrBg}`}>
+                                FDR {fdr}
+                              </span>
                             )}
-                            {statParts.length > 0 && (
-                              <p className="text-xs text-muted-foreground">{statParts.join(" ")}</p>
+                            {/* Fixture info */}
+                            {(entry.opponent_team_name || entry.fixture) && (
+                              <span className="text-xs text-muted-foreground truncate">
+                                {entry.was_home != null ? (entry.was_home ? "vs " : "@ ") : ""}
+                                {entry.opponent_team_name || entry.fixture}
+                                {entry.result ? ` ${entry.result}` : ""}
+                              </span>
                             )}
                           </div>
-                          {!entry.is_upcoming ? <p className="font-bold text-green-600">{Math.round(entry.points)}</p> : null}
+
+                          {/* Stat chips */}
+                          {chips.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {chips.map((chip, i) => (
+                                <span
+                                  key={i}
+                                  className={`inline-flex items-center gap-0.5 text-xs px-1 py-0.5 rounded bg-background ${chip.color ?? ""}`}
+                                >
+                                  {chip.icon && <span>{chip.icon}</span>}
+                                  <span>{chip.label}</span>
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </div>
-                      );
-                    })}
+
+                        {/* Points */}
+                        {!entry.is_upcoming && (
+                          <span className="font-bold text-green-600 text-sm shrink-0">
+                            {Math.round(entry.points)}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               ) : (
                 <p className="text-muted-foreground text-sm">No history available</p>

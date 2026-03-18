@@ -242,6 +242,7 @@ function TeamPitchDisplay({
 
       setSelectedPlayer({
         ...fullPlayer,
+        player_image_url: fullPlayer.player_image_url ?? null,
         position: fullPlayer.position,
         history: (payload.history || []).map((h: any) => ({
           gameweek: h.gameweek,

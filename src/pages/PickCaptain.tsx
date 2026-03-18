@@ -269,6 +269,7 @@ export default function PickCaptain() {
       const stats: PlayerStats = {
         player_id: player.player_id,
         player_name: player.player_name,
+        player_image_url: player.player_image_url ?? null,
         position: player.position,
         raw_points: livePts,
         effective_points: player.is_captain ? livePts * 2 : livePts,
@@ -293,6 +294,7 @@ export default function PickCaptain() {
           gameweek: h.gameweek,
           points: h.points ?? 0,
           goals: h.goals ?? 0,
+          own_goals: h.own_goals ?? 0,
           assists: h.assists ?? 0,
           minutes: h.minutes ?? 0,
           clean_sheets: h.clean_sheets ?? 0,
@@ -304,11 +306,17 @@ export default function PickCaptain() {
           penalties_saved: h.penalties_saved ?? 0,
           penalties_missed: h.penalties_missed ?? 0,
           defensive_contributions: h.defensive_contribution ?? h.defensive_contributions ?? 0,
+          expected_goals: h.expected_goals ?? 0,
+          expected_assists: h.expected_assists ?? 0,
+          expected_goal_involvements: h.expected_goal_involvements ?? 0,
+          expected_goals_conceded: h.expected_goals_conceded ?? 0,
           opponent_team_name: h.opponent_team_name ?? null,
           was_home: h.was_home,
           fixture: h.fixture ?? null,
           result: h.result ?? null,
           kickoff_time: h.kickoff_time ?? null,
+          fixture_difficulty: h.fixture_difficulty ?? null,
+          is_upcoming: !!h.is_upcoming,
         })),
       };
 

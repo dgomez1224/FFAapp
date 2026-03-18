@@ -4859,6 +4859,14 @@ playerHistory.get("/", async (c) => {
           result,
           kickoff_time: h?.kickoff_time || null,
           fixture_difficulty: fixtureDifficulty,
+          bonus: coerceNumber(h?.bonus, 0),
+          saves: coerceNumber(h?.saves, 0),
+          own_goals: coerceNumber(h?.own_goals, 0),
+          defensive_contributions: coerceNumber(h?.defensive_contribution ?? h?.defensive_contributions, 0),
+          expected_goals: coerceNumber(h?.expected_goals, 0),
+          expected_assists: coerceNumber(h?.expected_assists, 0),
+          expected_goal_involvements: coerceNumber(h?.expected_goal_involvements, 0),
+          expected_goals_conceded: coerceNumber(h?.expected_goals_conceded, 0),
           is_upcoming: false,
         };
       });
@@ -4895,6 +4903,14 @@ playerHistory.get("/", async (c) => {
             result: null,
             kickoff_time: f?.kickoff_time ?? null,
             fixture_difficulty: fixtureDifficulty,
+            bonus: 0,
+            saves: 0,
+            own_goals: 0,
+            defensive_contributions: 0,
+            expected_goals: 0,
+            expected_assists: 0,
+            expected_goal_involvements: 0,
+            expected_goals_conceded: 0,
             is_upcoming: true,
           };
         });
