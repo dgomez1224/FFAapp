@@ -5,6 +5,7 @@
 
 import React, { useState } from "react";
 import { getPlayerImage, getPlayerImageByIdOrName, getProxiedImageUrl } from "../lib/playerImage";
+import pitchBg from "../assets/FPL Site Pitch.png";
 
 export interface PitchPlayer {
   player_id: number;
@@ -38,16 +39,14 @@ const POSITION_NAMES: Record<number, string> = {
 
 // Formation positions (4-3-3)
 const FORMATION_Y: Record<number, number> = {
-  1: 82,
-  2: 64,
-  3: 46,
-  4: 28,
+  1: 79,
+  2: 61,
+  3: 43,
+  4: 25,
 };
 
 export function FootballPitch({ players, onPlayerClick, showCaptain = true }: FootballPitchProps) {
   const [playerImages, setPlayerImages] = useState<Record<number, string | null>>({});
-  const avatarFallbackUrl = (name: string) =>
-    `https://ui-avatars.com/api/?name=${encodeURIComponent(name || "Player")}&background=1f2937&color=ffffff&size=128&bold=true`;
 
   React.useEffect(() => {
     async function loadImages() {
@@ -93,8 +92,8 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
       const step = count === 1 ? 0 : (endX - startX) / (count - 1);
       return { x: startX + step * playerIndex, y: FORMATION_Y[1] };
     }
-    const startX = 18;
-    const endX = 82;
+    const startX = 20;
+    const endX = 80;
     const step = count === 1 ? 0 : (endX - startX) / (count - 1);
     return {
       x: count === 1 ? 50 : startX + step * playerIndex,
@@ -102,31 +101,17 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
     };
   };
 
-  const hasActiveCaptainOrVice =
-    showCaptain && players.some((p) => (!!p.is_cup_captain && p.multiplier > 1) || !!p.is_vice_captain);
-
   return (
-    <div className="relative w-full bg-gradient-to-b from-green-500 to-green-600 rounded-lg overflow-hidden">
-      {/* Pitch background */}
-      <svg className="w-full h-auto aspect-video" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet">
-        {/* Pitch outline */}
-        <rect x="5" y="5" width="90" height="90" fill="currentColor" className="text-green-500" stroke="white" strokeWidth="0.5" />
-
-        {/* Center line */}
-        <line x1="50" y1="5" x2="50" y2="95" stroke="white" strokeWidth="0.3" />
-
-        {/* Center circle */}
-        <circle cx="50" cy="50" r="8" fill="none" stroke="white" strokeWidth="0.3" />
-        <circle cx="50" cy="50" r="0.5" fill="white" />
-
-        {/* Penalty areas */}
-        <rect x="15" y="5" width="70" height="20" fill="none" stroke="white" strokeWidth="0.3" />
-        <rect x="15" y="75" width="70" height="20" fill="none" stroke="white" strokeWidth="0.3" />
-
-        {/* Goal areas */}
-        <rect x="30" y="5" width="40" height="10" fill="none" stroke="white" strokeWidth="0.3" />
-        <rect x="30" y="85" width="40" height="10" fill="none" stroke="white" strokeWidth="0.3" />
-      </svg>
+    <div
+      className="relative w-full rounded-lg overflow-hidden"
+      style={{
+        backgroundImage: `url(${pitchBg})`,
+        backgroundSize: "cover",
+        backgroundPosition: "center",
+      }}
+    >
+      {/* Aspect-ratio spacer so the pitch has height */}
+      <div className="w-full aspect-video" />
 
       {/* Players */}
       <div className="absolute inset-0 w-full h-full">
@@ -148,130 +133,136 @@ export function FootballPitch({ players, onPlayerClick, showCaptain = true }: Fo
                 }}
                 title={player.player_name}
               >
-                {/* Player circle with image */}
-                <div
-                  className={`relative h-10 w-10 sm:h-12 sm:w-12 rounded-full border-2 overflow-hidden flex items-center justify-center transition-transform group-hover:scale-110 ${
-                    isCaptain
-                      ? "border-amber-400 ring-2 ring-amber-300"
-                      : isViceCaptain
-                      ? "border-sky-400 ring-2 ring-sky-300"
-                      : "border-white"
-                  }`}
-                  style={{
-                    background: isCaptain
-                      ? "rgba(251, 191, 36, 0.2)"
-                      : isViceCaptain
-                      ? "rgba(56, 189, 248, 0.2)"
-                      : "rgba(255, 255, 255, 0.1)",
-                  }}
-                >
-                  {imageUrl ? (
-                    <img
-                    src={imageUrl ?? undefined}
-                      alt={player.player_name}
-                      className="w-full h-full object-cover"
-                      onError={(e) => {
-                        const target = e.currentTarget;
-                        (async () => {
-                          try {
-                            const name = player.player_name || (player as any).name || "";
-                            const wikiRes = await fetch(
-                              `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(name)}`,
-                            );
-                            const wikiData = wikiRes.ok ? await wikiRes.json() : null;
-                            const wikiImg = wikiData?.thumbnail?.source;
-                            if (wikiImg) {
-                              target.src = wikiImg;
-                              target.style.display = "";
-                              return;
-                            }
-                          } catch {
-                            // fall through to initials
-                          }
-                          target.style.display = "none";
-                          const parent = target.parentElement;
-                          if (parent && !parent.querySelector(".img-fallback")) {
-                            const fallback = document.createElement("div");
-                            fallback.className =
-                              "img-fallback flex items-center justify-center w-full h-full rounded-full bg-muted text-xs font-bold text-muted-foreground";
-                            fallback.textContent = (player.player_name || (player as any).name || "?")
-                              .split(" ")
-                              .map((w: string) => w[0])
-                              .slice(0, 2)
-                              .join("")
-                              .toUpperCase();
-                            parent.appendChild(fallback);
-                          }
-                        })();
-                      }}
-                    />
-                  ) : (
-                    <img
-                      src={avatarFallbackUrl(player.player_name)}
-                      alt={player.player_name}
-                      className="w-full h-full object-cover"
-                      onError={(e) => {
-                        const target = e.currentTarget;
-                        target.style.display = "none";
-                        const parent = target.parentElement;
-                        if (parent && !parent.querySelector(".img-fallback")) {
-                          const fallback = document.createElement("div");
-                          fallback.className =
-                            "img-fallback flex items-center justify-center w-full h-full rounded-full bg-muted text-xs font-bold text-muted-foreground";
-                          fallback.textContent = (player.player_name || (player as any).name || "?")
-                            .split(" ")
-                            .map((w: string) => w[0])
-                            .slice(0, 2)
-                            .join("")
-                            .toUpperCase();
-                          parent.appendChild(fallback);
-                        }
-                      }}
-                    />
-                  )}
+                {/* Image card with relative positioning for badges */}
+                <div className="relative flex flex-col items-center">
+                  <div
+                    className={`
+          relative overflow-hidden rounded-md shadow-lg
+          transition-transform group-hover:scale-105
+          w-7 h-10 sm:w-9 sm:h-12 md:w-10 md:h-13
+          ${isCaptain
+            ? "ring-2 ring-amber-400 ring-offset-1 ring-offset-transparent"
+            : isViceCaptain
+            ? "ring-2 ring-sky-400 ring-offset-1 ring-offset-transparent"
+            : ""}
+        `}
+                  >
+                    {/* Gradient overlay at bottom for text readability */}
+                    <div className="absolute inset-x-0 bottom-0 h-1/3 z-10 bg-gradient-to-t from-black/70 to-transparent pointer-events-none" />
 
+                    {/* Player image */}
+                    {imageUrl ? (
+                      <img
+                        src={imageUrl ?? undefined}
+                        alt={player.player_name}
+                        className="w-full h-full object-cover object-top"
+                        onError={(e) => {
+                          const target = e.currentTarget;
+                          (async () => {
+                            try {
+                              const name = player.player_name || (player as any).name || "";
+                              const nameParts = name.trim().split(/\s+/);
+                              const variants = [
+                                name,
+                                nameParts.length > 2 ? `${nameParts[0]} ${nameParts[1]}` : null,
+                                nameParts.length > 1
+                                  ? `${nameParts[0]} ${nameParts[nameParts.length - 1]}`
+                                  : null,
+                              ].filter(Boolean) as string[];
+                              for (const v of [...new Set(variants)]) {
+                                const r = await fetch(
+                                  `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(
+                                    v,
+                                  )}`,
+                                );
+                                const d = r.ok ? await r.json() : null;
+                                if (d?.thumbnail?.source) {
+                                  target.src = d.thumbnail.source;
+                                  target.style.display = "";
+                                  return;
+                                }
+                              }
+                            } catch {
+                              // fall through
+                            }
+                            target.style.display = "none";
+                            const parent = target.parentElement;
+                            if (parent && !parent.querySelector(".img-fallback")) {
+                              const fb = document.createElement("div");
+                              fb.className =
+                                "img-fallback absolute inset-0 flex items-center justify-center bg-gray-700 text-white text-xs font-bold";
+                              fb.textContent = (player.player_name || "?")
+                                .split(" ")
+                                .map((w: string) => w[0])
+                                .slice(0, 2)
+                                .join("")
+                                .toUpperCase();
+                              parent.appendChild(fb);
+                            }
+                          })();
+                        }}
+                      />
+                    ) : (
+                      <div className="w-full h-full bg-gray-700 flex items-center justify-center text-white text-xs font-bold">
+                        {(player.player_name || "?")
+                          .split(" ")
+                          .map((w: string) => w[0])
+                          .slice(0, 2)
+                          .join("")
+                          .toUpperCase()}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Captain badge */}
+                  {isCaptain && (
+                    <div className="absolute -top-1.5 -right-1.5 z-20 w-5 h-5 rounded-full bg-amber-400 text-black text-[10px] font-bold flex items-center justify-center shadow-md">
+                      C
+                    </div>
+                  )}
+                  {/* Vice captain badge */}
+                  {isViceCaptain && (
+                    <div className="absolute -top-1.5 -right-1.5 z-20 w-5 h-5 rounded-full bg-sky-500 text-white text-[10px] font-bold flex items-center justify-center shadow-md">
+                      V
+                    </div>
+                  )}
+                  {/* Auto-subbed on badge */}
                   {player.is_auto_subbed_on && (
-                    <div className="absolute -top-1 -right-1 z-10 bg-green-500 text-white rounded-full w-4 h-4 flex items-center justify-center text-xs font-bold leading-none">
+                    <div className="absolute -top-1.5 -left-1.5 z-20 w-5 h-5 rounded-full bg-green-500 text-white text-[10px] font-bold flex items-center justify-center shadow-md">
                       ↑
                     </div>
                   )}
 
-                  {/* Captain badge */}
-                  {isCaptain && (
-                    <div className="absolute -top-1 -right-1 bg-amber-400 text-black text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                      C
-                    </div>
-                  )}
-                  {isViceCaptain && (
-                    <div className="absolute -top-1 -right-1 bg-sky-500 text-white text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                      V
-                    </div>
-                  )}
+                  {/* Surname */}
+                  <span
+                    className="mt-0.5 text-[8px] sm:text-[9px] font-semibold text-white leading-none text-center max-w-[40px] truncate"
+                    style={{ textShadow: "0 1px 3px rgba(0,0,0,1)" }}
+                  >
+                    {player.player_name.split(" ").slice(-1)[0]}
+                  </span>
 
-                  <div className="absolute inset-x-1 bottom-0.5 rounded bg-black/60 px-1 py-0.5 text-center text-[9px] font-semibold leading-none text-white">
-                    <span className="text-xs">{player.raw_points ?? 0} pts</span>
-                  </div>
-                </div>
-
-                {/* Player info tooltip */}
-                <div className="absolute -bottom-20 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white text-xs rounded px-2 py-1 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
-                  <div className="font-bold">{player.player_name}</div>
-                  <div>{POSITION_NAMES[player.position]}</div>
-                  <div className="text-yellow-300">{Math.round(player.effective_points)} pts</div>
+                  {/* Points pill — color coded */}
+                  <span
+                    className={`
+        mt-0.5 text-[9px] sm:text-[10px] font-bold px-1.5 py-0.5 
+        rounded-full leading-none shadow-sm
+        ${(player.raw_points ?? 0) >= 10
+          ? "bg-amber-400 text-black"
+          : (player.raw_points ?? 0) >= 6
+          ? "bg-green-400 text-black"
+          : (player.raw_points ?? 0) >= 2
+          ? "bg-white text-black"
+          : "bg-black/70 text-white"}
+      `}
+                  >
+                    {player.raw_points ?? 0}
+                  </span>
                 </div>
               </button>
             );
           })
         )}
       </div>
-
-      {/* Legend */}
-      {hasActiveCaptainOrVice && (
-        <div className="absolute bottom-2 left-2 text-xs text-white bg-black/40 rounded px-2 py-1 space-y-0.5">
-          <div>C = Captain</div>
-          <div>V = Vice Captain</div>
-        </div>
-      )}
     </div>
   );
 }

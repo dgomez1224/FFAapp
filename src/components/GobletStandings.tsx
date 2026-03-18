@@ -35,6 +35,7 @@ export default function GobletStandings() {
   const [error, setError] = useState<string | null>(null);
   const baselineRanksRef = useRef<Record<string, number> | null>(null);
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const fetchRef = useRef<(() => Promise<boolean>) | null>(null);
   const { getCrest } = useManagerCrestMap();
 
   const handleRefresh = () => {
@@ -42,7 +43,15 @@ export default function GobletStandings() {
       clearInterval(pollingIntervalRef.current);
       pollingIntervalRef.current = null;
     }
-    window.location.reload();
+    if (fetchRef.current) {
+      // Reset baseline so arrows recalculate from fresh data
+      baselineRanksRef.current = null;
+      fetchRef.current().then((eventFinished) => {
+        if (!eventFinished) {
+          pollingIntervalRef.current = setInterval(fetchRef.current!, 300_000);
+        }
+      });
+    }
   };
 
   useEffect(() => {
@@ -178,6 +187,8 @@ export default function GobletStandings() {
       }
       return eventFinished;
     }
+
+    fetchRef.current = fetchStandings;
 
     fetchStandings().then((eventFinished) => {
       if (!eventFinished) {
