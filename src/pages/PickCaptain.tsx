@@ -418,10 +418,20 @@ export default function PickCaptain() {
         </div>
       </Card>
 
-      <Card className="p-6">
-        <h2 className="text-lg font-semibold mb-4">Your Team</h2>
-        <FootballPitch players={pitchPlayers} onPlayerClick={handlePlayerClick} showCaptain={true} />
+      <Card className="p-0 overflow-hidden">
+        <div className="relative overflow-hidden rounded-lg">
+          <FootballPitch players={pitchPlayers} onPlayerClick={handlePlayerClick} showCaptain={true} />
+          <div className="absolute top-2 left-3 z-20">
+            <span
+              className="text-sm font-semibold text-white"
+              style={{ textShadow: "0 1px 3px rgba(0,0,0,0.8)" }}
+            >
+              Your Team
+            </span>
+          </div>
+        </div>
 
+        <div className="px-4 pb-2">
         {(context?.players || []).length > 0 && (
           <PlayerStatsTable
             players={(context.players || []).map((p) => ({
@@ -460,6 +470,7 @@ export default function PickCaptain() {
 
         {error && <p className="text-sm text-destructive mt-3">{error}</p>}
         {success && <p className="text-sm text-emerald-600 mt-3">{success}</p>}
+        </div>
       </Card>
 
       {historyLoading && (

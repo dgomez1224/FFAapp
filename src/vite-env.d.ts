@@ -8,4 +8,11 @@ interface ImportMetaEnv {
   interface ImportMeta {
     readonly env: ImportMetaEnv;
   }
+
+// Some editors/project setups may not pick up Vite's built-in asset typings.
+// Declaring these keeps `import foo from './bar.png'` working in TypeScript.
+declare module "*.png" {
+  const src: string;
+  export default src;
+}
   

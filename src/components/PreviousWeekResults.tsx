@@ -13,6 +13,12 @@ interface PotmRow {
   team_name?: string | null;
   total_points: number;
   bonus: number;
+  goals_scored?: number;
+  assists?: number;
+  clean_sheets?: number;
+  defensive_return?: boolean;
+  penalties_saved?: number;
+  saves?: number;
   player_image_url?: string | null;
 }
 
