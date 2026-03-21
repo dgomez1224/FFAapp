@@ -95,6 +95,7 @@ function FixtureRow({ fixture }: { fixture: Fixture }) {
       rows.map((r) => ({
         player_id: r.player_id,
         player_name: r.player_name,
+        web_name: r.web_name ?? null,
         position: r.position || 3,
         raw_points: r.points ?? 0,
         effective_points: r.points ?? 0,

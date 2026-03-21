@@ -2,8 +2,13 @@ import React, { useEffect, useState } from "react";
 import { Link, useParams, useSearchParams, useNavigate } from "react-router-dom";
 import { Card } from "../components/ui/card";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
+import {
+  getPlayerInitialsAbbrev,
+  getProxiedImageUrl,
+  handlePlayerImageErrorWithWikipediaFallback,
+} from "../lib/playerImage";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
-import { FootballPitch, PitchPlayer } from "../components/FootballPitch";
+import { FootballPitch, pitchPlayerDisplayName, PitchPlayer } from "../components/FootballPitch";
 import PlayerStatsTable from "../components/PlayerStatsTable";
 import { PlayerStatsModal, PlayerStats } from "../components/PlayerStatsModal";
 import pitchBg from "../assets/backgrounds/FPL Site Pitch.png";
@@ -186,24 +191,60 @@ Use the arrows to jump to this manager’s previous/next fixture, or the link to
 );
 }
 
-function SubsStrip({ players, side }: { players: PitchPlayer[]; side: "top" | "bottom" }) {
+function SubsStrip({
+  players,
+  side,
+  onPlayerClick,
+}: {
+  players: PitchPlayer[];
+  side: "top" | "bottom";
+  onPlayerClick?: (p: PitchPlayer) => void;
+}) {
 if (players.length === 0) return null;
 return (
 <div className={`flex items-center gap-1 px-1 py-0.5 ${side === "top" ? "justify-start" : "justify-end"}`}>
 <span className="text-[9px] text-white/60 shrink-0">{side === "top" ? "↓" : "↓"}</span>
-{players.map((p) => (
-<div key={p.player_id} className="flex flex-col items-center opacity-60">
-<div className="w-5 h-6 rounded overflow-hidden bg-gray-700">
-{p.player_image_url && (
-<img src={p.player_image_url} alt={p.player_name} className="w-full h-full object-cover object-top"
-onError={(e) => { e.currentTarget.style.display = "none"; }} />
+{players.map((p) => {
+const Wrapper = onPlayerClick ? "button" : "div";
+return (
+<Wrapper
+key={p.player_id}
+type={onPlayerClick ? "button" : undefined}
+onClick={onPlayerClick ? () => onPlayerClick(p) : undefined}
+className={`relative flex flex-col items-center opacity-60 ${onPlayerClick ? "cursor-pointer border-0 bg-transparent p-0" : ""}`}
+>
+    {p.is_auto_subbed_off && (
+      <div className="absolute -top-1 -left-1 z-20 w-3 h-3 rounded-full bg-red-500 text-white text-[7px] font-bold flex items-center justify-center shadow-md leading-none">
+        ↑
+      </div>
+    )}
+    {p.is_auto_subbed_on && (
+      <div className="absolute -top-1 -left-1 z-20 w-3 h-3 rounded-full bg-green-500 text-white text-[7px] font-bold flex items-center justify-center shadow-md leading-none">
+        ↓
+      </div>
+    )}
+    <div className="relative w-5 h-6 rounded overflow-hidden bg-gray-700 flex items-center justify-center">
+{p.player_image_url ? (
+<img
+src={getProxiedImageUrl(p.player_image_url) ?? undefined}
+alt={p.player_name}
+className="w-full h-full object-cover object-top"
+onError={(e) =>
+handlePlayerImageErrorWithWikipediaFallback(e, p.player_name, {
+fallbackClassName: "absolute inset-0 flex items-center justify-center bg-gray-700 text-white text-[9px] font-bold",
+})
+}
+/>
+) : (
+<span className="text-[9px] font-bold text-white">{getPlayerInitialsAbbrev(p.player_name)}</span>
 )}
 </div>
 <span className="text-[7px] text-white leading-none" style={{ textShadow: "0 1px 2px rgba(0,0,0,1)" }}>
-{p.player_name.split(" ").slice(-1)[0].slice(0, 6)}
+{pitchPlayerDisplayName(p).slice(0, 6)}
 </span>
-</div>
-))}
+</Wrapper>
+);
+})}
 </div>
 );
 }
@@ -225,8 +266,11 @@ onPlayerClick2: (p: PitchPlayer) => void;
 }) {
 return (
 <div className="w-full flex flex-col rounded-lg overflow-hidden">
-{/* Team 1 subs — top touchline */}
-<SubsStrip players={team1Bench} side="top" />
+    {/* Both bench strips above the pitch, side by side */}
+    <div className="flex justify-between mb-1">
+      <SubsStrip players={team1Bench} side="top" />
+      <SubsStrip players={team2Bench} side="top" />
+    </div>
 
   {/* ONE shared pitch with both teams on it */}
   <div
@@ -239,7 +283,7 @@ return (
     }}
   >
     {/* Team 1 players — left half (noBackground so they sit on shared bg) */}
-    <div className="absolute inset-0 w-full h-full">
+    <div className="absolute inset-y-0 left-0 w-1/2">
       <FootballPitch
         players={team1}
         onPlayerClick={onPlayerClick1}
@@ -254,7 +298,7 @@ return (
     <div className="absolute inset-y-0 left-1/2 -translate-x-px w-px bg-white/60 z-10" />
 
     {/* Team 2 players — right half */}
-    <div className="absolute inset-0 w-full h-full">
+    <div className="absolute inset-y-0 right-0 w-1/2">
       <FootballPitch
         players={team2}
         onPlayerClick={onPlayerClick2}
@@ -265,9 +309,6 @@ return (
       />
     </div>
   </div>
-
-  {/* Team 2 subs — bottom touchline */}
-  <SubsStrip players={team2Bench} side="bottom" />
 </div>
 
 );
@@ -291,7 +332,6 @@ liveStats: Record<number, any>;
 hidePitch?: boolean;
 }) {
 const [selectedPlayer, setSelectedPlayer] = useState<PlayerStats | null>(null);
-const [showStats, setShowStats] = useState(false);
 
 const starters = team.lineup
 .filter((p) => !p.is_bench)
@@ -300,11 +340,10 @@ const bench = team.lineup
 .filter((p) => !!p.is_bench)
 .sort((a, b) => (a.lineup_slot ?? 99) - (b.lineup_slot ?? 99));
 
-const subbedOff = team.lineup.filter((p) => p.is_auto_subbed_off);
-
 const pitchPlayers: PitchPlayer[] = starters.map((p) => ({
 player_id: p.player_id,
 player_name: p.player_name,
+web_name: p.web_name ?? null,
 player_image_url: p.player_image_url || null,
 position: p.position,
 raw_points: p.raw_points,
@@ -383,67 +422,24 @@ return (
     </div>
   )}
 
-  {subbedOff.length > 0 && (
-    <div className="mt-2 flex flex-wrap gap-1">
-      <span className="text-xs text-muted-foreground mr-1">↓ Off:</span>
-      {subbedOff.map((p) => {
-        const subOn = team.lineup.find((s) => s.player_id === p.subbed_on_by);
-        return (
-          <div
-            key={p.player_id}
-            className="relative opacity-50"
-            title={`${p.player_name} subbed off → ${subOn?.player_name ?? "?"}`}
-          >
-            <div className="relative h-8 w-8 rounded-full overflow-hidden border border-muted">
-              {p.player_image_url ? (
-                <img
-                  src={p.player_image_url}
-                  alt={p.player_name}
-                  className="h-full w-full object-cover"
-                  onError={(e) => {
-                    e.currentTarget.style.display = "none";
-                  }}
-                />
-              ) : (
-                <div className="h-full w-full bg-muted flex items-center justify-center text-xs">
-                  {p.player_name.charAt(0)}
-                </div>
-              )}
-            </div>
-            <span className="absolute -bottom-1 -right-1 text-xs">↓</span>
-          </div>
-        );
-      })}
-    </div>
-  )}
-
-  <button
-    onClick={() => setShowStats((s) => !s)}
-    className="w-full flex items-center justify-between px-3 py-2 mt-2 rounded-md bg-muted hover:bg-muted/80 transition-colors text-sm font-semibold"
-  >
-    <span>Player Stats (GW{gameweek})</span>
-    <span className="text-muted-foreground">{showStats ? "▲" : "▼"}</span>
-  </button>
-  {showStats && (
-    <PlayerStatsTable
-      players={(team.lineup || []).map((p) => ({
-        id: p.player_id,
-        name: p.player_name,
-        image_url: p.player_image_url ?? null,
-        position: p.position,
-        is_auto_subbed_off: p.is_auto_subbed_off,
-        is_auto_subbed_on: p.is_auto_subbed_on,
-        subbed_on_by: p.subbed_on_by,
-        subbed_off_for: p.subbed_off_for,
-      }))}
-      livePoints={livePoints}
-      liveStats={liveStats}
-      captainId={team.lineup.find((p) => p.is_cup_captain || p.is_captain)?.player_id ?? null}
-      viceCaptainId={team.lineup.find((p) => p.is_vice_captain)?.player_id ?? null}
-      gameweek={gameweek}
-      autoSubs={team.auto_subs ?? []}
-    />
-  )}
+  <PlayerStatsTable
+    players={(team.lineup || []).map((p) => ({
+      id: p.player_id,
+      name: p.player_name,
+      image_url: p.player_image_url ?? null,
+      position: p.position,
+      is_auto_subbed_off: p.is_auto_subbed_off,
+      is_auto_subbed_on: p.is_auto_subbed_on,
+      subbed_on_by: p.subbed_on_by,
+      subbed_off_for: p.subbed_off_for,
+    }))}
+    livePoints={livePoints}
+    liveStats={liveStats}
+    captainId={team.lineup.find((p) => p.is_cup_captain || p.is_captain)?.player_id ?? null}
+    viceCaptainId={team.lineup.find((p) => p.is_vice_captain)?.player_id ?? null}
+    gameweek={gameweek}
+    autoSubs={team.auto_subs ?? []}
+  />
 
   <PlayerStatsModal
     player={selectedPlayer!}
@@ -515,6 +511,7 @@ const [gw1, setGw1] = useState<number>(Number(gameweek) || 1);
 const [gw2, setGw2] = useState<number>(Number(gameweek) || 1);
 const [team1Data, setTeam1Data] = useState<TeamDetail | null>(null);
 const [team2Data, setTeam2Data] = useState<TeamDetail | null>(null);
+const [h2hModalPlayer, setH2hModalPlayer] = useState<PlayerStats | null>(null);
 
 useEffect(() => {
 let mounted = true;
@@ -680,6 +677,7 @@ const makeStarters = (lineup: typeof team1Lineup): PitchPlayer[] =>
 .map((p) => ({
 player_id: p.player_id,
 player_name: p.player_name,
+web_name: p.web_name ?? null,
 player_image_url: p.player_image_url || null,
 position: p.position,
 raw_points: p.raw_points,
@@ -692,6 +690,7 @@ goals_scored: p.goals_scored,
 assists: p.assists,
 minutes: p.minutes,
 is_auto_subbed_on: p.is_auto_subbed_on,
+is_auto_subbed_off: p.is_auto_subbed_off,
 }));
 
 const makeBench = (lineup: typeof team1Lineup): PitchPlayer[] =>
@@ -701,6 +700,7 @@ const makeBench = (lineup: typeof team1Lineup): PitchPlayer[] =>
 .map((p) => ({
 player_id: p.player_id,
 player_name: p.player_name,
+web_name: p.web_name ?? null,
 player_image_url: p.player_image_url || null,
 position: p.position,
 raw_points: p.raw_points,
@@ -713,14 +713,63 @@ goals_scored: p.goals_scored,
 assists: p.assists,
 minutes: p.minutes,
 is_auto_subbed_on: p.is_auto_subbed_on,
+is_auto_subbed_off: p.is_auto_subbed_off,
 }));
 
 const team1PitchPlayers = makeStarters(team1Lineup);
 const team2PitchPlayers = makeStarters(team2Lineup);
 const team1BenchPlayers = makeBench(team1Lineup);
 const team2BenchPlayers = makeBench(team2Lineup);
-const team1ClickHandler = (_p: PitchPlayer) => {};
-const team2ClickHandler = (_p: PitchPlayer) => {};
+
+const openH2hPlayerModal = async (fullPlayer: LineupPlayer | undefined) => {
+  if (!fullPlayer) return;
+  try {
+    const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/player-history?player_id=${encodeURIComponent(String(fullPlayer.player_id))}`;
+    const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
+    const payload = await res.json();
+    if (!res.ok || payload?.error) {
+      throw new Error(payload?.error?.message || "Failed to fetch player history");
+    }
+    setH2hModalPlayer({
+      ...fullPlayer,
+      player_image_url: fullPlayer.player_image_url ?? null,
+      position: fullPlayer.position,
+      history: (payload.history || []).map((h: any) => ({
+        gameweek: h.gameweek,
+        points: h.points ?? 0,
+        goals: h.goals ?? 0,
+        assists: h.assists ?? 0,
+        minutes: h.minutes ?? 0,
+        clean_sheets: h.clean_sheets ?? 0,
+        goals_conceded: h.goals_conceded ?? 0,
+        penalties_saved: h.penalties_saved ?? 0,
+        penalties_missed: h.penalties_missed ?? 0,
+        fixture_difficulty: h.fixture_difficulty ?? null,
+        is_upcoming: !!h.is_upcoming,
+        opponent_team_name: h.opponent_team_name ?? null,
+        was_home: h.was_home,
+        fixture: h.fixture ?? null,
+        result: h.result ?? null,
+        kickoff_time: h.kickoff_time ?? null,
+      })),
+    });
+  } catch {
+    setH2hModalPlayer({
+      ...fullPlayer,
+      position: fullPlayer.position,
+      history: [],
+    });
+  }
+};
+
+const team1ClickHandler = (p: PitchPlayer) => {
+  const full = team1Lineup.find((x) => x.player_id === p.player_id);
+  void openH2hPlayerModal(full);
+};
+const team2ClickHandler = (p: PitchPlayer) => {
+  const full = team2Lineup.find((x) => x.player_id === p.player_id);
+  void openH2hPlayerModal(full);
+};
 const leagueLiveTeam1 = (data.team_1.lineup || []).reduce(
 (sum, player) => sum + (player.is_bench ? 0 : Number(player.effective_points || 0)),
 0,
@@ -867,6 +916,15 @@ return (
       />
     </div>
   </div>
+
+  <PlayerStatsModal
+    player={h2hModalPlayer!}
+    isOpen={!!h2hModalPlayer}
+    onClose={() => setH2hModalPlayer(null)}
+    showHistory={true}
+    showGameweekStats={currentGwNum <= data.current_gameweek || !!data.matchup?.has_started}
+    showEffectivePoints={data.type === "cup"}
+  />
 </div>
 
 );

@@ -9,7 +9,8 @@ declare namespace Deno {
 declare const console: Console;
 
 // Web API globals available in Deno (Supabase Edge); declare so TS resolves them
-declare function fetch(input: string | URL, init?: unknown): Promise<{ ok: boolean; status: number; statusText: string; json(): Promise<unknown> }>;
+// fetch/Response come from compiler "lib": "DOM"; do not redeclare fetch with a
+// minimal return type — it breaks Promise<Response> (e.g. fetchWithTimeout).
 declare function atob(data: string): string;
 interface DenoCrypto {
   randomUUID(): string;

@@ -1,4 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  getPlayerInitialsAbbrev,
+  getProxiedImageUrl,
+  handlePlayerImageErrorWithWikipediaFallback,
+} from "../lib/playerImage";
 import { Card } from "./ui/card";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
@@ -611,14 +616,25 @@ export default function LivePlayerUpdates() {
         <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
           {visibleRows.map((row) => (
             <div key={row.id} className="grid grid-cols-[2.5rem_1fr_auto] items-center gap-2 rounded-md border bg-background/70 p-2">
-              <img
-                src={sanitizeImageUrl(row.player_image_url) || avatarFallback(row.player_name)}
-                alt={row.player_name}
-                className="h-9 w-9 rounded-full object-cover border"
-                onError={(event) => {
-                  (event.currentTarget as HTMLImageElement).src = avatarFallback(row.player_name);
-                }}
-              />
+              <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded-full border bg-muted">
+                {row.player_image_url ? (
+                  <img
+                    src={getProxiedImageUrl(row.player_image_url) ?? undefined}
+                    alt={row.player_name}
+                    className="h-full w-full object-cover"
+                    onError={(e) =>
+                      handlePlayerImageErrorWithWikipediaFallback(e, row.player_name, {
+                        fallbackClassName:
+                          "absolute inset-0 flex items-center justify-center rounded-full bg-muted text-[10px] font-bold text-muted-foreground",
+                      })
+                    }
+                  />
+                ) : (
+                  <span className="flex h-full w-full items-center justify-center text-[10px] font-bold text-muted-foreground">
+                    {getPlayerInitialsAbbrev(row.player_name)}
+                  </span>
+                )}
+              </div>
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium">
                   {row.player_name}

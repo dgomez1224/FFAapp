@@ -273,7 +273,8 @@ export async function fetchPlayerImage(playerName: string): Promise<string | nul
   }
 }
 
-async function getWikipediaImage(playerName: string): Promise<string | null> {
+/** Wikipedia thumbnail for a player name (name variants, cached). Use from img onError for sitewide fallback. */
+export async function getWikipediaImage(playerName: string): Promise<string | null> {
   const cacheKey = `wiki:${playerName}`;
   if (cacheKey in imageCache) {
     return imageCache[cacheKey];
@@ -368,6 +369,49 @@ export async function getPlayerImageByIdOrName(
   // Step 4: Nothing found — caller shows initials
   idCache[playerId] = null;
   return null;
+}
+
+/** Two-letter initials for avatar fallbacks (same idea as FootballPitch). */
+export function getPlayerInitialsAbbrev(playerName: string): string {
+  return (playerName || "?")
+    .split(/\s+/)
+    .map((w) => w[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+}
+
+/**
+ * When a player headshot `<img>` fails: try Wikipedia thumbnail, then hide img and append initials in the parent.
+ * Parent should be `relative` for absolute-positioned fallback; adds a `.img-fallback` div.
+ * Same behavior as the FootballPitch PlayerCard image path.
+ */
+export function handlePlayerImageErrorWithWikipediaFallback(
+  e: { currentTarget: HTMLImageElement },
+  playerName: string,
+  options?: { fallbackClassName?: string },
+): void {
+  const target = e.currentTarget;
+  void (async () => {
+    try {
+      const wiki = await getWikipediaImage(playerName);
+      if (wiki) {
+        target.src = wiki;
+        target.style.display = "";
+        return;
+      }
+    } catch {
+      /* fall through */
+    }
+    target.style.display = "none";
+    const parent = target.parentElement;
+    if (!parent) return;
+    if (parent.querySelector(".img-fallback")) return;
+    const fb = document.createElement("div");
+    fb.className = `img-fallback ${options?.fallbackClassName ?? "absolute inset-0 flex items-center justify-center bg-gray-700 text-white text-xs font-bold"}`;
+    fb.textContent = getPlayerInitialsAbbrev(playerName);
+    parent.appendChild(fb);
+  })();
 }
 
 export function getProxiedImageUrl(originalUrl: string | null | undefined): string | null {

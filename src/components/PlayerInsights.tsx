@@ -3,6 +3,11 @@
  */
 
 import React, { useEffect, useMemo, useState } from "react";
+import {
+  getPlayerInitialsAbbrev,
+  getProxiedImageUrl,
+  handlePlayerImageErrorWithWikipediaFallback,
+} from "../lib/playerImage";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { Card } from "./ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
@@ -11,6 +16,7 @@ import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 interface PlayerInsight {
   player_id: number;
   player_name: string;
+  image_url?: string | null;
   position?: number | null;
   team?: number | null;
   team_name?: string | null;
@@ -383,6 +389,7 @@ export default function PlayerInsights() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="cursor-pointer">Image</TableHead>
                 <TableHead className="cursor-pointer" onClick={() => toggleSort("player_name")}>Player{sortLabel("player_name")}</TableHead>
                 <TableHead className="cursor-pointer text-right" onClick={() => toggleSort("position")}>Pos{sortLabel("position")}</TableHead>
                 <TableHead className="cursor-pointer" onClick={() => toggleSort("team_name")}>Team{sortLabel("team_name")}</TableHead>
@@ -430,6 +437,27 @@ export default function PlayerInsights() {
             <TableBody>
               {sortedPlayers.map((p) => (
                 <TableRow key={p.player_id}>
+                  <TableCell className="w-8 pr-0">
+                    <div className="relative w-7 h-8 rounded overflow-hidden bg-muted flex items-center justify-center shrink-0">
+                      {p.image_url ? (
+                        <img
+                          src={getProxiedImageUrl(p.image_url) ?? undefined}
+                          alt={p.player_name}
+                          className="w-full h-full object-cover object-top"
+                          onError={(e) =>
+                            handlePlayerImageErrorWithWikipediaFallback(e, p.player_name, {
+                              fallbackClassName:
+                                "absolute inset-0 flex items-center justify-center text-[9px] font-bold text-muted-foreground bg-muted",
+                            })
+                          }
+                        />
+                      ) : (
+                        <span className="text-[9px] font-bold text-muted-foreground">
+                          {getPlayerInitialsAbbrev(p.player_name)}
+                        </span>
+                      )}
+                    </div>
+                  </TableCell>
                   <TableCell className="font-medium">{p.player_name}</TableCell>
                   <TableCell className="text-right">{p.position ? POSITION_NAMES[p.position] : "—"}</TableCell>
                   <TableCell>{p.team_name || "—"}</TableCell>

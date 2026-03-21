@@ -10,13 +10,20 @@
   */
 
 import React, { useState } from "react";
-import { getPlayerImage, getPlayerImageByIdOrName } from "../lib/playerImage";
+import {
+  getPlayerImage,
+  getPlayerImageByIdOrName,
+  getPlayerInitialsAbbrev,
+  handlePlayerImageErrorWithWikipediaFallback,
+} from "../lib/playerImage";
 import pitchBg from "../assets/backgrounds/FPL Site Pitch.png";
 import pitchBgPortrait from "../assets/backgrounds/FPL Site Pitch Portrait.png";
 
 export interface PitchPlayer {
 player_id: number;
 player_name: string;
+/** From FPL/Draft bootstrap-static `web_name`; shown on the pitch when set */
+web_name?: string | null;
 player_image_url?: string | null;
 position: number; // 1=GK, 2=DEF, 3=MID, 4=FWD
 raw_points: number;
@@ -29,6 +36,7 @@ goals_scored?: number;
 assists?: number;
 minutes?: number;
 is_auto_subbed_on?: boolean;
+is_auto_subbed_off?: boolean;
 }
 
 interface FootballPitchProps {
@@ -66,6 +74,15 @@ const LANDSCAPE_RIGHT_X: Record<number, number> = {
 4: 57,  // FWD — close to center line
 };
 
+/** Label under pitch headshots: bootstrap `web_name`, else last token of full name */
+export function pitchPlayerDisplayName(player: Pick<PitchPlayer, "web_name" | "player_name">): string {
+  const w = player.web_name?.trim();
+  if (w) return w;
+  const parts = player.player_name.split(/\s+/).filter(Boolean);
+  if (parts.length) return parts[parts.length - 1] ?? player.player_name;
+  return player.player_name || "?";
+}
+
 function PlayerCard({
 player,
 imageUrl,
@@ -83,7 +100,7 @@ showCaptain: boolean;
 onPlayerClick?: (p: PitchPlayer) => void;
 orientation: "portrait" | "landscape";
 }) {
-const surname = player.player_name.split(" ").slice(-1)[0];
+const pitchLabel = pitchPlayerDisplayName(player);
 const pts = player.raw_points ?? 0;
 const ptsColor =
 pts >= 10 ? "bg-amber-400 text-black" :
@@ -98,8 +115,11 @@ const cardSize = orientation === "landscape"
 
 return (
 <button
+type="button"
 onClick={() => onPlayerClick?.(player)}
-className={`flex flex-col items-center group ${onPlayerClick ? "cursor-pointer" : "cursor-default"}`}
+className={`flex flex-col items-center group ${
+  onPlayerClick ? "cursor-pointer pointer-events-auto" : "cursor-default pointer-events-none"
+}`}
 title={player.player_name}
 >
 <div className="relative">
@@ -113,41 +133,15 @@ className={`relative overflow-hidden rounded-md shadow-lg transition-transform g
 src={imageUrl}
 alt={player.player_name}
 className="w-full h-full object-cover object-top"
-onError={(e) => {
-const target = e.currentTarget;
-(async () => {
-try {
-const name = player.player_name || "";
-const parts = name.trim().split(/\s+/);
-const variants = [
-name,
-parts.length > 2 ? `${parts[0]} ${parts[1]}` : null,
-parts.length > 1 ? `${parts[0]} ${parts[parts.length - 1]}` : null,
-].filter(Boolean) as string[];
-for (const v of [...new Set(variants)]) {
-const r = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(v)}`);
-const d = r.ok ? await r.json() : null;
-if (d?.thumbnail?.source) {
-target.src = d.thumbnail.source;
-target.style.display = "";
-return;
+onError={(e) =>
+handlePlayerImageErrorWithWikipediaFallback(e, player.player_name, {
+fallbackClassName: "absolute inset-0 flex items-center justify-center bg-gray-700 text-white text-xs font-bold",
+})
 }
-}
-} catch { /* fall through */ }
-target.style.display = "none";
-const parent = target.parentElement;
-if (parent && !parent.querySelector(".img-fallback")) {
-const fb = document.createElement("div");
-fb.className = "img-fallback absolute inset-0 flex items-center justify-center bg-gray-700 text-white text-xs font-bold";
-fb.textContent = (player.player_name || "?").split(" ").map((w: string) => w[0]).slice(0, 2).join("").toUpperCase();
-parent.appendChild(fb);
-}
-})();
-}}
 />
 ) : (
 <div className="w-full h-full bg-gray-700 flex items-center justify-center text-white text-xs font-bold">
-{(player.player_name || "?").split(" ").map((w: string) => w[0]).slice(0, 2).join("").toUpperCase()}
+{getPlayerInitialsAbbrev(player.player_name)}
 </div>
 )}
 </div>
@@ -160,7 +154,10 @@ parent.appendChild(fb);
       <div className="absolute -top-1.5 -right-1.5 z-20 w-4 h-4 rounded-full bg-sky-500 text-white text-[9px] font-bold flex items-center justify-center shadow-md">V</div>
     )}
     {player.is_auto_subbed_on && (
-      <div className="absolute -top-1.5 -left-1.5 z-20 w-4 h-4 rounded-full bg-green-500 text-white text-[9px] font-bold flex items-center justify-center shadow-md">↑</div>
+      <div className="absolute -top-1.5 -left-1.5 z-20 w-4 h-4 rounded-full bg-green-500 text-white text-[9px] font-bold flex items-center justify-center shadow-md">↓</div>
+    )}
+    {player.is_auto_subbed_off && (
+      <div className="absolute -top-1.5 -left-1.5 z-20 w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center shadow-md">↑</div>
     )}
   </div>
 
@@ -169,7 +166,7 @@ parent.appendChild(fb);
     className="mt-0.5 text-[8px] font-semibold text-white leading-none text-center max-w-[38px] truncate"
     style={{ textShadow: "0 1px 3px rgba(0,0,0,1)" }}
   >
-    {surname}
+    {pitchLabel}
   </span>
 
   {/* Points pill */}
@@ -223,7 +220,11 @@ if (count === 1) return { x: 50, y };
 const startX = 40, endX = 60;
 return { x: startX + ((endX - startX) / (count - 1)) * idx, y };
 }
-const startX = 12, endX = 88;
+// Scale spread based on player count so small groups stay centered
+const maxSpread = 76; // full width spread for 5+ players
+const spread = Math.min(maxSpread, count * 16);
+const startX = 50 - spread / 2;
+const endX = 50 + spread / 2;
 return { x: count === 1 ? 50 : startX + ((endX - startX) / (count - 1)) * idx, y };
 };
 
@@ -233,16 +234,24 @@ const posPlayers = playersByPosition[position] || [];
 const count = Math.max(1, posPlayers.length);
 const xMap = side === "left" ? LANDSCAPE_LEFT_X : LANDSCAPE_RIGHT_X;
 const x = xMap[position] || 50;
-const startY = 10, endY = 90;
+// Scale Y spread based on count so small groups stay centered
+const maxSpread = 80;
+const spread = Math.min(maxSpread, count * 18);
+const startY = 50 - spread / 2;
+const endY = 50 + spread / 2;
 return { x, y: count === 1 ? 50 : startY + ((endY - startY) / (count - 1)) * idx };
 };
 
 const getPos = (position: number, idx: number) =>
 orientation === "landscape" ? getLandscapePos(position, idx) : getPortraitPos(position, idx);
 
+/** SharedPitch wraps each team in w-1/2; this inner layer is 200% wide so % X matches full-pitch coords. */
+const sharedHalfCoordinateLayer =
+  noBackground && orientation === "landscape";
+
 return (
 <div
-className="relative w-full h-full rounded-lg overflow-hidden"
+className="relative w-full h-full rounded-lg overflow-hidden pointer-events-none"
 style={orientation === "portrait" ? { aspectRatio: "9/16" } : undefined}
 >
 {/* Pitch background — only when not delegated to parent */}
@@ -262,8 +271,16 @@ className="absolute inset-0 w-full h-full object-cover pointer-events-none selec
 )
 )}
 
-  {/* Players layer */}
-  <div className="absolute inset-0 w-full h-full">
+  {/* Players layer — pointer-events-none so stacked SharedPitch halves don't block each other's clicks */}
+  <div
+    className={
+      sharedHalfCoordinateLayer
+        ? side === "left"
+          ? "absolute inset-y-0 left-0 h-full w-[200%] pointer-events-none"
+          : "absolute inset-y-0 right-0 h-full w-[200%] pointer-events-none"
+        : "absolute inset-0 w-full h-full pointer-events-none"
+    }
+  >
     {Object.entries(playersByPosition).map(([position, posPlayers]) =>
       posPlayers.map((player, playerIdx) => {
         const pos = getPos(parseInt(position), playerIdx);
@@ -274,7 +291,7 @@ className="absolute inset-0 w-full h-full object-cover pointer-events-none selec
         return (
           <div
             key={`${player.player_id}-${playerIdx}`}
-            className="absolute transform -translate-x-1/2 -translate-y-1/2"
+            className="absolute transform -translate-x-1/2 -translate-y-1/2 pointer-events-none"
             style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
           >
             <PlayerCard

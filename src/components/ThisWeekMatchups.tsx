@@ -10,6 +10,11 @@ import { Card } from "./ui/card";
 import { useManagerCrestMap } from "../lib/useManagerCrestMap";
 import type { LiveDataResponse } from "../lib/types/api";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "./ui/hover-card";
+import {
+  getPlayerInitialsAbbrev,
+  getProxiedImageUrl,
+  handlePlayerImageErrorWithWikipediaFallback,
+} from "../lib/playerImage";
 import { summarizeMatchupHighlights } from "./LivePlayerUpdates";
 
 interface MatchupRow {
@@ -388,14 +393,25 @@ export function ThisWeekMatchups() {
                     <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
                       {highlights.map((row) => (
                         <div key={`${row.player_id}-${row.action}`} className="grid grid-cols-[2.25rem_1fr_auto] items-center gap-2 rounded-md border p-2">
-                          <img
-                            src={sanitizeImageUrl(row.player_image_url) || avatarFallback(row.player_name)}
-                            alt={row.player_name}
-                            className="h-8 w-8 rounded-full border object-cover"
-                            onError={(event) => {
-                              (event.currentTarget as HTMLImageElement).src = avatarFallback(row.player_name);
-                            }}
-                          />
+                          <div className="relative h-8 w-8 shrink-0 overflow-hidden rounded-full border bg-muted">
+                            {row.player_image_url ? (
+                              <img
+                                src={getProxiedImageUrl(row.player_image_url) ?? undefined}
+                                alt={row.player_name}
+                                className="h-full w-full object-cover"
+                                onError={(e) =>
+                                  handlePlayerImageErrorWithWikipediaFallback(e, row.player_name, {
+                                    fallbackClassName:
+                                      "absolute inset-0 flex items-center justify-center rounded-full bg-muted text-[9px] font-bold text-muted-foreground",
+                                  })
+                                }
+                              />
+                            ) : (
+                              <span className="flex h-full w-full items-center justify-center text-[9px] font-bold text-muted-foreground">
+                                {getPlayerInitialsAbbrev(row.player_name)}
+                              </span>
+                            )}
+                          </div>
                           <div className="min-w-0">
                             <p className="truncate text-xs font-medium">{row.player_name}</p>
                             <p className="truncate text-[11px] text-muted-foreground">{row.action}</p>

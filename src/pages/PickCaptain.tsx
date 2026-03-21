@@ -15,6 +15,7 @@ import { PlayerStatsModal, PlayerStats } from "../components/PlayerStatsModal";
 type CaptainPlayer = {
   id: number;
   name: string;
+  web_name?: string | null;
   image_url?: string | null;
   team: number | null;
   position: number | null;
@@ -236,6 +237,7 @@ export default function PickCaptain() {
   const pitchPlayers = (context?.players || []).map((p) => ({
     player_id: p.id,
     player_name: p.name,
+    web_name: p.web_name ?? null,
     player_image_url: p.image_url || null,
     position: p.position || 3,
     raw_points: livePoints[p.id] ?? 0,

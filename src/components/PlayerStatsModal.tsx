@@ -4,6 +4,11 @@
  */
 
 import React from "react";
+import {
+  getPlayerInitialsAbbrev,
+  getProxiedImageUrl,
+  handlePlayerImageErrorWithWikipediaFallback,
+} from "../lib/playerImage";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 
@@ -92,6 +97,35 @@ export function PlayerStatsModal({
   onSelectViceCaptain,
   showEffectivePoints = true,
 }: PlayerStatsModalProps) {
+  const getFormDot = (entry: NonNullable<PlayerStats["history"]>[number]) => {
+    const pos = player.position ?? 3;
+    const goals = entry.goals ?? 0;
+    const assists = entry.assists ?? 0;
+    const cs = entry.clean_sheets ?? 0;
+    const dc = entry.defensive_contributions ?? 0;
+    const mins = entry.minutes ?? 0;
+    if (mins === 0) return { color: "bg-gray-400", title: "DNP" };
+    if (pos === 1) {
+      if (cs >= 1 || (entry.saves ?? 0) >= 3) return { color: "bg-green-500", title: "Good" };
+      if (mins >= 60) return { color: "bg-amber-400", title: "Ok" };
+      return { color: "bg-red-400", title: "Poor" };
+    }
+    if (pos === 2) {
+      if (goals >= 1 || assists >= 1 || cs >= 1 || dc >= 10) return { color: "bg-green-500", title: "Good" };
+      if (mins >= 60) return { color: "bg-amber-400", title: "Ok" };
+      return { color: "bg-red-400", title: "Poor" };
+    }
+    if (pos === 3) {
+      if (goals >= 1 || assists >= 1 || dc >= 12) return { color: "bg-green-500", title: "Good" };
+      if (mins >= 60) return { color: "bg-amber-400", title: "Ok" };
+      return { color: "bg-red-400", title: "Poor" };
+    }
+    // FWD
+    if (goals >= 1 || assists >= 1) return { color: "bg-green-500", title: "Good" };
+    if (mins >= 60) return { color: "bg-amber-400", title: "Ok" };
+    return { color: "bg-red-400", title: "Poor" };
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -101,16 +135,23 @@ export function PlayerStatsModal({
           {/* Close button */}
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-3">
-              {player.player_image_url && (
-                <img
-                  src={player.player_image_url}
-                  alt={player.player_name}
-                  className="h-14 w-12 object-cover rounded-md border"
-                  onError={(e) => {
-                    e.currentTarget.style.display = "none";
-                  }}
-                />
-              )}
+              <div className="relative h-14 w-12 shrink-0 overflow-hidden rounded-md border bg-muted flex items-center justify-center">
+                {player.player_image_url ? (
+                  <img
+                    src={getProxiedImageUrl(player.player_image_url) ?? undefined}
+                    alt={player.player_name}
+                    className="h-full w-full object-cover"
+                    onError={(e) =>
+                      handlePlayerImageErrorWithWikipediaFallback(e, player.player_name, {
+                        fallbackClassName:
+                          "absolute inset-0 flex items-center justify-center bg-muted text-muted-foreground text-xs font-bold",
+                      })
+                    }
+                  />
+                ) : (
+                  <span className="text-xs font-bold text-muted-foreground">{getPlayerInitialsAbbrev(player.player_name)}</span>
+                )}
+              </div>
               <div>
                 <h2 className="text-xl font-bold">{player.player_name}</h2>
                 <p className="text-sm text-muted-foreground">
@@ -254,6 +295,28 @@ export function PlayerStatsModal({
 
           {showHistory && (
             <div className="space-y-2 text-sm mt-4">
+              {player.history && player.history.length > 0 && (
+                <div className="mb-3">
+                  <p className="text-xs text-muted-foreground mb-1">
+                    Recent Form (last {Math.min(10, player.history.filter((h) => !h.is_upcoming).length)} GW)
+                  </p>
+                  <div className="flex gap-1 flex-wrap">
+                    {player.history
+                      .filter((h) => !h.is_upcoming)
+                      .slice(-10)
+                      .map((entry) => {
+                        const dot = getFormDot(entry);
+                        return (
+                          <div
+                            key={entry.gameweek}
+                            title={`GW${entry.gameweek}: ${dot.title} (${entry.points ?? 0}pts)`}
+                            className={`w-4 h-4 rounded-full ${dot.color} cursor-default`}
+                          />
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
               <h3 className="font-semibold mb-3">Gameweek History</h3>
               {player.history && player.history.length > 0 ? (
                 <div className="space-y-2 max-h-80 overflow-y-auto">

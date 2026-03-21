@@ -24,6 +24,7 @@ type Payload = {
   lineup: Array<{
     player_id: number;
     player_name: string;
+    web_name?: string | null;
     player_image_url?: string | null;
     position: number;
     is_captain: boolean;

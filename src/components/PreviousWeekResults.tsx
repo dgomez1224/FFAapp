@@ -2,6 +2,11 @@ import React, { useEffect, useState } from "react";
 import { Card } from "./ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
+import {
+  getPlayerInitialsAbbrev,
+  getProxiedImageUrl,
+  handlePlayerImageErrorWithWikipediaFallback,
+} from "../lib/playerImage";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { useNavigate } from "react-router-dom";
 import { Star } from "lucide-react";
@@ -144,14 +149,22 @@ export function PreviousWeekResults() {
                         {f.potm.map((p) => (
                           <div key={`${p.player_id}-${p.manager_name}`} className="flex items-center gap-2">
                             {p.player_image_url ? (
-                              <img
-                                src={p.player_image_url}
-                                alt={p.player_name}
-                                className="h-6 w-6 rounded-full border object-cover"
-                              />
+                              <div className="relative h-6 w-6 shrink-0 overflow-hidden rounded-full border">
+                                <img
+                                  src={getProxiedImageUrl(p.player_image_url) ?? undefined}
+                                  alt={p.player_name}
+                                  className="h-full w-full object-cover"
+                                  onError={(e) =>
+                                    handlePlayerImageErrorWithWikipediaFallback(e, p.player_name, {
+                                      fallbackClassName:
+                                        "absolute inset-0 flex items-center justify-center bg-muted text-[10px] font-bold text-muted-foreground",
+                                    })
+                                  }
+                                />
+                              </div>
                             ) : (
-                              <div className="h-6 w-6 rounded-full border bg-muted flex items-center justify-center text-[10px]">
-                                {p.player_name.charAt(0)}
+                              <div className="h-6 w-6 rounded-full border bg-muted flex items-center justify-center text-[10px] font-bold text-muted-foreground">
+                                {getPlayerInitialsAbbrev(p.player_name)}
                               </div>
                             )}
                             <div className="flex flex-col">

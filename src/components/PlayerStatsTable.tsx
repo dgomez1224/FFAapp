@@ -1,5 +1,9 @@
 import React, { useState } from "react";
-import { getProxiedImageUrl } from "../lib/playerImage";
+import {
+  getPlayerInitialsAbbrev,
+  getProxiedImageUrl,
+  handlePlayerImageErrorWithWikipediaFallback,
+} from "../lib/playerImage";
 
 export interface PlayerStatsTableProps {
   players: Array<{
@@ -33,7 +37,7 @@ export default function PlayerStatsTable({
   viceCaptainId = null,
   gameweek,
 }: PlayerStatsTableProps) {
-  const [statsOpen, setStatsOpen] = useState(false);
+  const [statsOpen, setStatsOpen] = useState(true);
 
   if (players.length === 0) return null;
 
@@ -97,43 +101,19 @@ export default function PlayerStatsTable({
                           <img
                             src={getProxiedImageUrl(player.image_url) ?? undefined}
                             alt=""
-                            className="relative h-6 w-5 object-cover rounded"
-                            onError={(e) => {
-                              const target = e.currentTarget;
-                              (async () => {
-                                try {
-                                  const name = player.name;
-                                  const wikiRes = await fetch(
-                                    `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(name)}`,
-                                  );
-                                  const wikiData = wikiRes.ok ? await wikiRes.json() : null;
-                                  const wikiImg = wikiData?.thumbnail?.source;
-                                  if (wikiImg) {
-                                    target.src = wikiImg;
-                                    target.style.display = "";
-                                    return;
-                                  }
-                                } catch {
-                                  // fall through to initials
-                                }
-                                target.style.display = "none";
-                                const parent = target.parentElement;
-                                if (parent && !parent.querySelector(".img-fallback")) {
-                                  const fallback = document.createElement("div");
-                                  fallback.className =
-                                    "img-fallback absolute inset-0 flex items-center justify-center bg-muted rounded text-xs font-semibold text-muted-foreground";
-                                  fallback.textContent = (player.name || "?")
-                                    .split(" ")
-                                    .map((w: string) => w[0])
-                                    .slice(0, 2)
-                                    .join("")
-                                    .toUpperCase();
-                                  parent.appendChild(fallback);
-                                }
-                              })();
-                            }}
+                            className="relative z-10 h-6 w-5 object-cover rounded"
+                            onError={(e) =>
+                              handlePlayerImageErrorWithWikipediaFallback(e, player.name, {
+                                fallbackClassName:
+                                  "absolute inset-0 flex items-center justify-center bg-muted rounded text-xs font-semibold text-muted-foreground",
+                              })
+                            }
                           />
-                        ) : null}
+                        ) : (
+                          <div className="relative z-10 flex h-6 w-5 items-center justify-center rounded bg-muted text-[9px] font-semibold text-muted-foreground">
+                            {getPlayerInitialsAbbrev(player.name)}
+                          </div>
+                        )}
                       </div>
                     </td>
                     <td className="py-1 px-1 font-medium">
@@ -230,49 +210,26 @@ export default function PlayerStatsTable({
                           className="border-b opacity-50"
                         >
                           <td className="py-1 px-1">
-                            {player.image_url ? (
-                              <img
-                                src={getProxiedImageUrl(player.image_url) ?? undefined}
-                                alt=""
-                                className="h-6 w-5 object-cover rounded"
-                                onError={(e) => {
-                                  const target = e.currentTarget;
-                                  (async () => {
-                                    try {
-                                      const name = player.name;
-                                      const wikiRes = await fetch(
-                                        `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(name)}`,
-                                      );
-                                      const wikiData = wikiRes.ok ? await wikiRes.json() : null;
-                                      const wikiImg = wikiData?.thumbnail?.source;
-                                      if (wikiImg) {
-                                        target.src = wikiImg;
-                                        target.style.display = "";
-                                        return;
-                                      }
-                                    } catch {
-                                      // fall through to initials
-                                    }
-                                    target.style.display = "none";
-                                    const parent = target.parentElement;
-                                    if (parent && !parent.querySelector(".img-fallback")) {
-                                      const fallback = document.createElement("div");
-                                      fallback.className =
-                                        "img-fallback absolute inset-0 flex items-center justify-center bg-muted rounded text-xs font-semibold text-muted-foreground";
-                                      fallback.textContent = (player.name || "?")
-                                        .split(" ")
-                                        .map((w: string) => w[0])
-                                        .slice(0, 2)
-                                        .join("")
-                                        .toUpperCase();
-                                      parent.appendChild(fallback);
-                                    }
-                                  })();
-                                }}
-                              />
-                            ) : (
-                              <div className="h-6 w-5 rounded bg-muted" />
-                            )}
+                            <div className="relative h-6 w-5">
+                              <div className="absolute inset-0 h-6 w-5 rounded bg-muted" aria-hidden="true" />
+                              {player.image_url ? (
+                                <img
+                                  src={getProxiedImageUrl(player.image_url) ?? undefined}
+                                  alt=""
+                                  className="relative z-10 h-6 w-5 object-cover rounded"
+                                  onError={(e) =>
+                                    handlePlayerImageErrorWithWikipediaFallback(e, player.name, {
+                                      fallbackClassName:
+                                        "absolute inset-0 flex items-center justify-center bg-muted rounded text-xs font-semibold text-muted-foreground",
+                                    })
+                                  }
+                                />
+                              ) : (
+                                <div className="relative z-10 flex h-6 w-5 items-center justify-center rounded bg-muted text-[9px] font-semibold text-muted-foreground">
+                                  {getPlayerInitialsAbbrev(player.name)}
+                                </div>
+                              )}
+                            </div>
                           </td>
                           <td className="py-1 px-1 font-medium">
                             {player.name}
