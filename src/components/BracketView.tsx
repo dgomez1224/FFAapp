@@ -335,6 +335,11 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
     return m;
   }, [group?.standings]);
 
+  const groupStageComplete = useMemo(
+    () => isGroupStageComplete(group, currentGw),
+    [group, currentGw],
+  );
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedSeason, setSelectedSeason] = useState<string>("current");
@@ -745,7 +750,9 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
                         <TableCell className="text-right">{team.played}</TableCell>
                         <TableCell className="text-center">
                           {advancing ? (
-                            <span className="text-green-600 dark:text-green-400">Advancing</span>
+                            <span className="text-green-600 dark:text-green-400">
+                              {groupStageComplete ? "Qualified" : "Advancing"}
+                            </span>
                           ) : (
                             <span className="text-muted-foreground">Eliminated</span>
                           )}
