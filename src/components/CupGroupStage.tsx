@@ -177,6 +177,14 @@ export default function CupGroupStage() {
   const hasStandings = data && data.standings.length > 0;
   const standings = data?.standings || [];
 
+  const groupStageComplete = useMemo(() => {
+    if (!standings.length || groupStageStart == null || groupStageEnd == null) return false;
+    const expected = Math.max(1, groupStageEnd - groupStageStart + 1);
+    const allPlayed = standings.every((s) => (s.played ?? 0) >= expected);
+    const calendarPast = currentGw != null && currentGw > 0 && currentGw > groupStageEnd;
+    return allPlayed || calendarPast;
+  }, [standings, groupStageStart, groupStageEnd, currentGw]);
+
   return (
     <div className="space-y-4">
       <div>
@@ -263,7 +271,9 @@ export default function CupGroupStage() {
                       <TableCell className="text-center">
                         {hasStandings ? (
                           advancing ? (
-                            <span className="text-green-600 dark:text-green-400">Advancing</span>
+                            <span className="text-green-600 dark:text-green-400">
+                              {groupStageComplete ? "Qualified" : "Advancing"}
+                            </span>
                           ) : (
                             <span className="text-muted-foreground">Eliminated</span>
                           )

@@ -99,12 +99,16 @@ declare const Deno: {
           manager_short_name: t.manager_short_name,
           total_points: 0,
           captain_points: 0,
+          played: 0,
         };
       });
   
-      scores.forEach((s) => {
-        standingsMap[s.team_id].total_points += s.total_points ?? 0;
-        standingsMap[s.team_id].captain_points += s.captain_points ?? 0;
+      (scores ?? []).forEach((s) => {
+        const row = standingsMap[s.team_id];
+        if (!row) return;
+        row.total_points += s.total_points ?? 0;
+        row.captain_points += s.captain_points ?? 0;
+        row.played += 1;
       });
   
       // 4️⃣ Convert to array and sort

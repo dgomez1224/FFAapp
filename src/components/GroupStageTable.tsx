@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import { useManagerCrestMap } from "../lib/useManagerCrestMap";
@@ -12,6 +12,7 @@ interface Standing {
   manager_short_name: string;
   total_points: number;
   captain_points: number;
+  played?: number;
   rank: number;
 }
 
@@ -29,6 +30,8 @@ const REFRESH_INTERVAL = 30_000; // 30 seconds
 
 export default function GroupStageTable({ tournamentId }: Props) {
   const [standings, setStandings] = useState<Standing[]>([]);
+  const [gwBounds, setGwBounds] = useState<{ start: number; end: number } | null>(null);
+  const [currentGw, setCurrentGw] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { getCrest } = useManagerCrestMap();
@@ -43,6 +46,7 @@ export default function GroupStageTable({ tournamentId }: Props) {
       if (!res.ok) throw new Error("Failed to fetch standings");
       const data: StandingsResponse = await res.json();
       setStandings(data.standings);
+      setGwBounds({ start: data.start_gameweek, end: data.end_gameweek });
       setLoading(false);
     } catch (err: any) {
       console.error(err);
@@ -51,10 +55,28 @@ export default function GroupStageTable({ tournamentId }: Props) {
   };
 
   useEffect(() => {
+    fetch(
+      `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/current-gameweek`,
+      { headers: getSupabaseFunctionHeaders() }
+    )
+      .then((r) => r.json())
+      .then((d) => setCurrentGw(d?.current_gameweek ?? null))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
     fetchStandings();
     const interval = setInterval(fetchStandings, REFRESH_INTERVAL);
     return () => clearInterval(interval);
   }, [tournamentId]);
+
+  const groupStageComplete = useMemo(() => {
+    if (!standings.length || !gwBounds) return false;
+    const expected = Math.max(1, gwBounds.end - gwBounds.start + 1);
+    const allPlayed = standings.every((t) => (t.played ?? 0) >= expected);
+    const calendarPast = currentGw != null && currentGw > 0 && currentGw > gwBounds.end;
+    return allPlayed || calendarPast;
+  }, [standings, gwBounds, currentGw]);
 
   if (loading) return <p>Loading group stage standings…</p>;
   if (error) return <p className="text-red-500">Error: {error}</p>;
@@ -100,7 +122,7 @@ export default function GroupStageTable({ tournamentId }: Props) {
                 <td className="px-4 py-2 text-right">{team.total_points}</td>
                 <td className="px-4 py-2 text-right">{(team.captain_points ?? 0) * 2}</td>
                 <td className="px-4 py-2 text-center">
-                  {advancing ? "Advancing" : "Eliminated"}
+                  {advancing ? (groupStageComplete ? "Qualified" : "Advancing") : "Eliminated"}
                 </td>
               </tr>
             );
