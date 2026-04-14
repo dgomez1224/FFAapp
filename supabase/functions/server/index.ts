@@ -25,6 +25,10 @@ const STATIC_ENTRY_ID = "164475";
 const DEFAULT_DRAFT_LEAGUE_ID = 28469;
 const CURRENT_SEASON = "2025/26";
 const CUP_START_GAMEWEEK = 29;
+/** Inclusive last group-stage GW: four gameweeks (start … start+3). */
+function groupStageEndGameweek(startGw: number): number {
+  return startGw + 3;
+}
 const CAPTAIN_SESSION_TTL_HOURS = 24 * 30;
 const LEAGUE_VALUE = 810;
 const CUP_VALUE = 540;
@@ -417,6 +421,214 @@ function formatDraftTeamName(entry: any) {
 function coerceNumber(value: any, fallback = 0) {
   const num = typeof value === "string" ? Number.parseFloat(value) : value;
   return Number.isFinite(num) ? num : fallback;
+}
+
+/** Same rule as client BracketView: group finished when all teams played full window or calendar past endGW. */
+function isKnockoutSeedingEligible(
+  standings: Array<{ played?: number }>,
+  startGW: number,
+  endGW: number,
+  currentGw: number | null,
+): boolean {
+  if (!standings?.length) return false;
+  const expected = Math.max(1, endGW - startGW + 1);
+  const allPlayedEnough = standings.every((s) => coerceNumber(s.played, 0) >= expected);
+  const calendarPastGroup = currentGw != null && currentGw > 0 && currentGw > endGW;
+  return allPlayedEnough || calendarPastGroup;
+}
+
+type SeedKnockoutResult =
+  | "inserted"
+  | "already_exists"
+  | "group_incomplete"
+  | "nothing_to_pair"
+  | "count_error"
+  | "db_error";
+
+/** Shared row shape for `matchups` (Quarter-finals / Semi-finals / Final, same as BracketView). */
+function buildKnockoutMatchupInsertRows(
+  tournamentId: string,
+  sortedLeagueStandings: Array<{
+    team_id: string;
+    total_points?: number;
+    captain_points?: number;
+  }>,
+  endGw: number,
+): Record<string, unknown>[] | null {
+  const n = sortedLeagueStandings.length;
+  if (n < 2) return null;
+  const adv = Math.max(2, Math.ceil(n * 0.8));
+  const top = sortedLeagueStandings.slice(0, adv);
+  const pairCount = Math.floor(top.length / 2);
+  if (pairCount < 1) return null;
+
+  const qfLeg1 = endGw + 1;
+  const qfLeg2 = endGw + 2;
+  const sfLeg1 = endGw + 3;
+  const sfLeg2 = endGw + 4;
+  const fiLeg1 = endGw + 5;
+  const fiLeg2 = endGw + 6;
+
+  const rows: Record<string, unknown>[] = [];
+  for (let i = 0; i < pairCount; i++) {
+    const hi = top[i];
+    const lo = top[top.length - 1 - i];
+    rows.push({
+      tournament_id: tournamentId,
+      round: "Quarter-finals",
+      matchup_number: i + 1,
+      team_1_id: hi.team_id,
+      team_2_id: lo.team_id,
+      leg_1_gameweek: qfLeg1,
+      leg_2_gameweek: qfLeg2,
+      status: "pending",
+    });
+  }
+  const semiCount = Math.max(1, Math.floor(pairCount / 2));
+  for (let i = 0; i < semiCount; i++) {
+    rows.push({
+      tournament_id: tournamentId,
+      round: "Semi-finals",
+      matchup_number: i + 1,
+      team_1_id: null,
+      team_2_id: null,
+      leg_1_gameweek: sfLeg1,
+      leg_2_gameweek: sfLeg2,
+      status: "awaiting_teams",
+    });
+  }
+  rows.push({
+    tournament_id: tournamentId,
+    round: "Final",
+    matchup_number: 1,
+    team_1_id: null,
+    team_2_id: null,
+    leg_1_gameweek: fiLeg1,
+    leg_2_gameweek: fiLeg2,
+    status: "awaiting_teams",
+  });
+  return rows;
+}
+
+/**
+ * Idempotent: inserts Quarter-finals + Semi-finals + Final placeholders when group is done and
+ * no `matchups` rows exist yet for this tournament. Used by GET /bracket and admin generate.
+ */
+async function ensureKnockoutMatchupsIfNeeded(
+  supabase: any,
+  params: {
+    tournamentId: string;
+    startGW: number;
+    endGW: number;
+    groupStandings: Array<{
+      team_id: string;
+      total_points?: number;
+      captain_points?: number;
+      played?: number;
+    }>;
+    currentGw: number | null;
+  },
+): Promise<SeedKnockoutResult> {
+  const { tournamentId, startGW, endGW, groupStandings, currentGw } = params;
+
+  const { count, error: countErr } = await supabase
+    .from("matchups")
+    .select("id", { count: "exact", head: true })
+    .eq("tournament_id", tournamentId);
+  if (countErr) {
+    console.error("ensureKnockoutMatchups: count failed", countErr.message);
+    return "count_error";
+  }
+  if ((count ?? 0) > 0) return "already_exists";
+
+  if (!isKnockoutSeedingEligible(groupStandings, startGW, endGW, currentGw)) {
+    return "group_incomplete";
+  }
+
+  const sorted = [...groupStandings].sort((a, b) => {
+    const d = coerceNumber(b.total_points, 0) - coerceNumber(a.total_points, 0);
+    if (d !== 0) return d;
+    return coerceNumber(b.captain_points, 0) - coerceNumber(a.captain_points, 0);
+  });
+  const rows = buildKnockoutMatchupInsertRows(tournamentId, sorted, endGW);
+  if (!rows?.length) return "nothing_to_pair";
+
+  const { error: insErr } = await supabase.from("matchups").insert(rows);
+  if (insErr) {
+    if (insErr.code === "23505") return "already_exists";
+    console.error("ensureKnockoutMatchups: insert failed", insErr.message);
+    return "db_error";
+  }
+  return "inserted";
+}
+
+/** Quarter-final labels in DB (legacy seeds used "QF"). */
+const KNOCKOUT_QF_ROUND_LABELS = new Set(["Quarter-finals", "QF"]);
+
+/**
+ * When only quarter-final rows exist (e.g. partial legacy seed), insert Semi-finals + Final
+ * placeholder `matchups` (null teams, awaiting_teams) so later rounds exist until populated from results.
+ */
+async function ensureKnockoutSfFinalPlaceholdersIfNeeded(
+  supabase: any,
+  tournamentId: string,
+  endGW: number,
+): Promise<void> {
+  const { data: rows, error } = await supabase
+    .from("matchups")
+    .select("round, matchup_number")
+    .eq("tournament_id", tournamentId);
+  if (error || !rows?.length) return;
+
+  const qfCount = rows.filter((m: any) => KNOCKOUT_QF_ROUND_LABELS.has(String(m.round))).length;
+  if (qfCount < 1) return;
+
+  const expectedSemi = Math.max(1, Math.floor(qfCount / 2));
+  const semiNums = new Set(
+    rows
+      .filter((m: any) => m.round === "Semi-finals")
+      .map((m: any) => coerceNumber(m.matchup_number, 0)),
+  );
+  const hasFinal = rows.some((m: any) => m.round === "Final");
+
+  const sfLeg1 = endGW + 3;
+  const sfLeg2 = endGW + 4;
+  const fiLeg1 = endGW + 5;
+  const fiLeg2 = endGW + 6;
+
+  const inserts: Record<string, unknown>[] = [];
+  for (let i = 1; i <= expectedSemi; i++) {
+    if (!semiNums.has(i)) {
+      inserts.push({
+        tournament_id: tournamentId,
+        round: "Semi-finals",
+        matchup_number: i,
+        team_1_id: null,
+        team_2_id: null,
+        leg_1_gameweek: sfLeg1,
+        leg_2_gameweek: sfLeg2,
+        status: "awaiting_teams",
+      });
+    }
+  }
+  if (!hasFinal) {
+    inserts.push({
+      tournament_id: tournamentId,
+      round: "Final",
+      matchup_number: 1,
+      team_1_id: null,
+      team_2_id: null,
+      leg_1_gameweek: fiLeg1,
+      leg_2_gameweek: fiLeg2,
+      status: "awaiting_teams",
+    });
+  }
+  if (!inserts.length) return;
+
+  const { error: insErr } = await supabase.from("matchups").insert(inserts);
+  if (insErr && insErr.code !== "23505") {
+    console.error("ensureKnockoutSfFinalPlaceholders: insert failed", insErr.message);
+  }
 }
 
 function isMissingRelationError(error: any) {
@@ -836,6 +1048,7 @@ async function computeCupGameweekScore(
   gameweek: number,
   liveMap: Record<number, number>,
   supabase: any,
+  liveStatsMap?: Record<number, any>,
 ): Promise<{ gameweek_points: number; captain_points: number; bench_points: number; captain_element_id: number } | null> {
   const entryId = String(team.entry_id ?? "").trim();
   if (!entryId) throw new Error(`no_entry_id for team ${team.id}`);
@@ -857,19 +1070,25 @@ async function computeCupGameweekScore(
 
   const { data: captainRow } = await supabase
     .from("cup_captain_selections")
-    .select("captain_player_id")
+    .select("captain_player_id, vice_captain_player_id")
     .eq("team_id", team.id)
     .eq("gameweek", gameweek)
     .maybeSingle();
   const captainPlayerId = coerceNumber(captainRow?.captain_player_id, 0);
-  const captain_points = captainPlayerId > 0 ? (liveMap[captainPlayerId] ?? 0) : 0;
+  const viceCaptainPlayerId = coerceNumber(captainRow?.vice_captain_player_id, 0);
+  const statsMap = liveStatsMap ?? {};
+  const captainMinutes = coerceNumber(statsMap[captainPlayerId]?.minutes, 0);
+  const promotedVice =
+    captainPlayerId > 0 && captainMinutes <= 0 && viceCaptainPlayerId > 0 ? viceCaptainPlayerId : 0;
+  const bonusPlayerId = promotedVice || captainPlayerId || viceCaptainPlayerId;
+  const captain_points = bonusPlayerId > 0 ? (liveMap[bonusPlayerId] ?? 0) : 0;
   const gameweek_points = squad_points + captain_points;
 
   return {
     gameweek_points,
     captain_points,
     bench_points,
-    captain_element_id: captainPlayerId,
+    captain_element_id: bonusPlayerId,
   };
 }
 
@@ -885,9 +1104,11 @@ async function scoreGroupStageGameweek(
   if (teamsError) throw new Error(`teams_fetch_error: ${teamsError.message}`);
   if (!teams?.length) throw new Error(`no_teams_found`);
   let liveMap: Record<number, number> = {};
+  let liveStatsMap: Record<number, any> = {};
   try {
     const live = await fetchLiveGW(gw);
     liveMap = extractLivePointsMap(live);
+    liveStatsMap = extractLivePlayerStatsMap(live);
   } catch (e: any) {
     throw new Error(`Failed to fetch live data for GW${gw}: ${e?.message ?? e}`);
   }
@@ -901,7 +1122,7 @@ async function scoreGroupStageGameweek(
     debugLog.push(`loop team ${team.id} entry=${team.entry_id}`);
     let score: Awaited<ReturnType<typeof computeCupGameweekScore>>;
     try {
-      score = await computeCupGameweekScore(team, gw, liveMap, supabase);
+      score = await computeCupGameweekScore(team, gw, liveMap, supabase, liveStatsMap);
     } catch (e: any) {
       debugLog.push(`team ${team.id} entry=${team.entry_id}: ${e?.message}`);
       continue;
@@ -2794,7 +3015,7 @@ cupGroupStage.get("/", async (c) => {
       let standings: any[] = [];
       if (tournament) {
         const startGW = tournament.start_gameweek || 1;
-        const endGW = startGW + (tournament.group_stage_gameweeks || 4) - 1;
+        const endGW = groupStageEndGameweek(startGW);
         const { data: scores } = await supabase
           .from("cup_gameweek_scores")
           .select("team_id, total_points, captain_points, gameweek")
@@ -6287,6 +6508,14 @@ standingsByGameweek.get("/", async (c) => {
 
 const bracket = new Hono();
 
+/** Display order for GET /bracket (Postgres string sort would put Final first). */
+const FFA_CUP_KNOCKOUT_ROUND_ORDER: Record<string, number> = {
+  "Quarter-finals": 1,
+  QF: 1,
+  "Semi-finals": 2,
+  Final: 3,
+};
+
 bracket.get("/", async (c) => {
   try {
     const supabase = getSupabaseAdmin();
@@ -6365,13 +6594,15 @@ bracket.get("/", async (c) => {
     let groupStandings: any[] = [];
     let startGW: number | null = null;
     let endGW: number | null = null;
+    let bracketCurrentGw: number | null = null;
 
     if (tournament) {
       startGW = tournament.start_gameweek || 1;
-      endGW = startGW + (tournament.group_stage_gameweeks || 4) - 1;
+      endGW = groupStageEndGameweek(startGW);
 
       if (teamIds.length > 0) {
         const currentGw = await resolveCurrentGameweek();
+        bracketCurrentGw = currentGw;
         const tournamentId = tournament.id;
 
         const { data: scoreRows } = await supabase
@@ -6416,39 +6647,50 @@ bracket.get("/", async (c) => {
           }
         }
 
-        const teamsWithCurrentGw = new Set(
-          (scoreRows ?? []).filter((r: any) => r.gameweek === currentGw).map((r: any) => r.team_id),
-        );
-
+        // Live re-score for the *current* GW for every team: replaces any stale DB row
+        // (e.g. captain_points=0 before vice-promotion logic) so bracket GW C / totals stay correct.
         if (currentGw != null && currentGw >= startGW && currentGw <= endGW) {
           let liveMap: Record<number, number> = {};
+          let liveStatsMap: Record<number, any> = {};
           try {
             const livePayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${currentGw}/live`);
             liveMap = extractLivePointsMap(livePayload);
+            liveStatsMap = extractLivePlayerStatsMap(livePayload);
           } catch {
-            // skip live top-up
+            /* no live */
           }
-          for (const team of registeredTeams) {
-            if (teamsWithCurrentGw.has(team.id)) continue;
-            const score = await computeCupGameweekScore(team, currentGw, liveMap, supabase);
-            if (!score) continue;
-            if (!teamTotals[team.id]) {
-              teamTotals[team.id] = {
-                total_points: 0,
-                captain_points: 0,
-                current_week_points: 0,
-                current_week_captain: 0,
-                played: 0,
-                max_gw: 0,
-              };
+          if (Object.keys(liveMap).length > 0) {
+            for (const team of registeredTeams) {
+              const score = await computeCupGameweekScore(team, currentGw, liveMap, supabase, liveStatsMap);
+              if (!score) continue;
+              if (!teamTotals[team.id]) {
+                teamTotals[team.id] = {
+                  total_points: 0,
+                  captain_points: 0,
+                  current_week_points: 0,
+                  current_week_captain: 0,
+                  played: 0,
+                  max_gw: 0,
+                };
+              }
+              const t = teamTotals[team.id];
+              const oldRow = (scoreRows ?? []).find(
+                (r: any) => r.team_id === team.id && coerceNumber(r.gameweek, 0) === currentGw,
+              );
+              if (oldRow) {
+                t.total_points -= coerceNumber(oldRow.total_points, 0);
+                t.captain_points -= coerceNumber(oldRow.captain_points, 0);
+              } else {
+                t.played += 1;
+              }
+              t.total_points += score.gameweek_points;
+              t.captain_points += score.captain_points;
+              if (currentGw >= t.max_gw) {
+                t.max_gw = currentGw;
+                t.current_week_points = score.gameweek_points;
+                t.current_week_captain = score.captain_points;
+              }
             }
-            const t = teamTotals[team.id];
-            t.total_points += score.gameweek_points;
-            t.captain_points += score.captain_points;
-            t.played += 1;
-            t.current_week_points = score.gameweek_points;
-            t.current_week_captain = score.captain_points;
-            t.max_gw = currentGw;
           }
         }
 
@@ -6503,6 +6745,26 @@ bracket.get("/", async (c) => {
         played: 0,
         rank: index + 1,
       }));
+    }
+
+    if (
+      tournament &&
+      teamIds.length > 0 &&
+      groupStandings.length > 0 &&
+      startGW != null &&
+      endGW != null
+    ) {
+      await ensureKnockoutMatchupsIfNeeded(supabase, {
+        tournamentId: tournament.id,
+        startGW,
+        endGW,
+        groupStandings,
+        currentGw: bracketCurrentGw,
+      });
+    }
+
+    if (tournament?.id != null && endGW != null) {
+      await ensureKnockoutSfFinalPlaceholdersIfNeeded(supabase, tournament.id, endGW);
     }
 
     let rounds: Array<{ round: string; matchups: any[] }> = [];
@@ -6569,10 +6831,18 @@ bracket.get("/", async (c) => {
         });
       });
 
-      rounds = Object.entries(roundsMap).map(([round, matchups]) => ({
-        round,
-        matchups,
-      }));
+      rounds = Object.entries(roundsMap)
+        .map(([round, rMatchups]) => ({
+          round,
+          matchups: rMatchups.sort(
+            (a: any, b: any) => coerceNumber(a.matchup_number, 0) - coerceNumber(b.matchup_number, 0),
+          ),
+        }))
+        .sort((a, b) => {
+          const oa = FFA_CUP_KNOCKOUT_ROUND_ORDER[a.round] ?? 99;
+          const ob = FFA_CUP_KNOCKOUT_ROUND_ORDER[b.round] ?? 99;
+          return oa - ob || a.round.localeCompare(b.round);
+        });
     }
 
     return c.json({
@@ -6998,14 +7268,17 @@ adminRefresh.post("/refresh-current-season", async (c) => {
     const tournamentStartGw = startGameweek || 1;
     for (let gw = tournamentStartGw; gw <= currentGameweek; gw++) {
       let liveMap: Record<number, number> = {};
+      let liveStatsMap: Record<number, any> = {};
       try {
         const live = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${gw}/live`);
-        liveMap = extractLivePointsMap(live);
+        const payload = live;
+        liveMap = extractLivePointsMap(payload);
+        liveStatsMap = extractLivePlayerStatsMap(payload);
       } catch {
         continue;
       }
       for (const team of teams) {
-        const score = await computeCupGameweekScore(team, gw, liveMap, supabase);
+        const score = await computeCupGameweekScore(team, gw, liveMap, supabase, liveStatsMap);
         if (!score || gw < tournamentStartGw) continue;
         const row = {
           team_id: team.id,
@@ -7064,7 +7337,7 @@ adminRefresh.post("/score-cup-gameweek-auto", async (c) => {
       return c.json({ checked_gw: currentGw, event_finished: eventFinished, gws_scored: [], already_scored: [], error: "No tournament found" });
     }
     const startGw = tournament.start_gameweek ?? 29;
-    const endGw = startGw + (tournament.group_stage_gameweeks ?? 4) - 1;
+    const endGw = groupStageEndGameweek(startGw);
 
     const { data: existingScores } = await supabase
       .from("cup_gameweek_scores")
@@ -7115,6 +7388,136 @@ adminRefresh.post("/score-cup-gameweek-auto", async (c) => {
   }
 });
 
+adminRefresh.post("/generate-knockout-bracket", async (c) => {
+  // AUTH TEMPORARILY OPEN — re-enable after testing
+  try {
+    const supabase = getSupabaseAdmin();
+
+    const { data: tournament } = await supabase
+      .from("tournaments")
+      .select("id, start_gameweek, group_stage_gameweeks")
+      .eq("entry_id", STATIC_ENTRY_ID)
+      .eq("season", CURRENT_SEASON)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!tournament?.id) {
+      return jsonError(c, 404, "No tournament found for current season / entry");
+    }
+
+    const startGw = tournament.start_gameweek ?? CUP_START_GAMEWEEK;
+    const endGw = groupStageEndGameweek(startGw);
+
+    const { data: teams } = await supabase
+      .from("teams")
+      .select("id, entry_id, entry_name, manager_name, manager_short_name");
+    if (!teams?.length) {
+      return jsonError(c, 400, "No teams in database");
+    }
+
+    const { data: scoreRows } = await supabase
+      .from("cup_gameweek_scores")
+      .select("team_id, gameweek, total_points, captain_points")
+      .eq("tournament_id", tournament.id)
+      .gte("gameweek", startGw)
+      .lte("gameweek", endGw);
+
+    const teamTotals: Record<string, { total_points: number; captain_points: number; played: number }> = {};
+    for (const row of scoreRows ?? []) {
+      const tid = String(row.team_id);
+      if (!tid) continue;
+      if (!teamTotals[tid]) {
+        teamTotals[tid] = { total_points: 0, captain_points: 0, played: 0 };
+      }
+      teamTotals[tid].total_points += coerceNumber(row.total_points, 0);
+      teamTotals[tid].captain_points += coerceNumber(row.captain_points, 0);
+      teamTotals[tid].played += 1;
+    }
+
+    const groupStandings = teams.map((t: any) => ({
+      team_id: t.id,
+      total_points: teamTotals[t.id]?.total_points ?? 0,
+      captain_points: teamTotals[t.id]?.captain_points ?? 0,
+      played: teamTotals[t.id]?.played ?? 0,
+    }));
+    groupStandings.sort((a, b) => {
+      if (b.total_points !== a.total_points) return b.total_points - a.total_points;
+      return b.captain_points - a.captain_points;
+    });
+
+    const currentGw = await resolveCurrentGameweek();
+    const result = await ensureKnockoutMatchupsIfNeeded(supabase, {
+      tournamentId: tournament.id,
+      startGW: startGw,
+      endGW: endGw,
+      groupStandings,
+      currentGw,
+    });
+
+    await ensureKnockoutSfFinalPlaceholdersIfNeeded(supabase, tournament.id, endGw);
+
+    const qfLeg1 = endGw + 1;
+    const qfLeg2 = endGw + 2;
+    const sfLeg1 = endGw + 3;
+    const sfLeg2 = endGw + 4;
+    const fLeg1 = endGw + 5;
+    const fLeg2 = endGw + 6;
+
+    if (result === "already_exists") {
+      const { count } = await supabase
+        .from("matchups")
+        .select("id", { count: "exact", head: true })
+        .eq("tournament_id", tournament.id);
+      return c.json({
+        success: true,
+        result,
+        message: "Knockout matchups already exist for this tournament",
+        matchup_count: count ?? 0,
+      });
+    }
+    if (result === "group_incomplete") {
+      return jsonError(
+        c,
+        400,
+        "Group stage not complete (not all teams have played all group GWs, and calendar is not past group end)",
+        { result },
+      );
+    }
+    if (result === "nothing_to_pair") {
+      return jsonError(c, 400, "Not enough teams to form knockout pairs", { result });
+    }
+    if (result === "count_error" || result === "db_error") {
+      return jsonError(c, 500, `Knockout seed failed: ${result}`, { result });
+    }
+
+    const adv = Math.max(2, Math.ceil(groupStandings.length * 0.8));
+    const qualifiers = groupStandings.slice(0, adv);
+
+    return c.json({
+      success: true,
+      result,
+      tournament_id: tournament.id,
+      group_stage_gws: `GW${startGw}-GW${endGw}`,
+      knockout_schedule: {
+        "Quarter-finals": `GW${qfLeg1} + GW${qfLeg2}`,
+        "Semi-finals": `GW${sfLeg1} + GW${sfLeg2}`,
+        Final: `GW${fLeg1} + GW${fLeg2}`,
+      },
+      advancing_count: adv,
+      qualifiers: qualifiers.map((q, i) => ({
+        seed: i + 1,
+        team_id: q.team_id,
+        total_points: q.total_points,
+        captain_points: q.captain_points,
+        played: q.played,
+      })),
+    });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to generate knockout bracket");
+  }
+});
+
 adminRefresh.post("/score-cup-gameweek", async (c) => {
   if (!requireAdminToken(c)) {
     return jsonError(c, 401, "Unauthorized");
@@ -7136,7 +7539,7 @@ adminRefresh.post("/score-cup-gameweek", async (c) => {
       .maybeSingle();
     const tournamentId = tournament?.id ?? null;
     const startGw = tournament?.start_gameweek ?? 29;
-    const endGw = startGw + (tournament?.group_stage_gameweeks ?? 4) - 1;
+    const endGw = groupStageEndGameweek(startGw);
     if (!tournamentId || gameweek < startGw || gameweek > endGw) {
       return jsonError(c, 400, `Gameweek ${gameweek} is outside group stage ${startGw}-${endGw}`);
     }
@@ -8761,7 +9164,7 @@ fixturesHub.get("/matchup", async (c) => {
     } catch {
       // non-fatal
     }
-    const hasStarted = gameweek < currentGw;
+    const hasStarted = gameweek <= currentGw;
     const cupCaptainByTeam: Record<string, { captain: number; vice: number }> = {};
     let rankMap: Record<string, number> = {};
     let team1: any = null;
@@ -9156,8 +9559,10 @@ fixturesHub.get("/matchup", async (c) => {
         };
       });
 
-    let lineup1 = mapLineup(picks1?.picks, team1Id);
-    let lineup2 = mapLineup(picks2?.picks, team2Id);
+    const lineupTeamKey1 = String(team1?.id ?? team1Id);
+    const lineupTeamKey2 = String(team2?.id ?? team2Id);
+    let lineup1 = mapLineup(picks1?.picks, lineupTeamKey1);
+    let lineup2 = mapLineup(picks2?.picks, lineupTeamKey2);
 
     // Apply Draft API subs directly — these are authoritative
     // for completed GWs and don't rely on fixturesByTeam.finished
@@ -9393,7 +9798,7 @@ fixturesHub.get("/lineup", async (c) => {
       }
     }
 
-    const hasStarted = gameweek < currentGw;
+    const hasStarted = gameweek <= currentGw;
     const captainMinutes = coerceNumber(liveStatsMap[captainPlayerId]?.minutes, 0);
     const promotedVice = hasStarted && captainPlayerId > 0 && captainMinutes <= 0 && viceCaptainPlayerId > 0 ? viceCaptainPlayerId : 0;
     const activeCaptainId = promotedVice || captainPlayerId || viceCaptainPlayerId;

@@ -5,7 +5,7 @@
  * No authentication required - uses static entry ID to resolve tournament context.
  */
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { Card } from "./ui/card";
@@ -90,6 +90,199 @@ type BracketViewProps = {
   showLegacySelector?: boolean;
 };
 
+/** True when every team has finished all group-stage gameweeks (or calendar is past group end). */
+function isGroupStageComplete(
+  g: BracketResponse["group"] | null,
+  currentGw: number,
+): boolean {
+  if (!g?.standings?.length) return false;
+  const start = g.start_gameweek ?? CUP_LINEUP_GAMEWEEK;
+  const end = g.end_gameweek ?? start + 3;
+  const expectedRounds = Math.max(1, end - start + 1);
+  const allPlayedEnough = g.standings.every((s) => (s.played ?? 0) >= expectedRounds);
+  const calendarPastGroup = currentGw > 0 && currentGw > end;
+  return allPlayedEnough || calendarPastGroup;
+}
+
+/**
+ * When the DB has no knockout `matchups` yet, derive a preview QF bracket from group standings
+ * (same top fraction as the table: ceil(n * 0.8)), seeded 1vN, 2vN-1, …
+ */
+function buildSyntheticKnockoutRounds(
+  standings: GroupStanding[],
+  startGw: number,
+  endGw: number,
+): BracketRound[] {
+  const adv = Math.max(2, Math.ceil(standings.length * 0.8));
+  const top = standings.slice(0, adv);
+  const pairCount = Math.floor(top.length / 2);
+  if (pairCount < 1) return [];
+
+  const toTeam = (s: GroupStanding): MatchupTeam => ({
+    id: s.team_id,
+    entry_name: s.entry_name,
+    manager_name: s.manager_name,
+    seed: s.rank,
+  });
+
+  const leg1 = endGw + 1;
+  const leg2 = endGw + 2;
+
+  const qfMatchups: Matchup[] = [];
+  for (let i = 0; i < pairCount; i++) {
+    const hi = top[i];
+    const lo = top[top.length - 1 - i];
+    qfMatchups.push({
+      id: `preview-qf-${i + 1}`,
+      round: "Quarter-finals",
+      matchup_number: i + 1,
+      team_1_id: hi.team_id,
+      team_2_id: lo.team_id,
+      leg_1_gameweek: leg1,
+      leg_2_gameweek: leg2,
+      team_1_leg_1_points: null,
+      team_1_leg_2_points: null,
+      team_2_leg_1_points: null,
+      team_2_leg_2_points: null,
+      winner_id: null,
+      tie_breaker_applied: null,
+      status: "preview",
+      team_1: toTeam(hi),
+      team_2: toTeam(lo),
+    });
+  }
+
+  const tbd = (id: string, round: string, num: number): Matchup => ({
+    id,
+    round,
+    matchup_number: num,
+    team_1_id: null,
+    team_2_id: null,
+    leg_1_gameweek: leg1,
+    leg_2_gameweek: leg2,
+    team_1_leg_1_points: null,
+    team_1_leg_2_points: null,
+    team_2_leg_1_points: null,
+    team_2_leg_2_points: null,
+    winner_id: null,
+    tie_breaker_applied: null,
+    status: "preview",
+    team_1: null,
+    team_2: null,
+  });
+
+  const semiCount = Math.max(1, Math.floor(pairCount / 2));
+  const semiMatchups = Array.from({ length: semiCount }, (_, i) =>
+    tbd(`preview-sf-${i + 1}`, "Semi-finals", i + 1),
+  );
+
+  return [
+    { round: "Quarter-finals", matchups: qfMatchups },
+    { round: "Semi-finals", matchups: semiMatchups },
+    { round: "Final", matchups: [tbd("preview-final", "Final", 1)] },
+  ];
+}
+
+/** Column order (legacy DB uses "QF"). */
+const DISPLAY_ROUND_ORDER: Record<string, number> = {
+  "Quarter-finals": 1,
+  QF: 1,
+  "Semi-finals": 2,
+  Final: 3,
+};
+
+function isQfRoundLabel(round: string): boolean {
+  const r = String(round);
+  return r === "Quarter-finals" || r === "QF";
+}
+
+function sortBracketRoundsForDisplay(rs: BracketRound[]): BracketRound[] {
+  return [...rs].sort(
+    (a, b) =>
+      (DISPLAY_ROUND_ORDER[a.round] ?? 99) - (DISPLAY_ROUND_ORDER[b.round] ?? 99) ||
+      a.round.localeCompare(b.round),
+  );
+}
+
+/**
+ * When the API returns only quarter-final matchups (e.g. legacy "QF" rows), append Semi-finals + Final
+ * placeholder columns so the layout matches a full bracket until those rows exist in `matchups`.
+ */
+function mergeKnockoutLaterRoundPlaceholders(rounds: BracketRound[], endGw: number): BracketRound[] {
+  if (!rounds.length) return rounds;
+
+  const byRound = new Map(rounds.map((r) => [r.round, r]));
+  const qfRound = rounds.find((r) => isQfRoundLabel(r.round));
+  const qfCount = qfRound?.matchups.length ?? 0;
+  if (qfCount < 1) return sortBracketRoundsForDisplay(rounds);
+
+  const expectedSemi = Math.max(1, Math.floor(qfCount / 2));
+  const hasSemi = byRound.has("Semi-finals");
+  const hasFinal = byRound.has("Final");
+  if (hasSemi && hasFinal) return sortBracketRoundsForDisplay(rounds);
+
+  const sfLeg1 = endGw + 3;
+  const sfLeg2 = endGw + 4;
+  const fiLeg1 = endGw + 5;
+  const fiLeg2 = endGw + 6;
+
+  const placeholderMatchup = (
+    id: string,
+    round: string,
+    num: number,
+    l1: number,
+    l2: number,
+  ): Matchup => ({
+    id,
+    round,
+    matchup_number: num,
+    team_1_id: null,
+    team_2_id: null,
+    leg_1_gameweek: l1,
+    leg_2_gameweek: l2,
+    team_1_leg_1_points: null,
+    team_1_leg_2_points: null,
+    team_2_leg_1_points: null,
+    team_2_leg_2_points: null,
+    winner_id: null,
+    tie_breaker_applied: null,
+    status: "placeholder",
+    team_1: null,
+    team_2: null,
+  });
+
+  const next = [...rounds];
+  if (!hasSemi) {
+    next.push({
+      round: "Semi-finals",
+      matchups: Array.from({ length: expectedSemi }, (_, i) =>
+        placeholderMatchup(`ui-sf-${i + 1}`, "Semi-finals", i + 1, sfLeg1, sfLeg2),
+      ),
+    });
+  }
+  if (!hasFinal) {
+    next.push({
+      round: "Final",
+      matchups: [placeholderMatchup("ui-final", "Final", 1, fiLeg1, fiLeg2)],
+    });
+  }
+  return sortBracketRoundsForDisplay(next);
+}
+
+/** Group table rank (1 = best); else `team.seed` from API when set. */
+function resolveKnockoutSeed(
+  teamId: string | null | undefined,
+  team: MatchupTeam | null | undefined,
+  standingRankByTeamId: Map<string, number>,
+): number | null {
+  if (!teamId) return null;
+  const fromGroup = standingRankByTeamId.get(String(teamId));
+  if (fromGroup != null && fromGroup > 0) return fromGroup;
+  const s = team?.seed;
+  if (s != null && s > 0) return s;
+  return null;
+}
+
 const LEGACY_BRACKETS: Array<{ season: string; src: string }> = [
   {
     season: "2021/22",
@@ -122,6 +315,26 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
     end_gameweek: null,
   });
   const [rounds, setRounds] = useState<BracketRound[]>([]);
+  const displayRounds = useMemo(() => {
+    const start = group?.start_gameweek ?? CUP_LINEUP_GAMEWEEK;
+    const endGw = group?.end_gameweek ?? start + 3;
+
+    if (rounds.length > 0) {
+      return mergeKnockoutLaterRoundPlaceholders(rounds, endGw);
+    }
+    if (!group?.standings?.length) return [];
+    if (!isGroupStageComplete(group, currentGw)) return [];
+    return buildSyntheticKnockoutRounds(group.standings, start, endGw);
+  }, [rounds, group, currentGw]);
+
+  const standingRankByTeamId = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const s of group?.standings ?? []) {
+      if (s.team_id) m.set(String(s.team_id), s.rank);
+    }
+    return m;
+  }, [group?.standings]);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedSeason, setSelectedSeason] = useState<string>("current");
@@ -560,7 +773,7 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
       )}
 
       {(!showLegacySelector || selectedSeason === "current") && !contextLoading && !loading && (
-        rounds.length === 0 ? (
+        displayRounds.length === 0 ? (
           <Card className="p-4">
             <p className="text-sm text-muted-foreground mb-2">
               Knockout bracket will appear once the group stage is complete.
@@ -569,8 +782,14 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
           </Card>
         ) : (
           <Card className="overflow-x-auto p-4">
+            {rounds.length === 0 && displayRounds.length > 0 && (
+              <p className="mb-3 text-xs text-amber-800 dark:text-amber-200">
+                Preview from group standings. Official two-leg fixtures and scores will appear here
+                once knockout matchups are created in the database.
+              </p>
+            )}
             <div className="flex gap-6 min-w-max">
-              {rounds.map((round) => (
+              {displayRounds.map((round) => (
                 <div key={round.round} className="space-y-4">
                   <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground text-center">
                     {round.round}
@@ -583,6 +802,8 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
                       const team2Name =
                         m.team_2?.entry_name ??
                         (m.team_2_id ? `Team ${m.team_2_id}` : "TBD");
+                      const team1Seed = resolveKnockoutSeed(m.team_1_id, m.team_1, standingRankByTeamId);
+                      const team2Seed = resolveKnockoutSeed(m.team_2_id, m.team_2, standingRankByTeamId);
 
                       const team1Agg =
                         (m.team_1_leg_1_points ?? 0) +
@@ -615,7 +836,17 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
                                   : "")
                               }
                             >
-                              <span className="truncate">{team1Name}</span>
+                              <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                                {team1Seed != null ? (
+                                  <span
+                                    className="shrink-0 text-[10px] font-semibold tabular-nums text-muted-foreground"
+                                    title={`Seed ${team1Seed}`}
+                                  >
+                                    #{team1Seed}
+                                  </span>
+                                ) : null}
+                                <span className="truncate">{team1Name}</span>
+                              </span>
                               <span>
                                 {m.team_1_leg_1_points ?? "–"} /{" "}
                                 {m.team_1_leg_2_points ?? "–"} (
@@ -630,7 +861,17 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
                                   : "")
                               }
                             >
-                              <span className="truncate">{team2Name}</span>
+                              <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                                {team2Seed != null ? (
+                                  <span
+                                    className="shrink-0 text-[10px] font-semibold tabular-nums text-muted-foreground"
+                                    title={`Seed ${team2Seed}`}
+                                  >
+                                    #{team2Seed}
+                                  </span>
+                                ) : null}
+                                <span className="truncate">{team2Name}</span>
+                              </span>
                               <span>
                                 {m.team_2_leg_1_points ?? "–"} /{" "}
                                 {m.team_2_leg_2_points ?? "–"} (

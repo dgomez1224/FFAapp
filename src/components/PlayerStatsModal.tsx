@@ -128,6 +128,13 @@ export function PlayerStatsModal({
 
   if (!isOpen) return null;
 
+  const mult = player.multiplier ?? 1;
+  /** Cup (and any row with multiplier>1) must match raw × multiplier; API sometimes sent wrong effective_points for promoted VC. */
+  const displayEffectivePoints =
+    showEffectivePoints && mult > 1
+      ? Math.round(Number(player.raw_points) * mult)
+      : player.effective_points;
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <Card className="max-w-md w-full max-h-[90vh] overflow-y-auto">
@@ -187,16 +194,16 @@ export function PlayerStatsModal({
                   <span className="text-muted-foreground">Raw Points</span>
                   <span className="font-semibold">{Math.round(player.raw_points)}</span>
                 </div>
-            {showEffectivePoints && player.multiplier > 1 && (
+            {showEffectivePoints && mult > 1 && (
               <div className="flex justify-between items-center border-b pb-2">
                 <span className="text-muted-foreground">Multiplier</span>
-                <span className="font-semibold text-amber-600">×{player.multiplier}</span>
+                <span className="font-semibold text-amber-600">×{mult}</span>
               </div>
             )}
             {showEffectivePoints && (
               <div className="flex justify-between items-center text-lg font-bold bg-green-50 dark:bg-green-950 p-2 rounded">
                 <span>Effective Points</span>
-                <span className="text-green-600 dark:text-green-400">{Math.round(player.effective_points)}</span>
+                <span className="text-green-600 dark:text-green-400">{Math.round(displayEffectivePoints)}</span>
               </div>
             )}
           </div>

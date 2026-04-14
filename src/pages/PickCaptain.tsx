@@ -274,7 +274,7 @@ export default function PickCaptain() {
         player_image_url: player.player_image_url ?? null,
         position: player.position,
         raw_points: livePts,
-        effective_points: player.is_captain ? livePts * 2 : livePts,
+        effective_points: Math.round(livePts * (player.multiplier ?? 1)),
         is_captain: player.is_captain,
         is_vice_captain: player.is_vice_captain,
         is_cup_captain: player.is_cup_captain,

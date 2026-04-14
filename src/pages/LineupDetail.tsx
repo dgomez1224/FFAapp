@@ -104,12 +104,13 @@ export default function LineupDetailPage() {
       const s = liveStats[player.player_id];
       const pos = player.position;
       const livePts = livePoints[player.player_id] ?? player.raw_points ?? 0;
+      const mult = player.multiplier ?? 1;
       setSelectedPlayer({
         player_id: player.player_id,
         player_name: player.player_name,
         position: pos,
         raw_points: livePts,
-        effective_points: player.is_captain ? livePts * 2 : livePts,
+        effective_points: Math.round(livePts * mult),
         is_captain: player.is_captain,
         is_vice_captain: player.is_vice_captain,
         is_cup_captain: player.is_cup_captain,

@@ -16,6 +16,7 @@ import pitchBg from "../assets/backgrounds/FPL Site Pitch.png";
 type LineupPlayer = {
 player_id: number;
 player_name: string;
+web_name?: string | null;
 player_image_url?: string | null;
 position: number;
 lineup_slot?: number | null;
@@ -362,6 +363,10 @@ const handlePlayerClick = async (player: PitchPlayer) => {
 const fullPlayer = team.lineup.find((p) => p.player_id === player.player_id);
 if (!fullPlayer) return;
 
+const mult = fullPlayer.multiplier ?? 1;
+const raw = fullPlayer.raw_points ?? 0;
+const effectiveFromMultiplier = mult > 1 ? Math.round(raw * mult) : fullPlayer.effective_points;
+
 try {
   const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/player-history?player_id=${encodeURIComponent(String(player.player_id))}`;
   const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
@@ -372,6 +377,7 @@ try {
 
   setSelectedPlayer({
     ...fullPlayer,
+    effective_points: effectiveFromMultiplier,
     player_image_url: fullPlayer.player_image_url ?? null,
     position: fullPlayer.position,
     history: (payload.history || []).map((h: any) => ({
@@ -396,6 +402,7 @@ try {
 } catch {
   setSelectedPlayer({
     ...fullPlayer,
+    effective_points: effectiveFromMultiplier,
     position: fullPlayer.position,
     history: [],
   });
@@ -723,6 +730,9 @@ const team2BenchPlayers = makeBench(team2Lineup);
 
 const openH2hPlayerModal = async (fullPlayer: LineupPlayer | undefined) => {
   if (!fullPlayer) return;
+  const multH = fullPlayer.multiplier ?? 1;
+  const rawH = fullPlayer.raw_points ?? 0;
+  const effectiveH = multH > 1 ? Math.round(rawH * multH) : fullPlayer.effective_points;
   try {
     const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/player-history?player_id=${encodeURIComponent(String(fullPlayer.player_id))}`;
     const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
@@ -732,6 +742,7 @@ const openH2hPlayerModal = async (fullPlayer: LineupPlayer | undefined) => {
     }
     setH2hModalPlayer({
       ...fullPlayer,
+      effective_points: effectiveH,
       player_image_url: fullPlayer.player_image_url ?? null,
       position: fullPlayer.position,
       history: (payload.history || []).map((h: any) => ({
@@ -756,6 +767,7 @@ const openH2hPlayerModal = async (fullPlayer: LineupPlayer | undefined) => {
   } catch {
     setH2hModalPlayer({
       ...fullPlayer,
+      effective_points: effectiveH,
       position: fullPlayer.position,
       history: [],
     });
