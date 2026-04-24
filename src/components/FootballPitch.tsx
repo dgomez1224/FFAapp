@@ -91,6 +91,7 @@ isViceCaptain,
 showCaptain,
 onPlayerClick,
 orientation,
+compact = false,
 }: {
 player: PitchPlayer;
 imageUrl: string | null;
@@ -99,6 +100,8 @@ isViceCaptain: boolean;
 showCaptain: boolean;
 onPlayerClick?: (p: PitchPlayer) => void;
 orientation: "portrait" | "landscape";
+/** Tighter tiles when many players share one half (e.g. cup full squad). */
+compact?: boolean;
 }) {
 const pitchLabel = pitchPlayerDisplayName(player);
 const pts = player.raw_points ?? 0;
@@ -108,10 +111,13 @@ pts >= 6  ? "bg-green-400 text-black" :
 pts >= 2  ? "bg-white text-black" :
 "bg-black/70 text-white";
 
-// Smaller cards in landscape (half-pitch is narrower)
-const cardSize = orientation === "landscape"
-? "w-7 h-9 sm:w-8 sm:h-11"
-: "w-7 h-10 sm:w-9 sm:h-12 md:w-10 md:h-14";
+// Smaller cards in landscape (half-pitch is narrower); optional compact mode for 12+ on one half
+const cardSize =
+  orientation === "landscape"
+    ? compact
+      ? "w-6 h-8 sm:w-7 sm:h-10"
+      : "w-7 h-9 sm:w-8 sm:h-11"
+    : "w-7 h-10 sm:w-9 sm:h-12 md:w-10 md:h-14";
 
 return (
 <button
@@ -249,6 +255,8 @@ orientation === "landscape" ? getLandscapePos(position, idx) : getPortraitPos(po
 const sharedHalfCoordinateLayer =
   noBackground && orientation === "landscape";
 
+const compactCards = orientation === "landscape" && players.length > 11;
+
 return (
 <div
 className="relative w-full h-full rounded-lg overflow-hidden pointer-events-none"
@@ -302,6 +310,7 @@ className="absolute inset-0 w-full h-full object-cover pointer-events-none selec
               showCaptain={showCaptain}
               onPlayerClick={onPlayerClick}
               orientation={orientation}
+              compact={compactCards}
             />
           </div>
         );

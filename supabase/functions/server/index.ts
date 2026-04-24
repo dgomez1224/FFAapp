@@ -1040,6 +1040,34 @@ function extractLivePointsMap(payload: any) {
 }
 
 /**
+ * Promote cup vice-captain only when the captain played 0 minutes and every
+ * draft live fixture for the captain's real-life club in this GW has finished.
+ */
+function shouldPromoteCupViceCaptain(opts: {
+  captainPlayerId: number;
+  viceCaptainPlayerId: number;
+  captainMinutes: number;
+  captainClubTeamId: number;
+  liveFixtures: any[];
+}): boolean {
+  const { captainPlayerId, viceCaptainPlayerId, captainMinutes, captainClubTeamId, liveFixtures } = opts;
+  if (captainPlayerId <= 0 || viceCaptainPlayerId <= 0) return false;
+  if (captainMinutes > 0) return false;
+  if (!captainClubTeamId || !liveFixtures?.length) return false;
+  const rel = liveFixtures.filter(
+    (f: any) => coerceNumber(f?.team_h, 0) === captainClubTeamId || coerceNumber(f?.team_a, 0) === captainClubTeamId,
+  );
+  if (rel.length === 0) return false;
+  return rel.every((f: any) => {
+    return (
+      f?.finished_provisional === true ||
+      f?.finished === true ||
+      coerceNumber(f?.minutes ?? f?.elapsed ?? f?.time, 0) >= 90
+    );
+  });
+}
+
+/**
  * Compute cup gameweek score for one team: squad (starters + bench) + captain bonus.
  * cup_gameweek_scores semantics: total_points column = gameweek_points; captain_points = raw captain; bench_points = bench.
  */
@@ -1049,6 +1077,7 @@ async function computeCupGameweekScore(
   liveMap: Record<number, number>,
   supabase: any,
   liveStatsMap?: Record<number, any>,
+  cupVicePromotionCtx?: { liveFixtures: any[]; elementTeamId: (elementId: number) => number },
 ): Promise<{ gameweek_points: number; captain_points: number; bench_points: number; captain_element_id: number } | null> {
   const entryId = String(team.entry_id ?? "").trim();
   if (!entryId) throw new Error(`no_entry_id for team ${team.id}`);
@@ -1078,8 +1107,18 @@ async function computeCupGameweekScore(
   const viceCaptainPlayerId = coerceNumber(captainRow?.vice_captain_player_id, 0);
   const statsMap = liveStatsMap ?? {};
   const captainMinutes = coerceNumber(statsMap[captainPlayerId]?.minutes, 0);
+  const captainClubTeamId = cupVicePromotionCtx?.elementTeamId(captainPlayerId) ?? 0;
   const promotedVice =
-    captainPlayerId > 0 && captainMinutes <= 0 && viceCaptainPlayerId > 0 ? viceCaptainPlayerId : 0;
+    cupVicePromotionCtx &&
+    shouldPromoteCupViceCaptain({
+      captainPlayerId,
+      viceCaptainPlayerId,
+      captainMinutes,
+      captainClubTeamId,
+      liveFixtures: cupVicePromotionCtx.liveFixtures,
+    })
+      ? viceCaptainPlayerId
+      : 0;
   const bonusPlayerId = promotedVice || captainPlayerId || viceCaptainPlayerId;
   const captain_points = bonusPlayerId > 0 ? (liveMap[bonusPlayerId] ?? 0) : 0;
   const gameweek_points = squad_points + captain_points;
@@ -1105,16 +1144,24 @@ async function scoreGroupStageGameweek(
   if (!teams?.length) throw new Error(`no_teams_found`);
   let liveMap: Record<number, number> = {};
   let liveStatsMap: Record<number, any> = {};
+  let liveFull: any = null;
   try {
-    const live = await fetchLiveGW(gw);
-    liveMap = extractLivePointsMap(live);
-    liveStatsMap = extractLivePlayerStatsMap(live);
+    liveFull = await fetchLiveGW(gw);
+    liveMap = extractLivePointsMap(liveFull);
+    liveStatsMap = extractLivePlayerStatsMap(liveFull);
   } catch (e: any) {
     throw new Error(`Failed to fetch live data for GW${gw}: ${e?.message ?? e}`);
   }
   if (!Object.keys(liveMap).length) {
     throw new Error(`Live data for GW${gw} returned empty points map`);
   }
+  const liveFixtures = normalizeDraftList<any>(liveFull?.fixtures ?? []);
+  const bootstrapForCup = await fetchBootstrap().catch(() => ({}));
+  const playerMapForCup = extractDraftPlayerMap(bootstrapForCup || {});
+  const cupVicePromotionCtx = {
+    liveFixtures,
+    elementTeamId: (elementId: number) => coerceNumber(playerMapForCup[elementId]?.team, 0),
+  };
   let scored = 0;
   const debugLog: string[] = [];
   debugLog.push(`liveMap keys: ${Object.keys(liveMap).length} teams: ${teams.length}`);
@@ -1122,7 +1169,7 @@ async function scoreGroupStageGameweek(
     debugLog.push(`loop team ${team.id} entry=${team.entry_id}`);
     let score: Awaited<ReturnType<typeof computeCupGameweekScore>>;
     try {
-      score = await computeCupGameweekScore(team, gw, liveMap, supabase, liveStatsMap);
+      score = await computeCupGameweekScore(team, gw, liveMap, supabase, liveStatsMap, cupVicePromotionCtx);
     } catch (e: any) {
       debugLog.push(`team ${team.id} entry=${team.entry_id}: ${e?.message}`);
       continue;
@@ -6506,6 +6553,131 @@ standingsByGameweek.get("/", async (c) => {
 // Bracket (Group Stage + Knockout)
 // --------------------
 
+const KNOCKOUT_MATCHUP_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * Fill knockout leg scores from live cup scoring when DB columns are still null/0.
+ * Uses the same rules as group-stage cup points (full squad + captain).
+ */
+async function enrichBracketMatchupsLiveCupScores(
+  supabase: any,
+  rounds: Array<{ round: string; matchups: any[] }>,
+  teamById: Record<string, { entry_id?: string | null }>,
+  currentGw: number | null,
+): Promise<Array<{ round: string; matchups: any[] }>> {
+  if (!rounds.length) return rounds;
+  const flat = rounds.flatMap((r) => r.matchups);
+  const gws = new Set<number>();
+  const teamIdsNeeded = new Set<string>();
+  for (const m of flat) {
+    if (!KNOCKOUT_MATCHUP_UUID_RE.test(String(m.id ?? ""))) continue;
+    if (!m.team_1_id || !m.team_2_id) continue;
+    teamIdsNeeded.add(String(m.team_1_id));
+    teamIdsNeeded.add(String(m.team_2_id));
+    const l1 = coerceNumber(m.leg_1_gameweek, 0);
+    const l2 = coerceNumber(m.leg_2_gameweek, 0);
+    if (l1 > 0) gws.add(l1);
+    if (l2 > 0) gws.add(l2);
+  }
+  if (teamIdsNeeded.size === 0) return rounds;
+
+  type GwCache = {
+    liveMap: Record<number, number>;
+    liveStatsMap: Record<number, any>;
+    ctx: { liveFixtures: any[]; elementTeamId: (elementId: number) => number };
+  };
+  const byGw: Record<number, GwCache | null> = {};
+  for (const gw of Array.from(gws).sort((a, b) => a - b)) {
+    if (currentGw != null && gw > currentGw) {
+      byGw[gw] = null;
+      continue;
+    }
+    try {
+      const livePayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${gw}/live`);
+      const liveMap = extractLivePointsMap(livePayload);
+      const liveStatsMap = extractLivePlayerStatsMap(livePayload);
+      if (!Object.keys(liveMap).length) {
+        byGw[gw] = null;
+        continue;
+      }
+      const liveFixtures = normalizeDraftList<any>(livePayload?.fixtures ?? []);
+      const boot = await fetchBootstrap().catch(() => ({}));
+      const pm = extractDraftPlayerMap(boot || {});
+      byGw[gw] = {
+        liveMap,
+        liveStatsMap,
+        ctx: {
+          liveFixtures,
+          elementTeamId: (elementId: number) => coerceNumber(pm[elementId]?.team, 0),
+        },
+      };
+    } catch {
+      byGw[gw] = null;
+    }
+  }
+
+  const scoreTeamAtGw = async (teamId: string, gw: number): Promise<number | null> => {
+    const pack = byGw[gw];
+    if (!pack) return null;
+    const row = teamById[teamId];
+    const entryId = row?.entry_id != null ? String(row.entry_id).trim() : "";
+    if (!entryId) return null;
+    try {
+      const s = await computeCupGameweekScore(
+        { id: teamId, entry_id: entryId },
+        gw,
+        pack.liveMap,
+        supabase,
+        pack.liveStatsMap,
+        pack.ctx,
+      );
+      return s ? Math.round(s.gameweek_points) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const scoresByGwTeam: Record<number, Record<string, number | null>> = {};
+  for (const gw of Array.from(gws).sort((a, b) => a - b)) {
+    if (!byGw[gw]) continue;
+    scoresByGwTeam[gw] = {};
+    for (const tid of teamIdsNeeded) {
+      scoresByGwTeam[gw][tid] = await scoreTeamAtGw(tid, gw);
+    }
+  }
+
+  return rounds.map((round) => ({
+    ...round,
+    matchups: round.matchups.map((m: any) => {
+      if (!KNOCKOUT_MATCHUP_UUID_RE.test(String(m.id ?? ""))) return m;
+      if (!m.team_1_id || !m.team_2_id) return m;
+      const l1 = coerceNumber(m.leg_1_gameweek, 0);
+      const l2 = coerceNumber(m.leg_2_gameweek, 0);
+      const db11 = m.team_1_leg_1_points;
+      const db12 = m.team_1_leg_2_points;
+      const db21 = m.team_2_leg_1_points;
+      const db22 = m.team_2_leg_2_points;
+      const live11 = l1 > 0 ? scoresByGwTeam[l1]?.[String(m.team_1_id)] : null;
+      const live12 = l2 > 0 ? scoresByGwTeam[l2]?.[String(m.team_1_id)] : null;
+      const live21 = l1 > 0 ? scoresByGwTeam[l1]?.[String(m.team_2_id)] : null;
+      const live22 = l2 > 0 ? scoresByGwTeam[l2]?.[String(m.team_2_id)] : null;
+      const pick = (db: any, lv: number | null | undefined) => {
+        if (lv != null && lv !== undefined) return lv;
+        if (db != null && db !== undefined) return coerceNumber(db, 0);
+        return null;
+      };
+      return {
+        ...m,
+        team_1_leg_1_points: pick(db11, live11),
+        team_1_leg_2_points: pick(db12, live12),
+        team_2_leg_1_points: pick(db21, live21),
+        team_2_leg_2_points: pick(db22, live22),
+      };
+    }),
+  }));
+}
+
 const bracket = new Hono();
 
 /** Display order for GET /bracket (Postgres string sort would put Final first). */
@@ -6652,16 +6824,34 @@ bracket.get("/", async (c) => {
         if (currentGw != null && currentGw >= startGW && currentGw <= endGW) {
           let liveMap: Record<number, number> = {};
           let liveStatsMap: Record<number, any> = {};
+          let livePayload: any = null;
           try {
-            const livePayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${currentGw}/live`);
+            livePayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${currentGw}/live`);
             liveMap = extractLivePointsMap(livePayload);
             liveStatsMap = extractLivePlayerStatsMap(livePayload);
           } catch {
             /* no live */
           }
+          let cupVicePromotionCtxBracket: { liveFixtures: any[]; elementTeamId: (elementId: number) => number } | undefined;
+          if (livePayload && Object.keys(liveMap).length > 0) {
+            const liveFixtures = normalizeDraftList<any>(livePayload?.fixtures ?? []);
+            const bootstrapBracket = await fetchBootstrap().catch(() => ({}));
+            const pmBracket = extractDraftPlayerMap(bootstrapBracket || {});
+            cupVicePromotionCtxBracket = {
+              liveFixtures,
+              elementTeamId: (elementId: number) => coerceNumber(pmBracket[elementId]?.team, 0),
+            };
+          }
           if (Object.keys(liveMap).length > 0) {
             for (const team of registeredTeams) {
-              const score = await computeCupGameweekScore(team, currentGw, liveMap, supabase, liveStatsMap);
+              const score = await computeCupGameweekScore(
+                team,
+                currentGw,
+                liveMap,
+                supabase,
+                liveStatsMap,
+                cupVicePromotionCtxBracket,
+              );
               if (!score) continue;
               if (!teamTotals[team.id]) {
                 teamTotals[team.id] = {
@@ -6843,6 +7033,13 @@ bracket.get("/", async (c) => {
           const ob = FFA_CUP_KNOCKOUT_ROUND_ORDER[b.round] ?? 99;
           return oa - ob || a.round.localeCompare(b.round);
         });
+
+      rounds = await enrichBracketMatchupsLiveCupScores(
+        supabase,
+        rounds,
+        teamMap,
+        bracketCurrentGw,
+      );
     }
 
     return c.json({
@@ -7269,16 +7466,31 @@ adminRefresh.post("/refresh-current-season", async (c) => {
     for (let gw = tournamentStartGw; gw <= currentGameweek; gw++) {
       let liveMap: Record<number, number> = {};
       let liveStatsMap: Record<number, any> = {};
+      let payload: any = null;
       try {
         const live = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${gw}/live`);
-        const payload = live;
+        payload = live;
         liveMap = extractLivePointsMap(payload);
         liveStatsMap = extractLivePlayerStatsMap(payload);
       } catch {
         continue;
       }
+      const liveFixturesRefresh = normalizeDraftList<any>(payload?.fixtures ?? []);
+      const bootstrapRefresh = await fetchBootstrap().catch(() => ({}));
+      const pmRefresh = extractDraftPlayerMap(bootstrapRefresh || {});
+      const cupVicePromotionCtxRefresh = {
+        liveFixtures: liveFixturesRefresh,
+        elementTeamId: (elementId: number) => coerceNumber(pmRefresh[elementId]?.team, 0),
+      };
       for (const team of teams) {
-        const score = await computeCupGameweekScore(team, gw, liveMap, supabase, liveStatsMap);
+        const score = await computeCupGameweekScore(
+          team,
+          gw,
+          liveMap,
+          supabase,
+          liveStatsMap,
+          cupVicePromotionCtxRefresh,
+        );
         if (!score || gw < tournamentStartGw) continue;
         const row = {
           team_id: team.id,
@@ -9519,10 +9731,21 @@ fixturesHub.get("/matchup", async (c) => {
         const cupCaptainId = cupSelection.captain;
         const cupViceId = cupSelection.vice;
         const captainMinutes = coerceNumber(liveStatsMap[cupCaptainId]?.minutes, 0);
-        const promotedVice = cupCaptainId > 0 && captainMinutes <= 0 && cupViceId > 0 ? cupViceId : 0;
+        const captainClubTeamId = coerceNumber(playerMap[cupCaptainId]?.team, 0);
+        const promotedVice =
+          type === "cup" &&
+          shouldPromoteCupViceCaptain({
+            captainPlayerId: cupCaptainId,
+            viceCaptainPlayerId: cupViceId,
+            captainMinutes,
+            captainClubTeamId,
+            liveFixtures,
+          })
+            ? cupViceId
+            : 0;
         const activeCaptainId = promotedVice || cupCaptainId || cupViceId;
         const isCupCaptain = type === "cup" && hasStarted && activeCaptainId > 0 && activeCaptainId === playerId;
-        const isCupVice = type === "cup" && cupViceId > 0 && cupViceId === playerId;
+        const isCupVice = type === "cup" && cupViceId > 0 && cupViceId === playerId && activeCaptainId !== cupViceId;
         const effectivePoints = rawPoints * (isCupCaptain ? 2 : 1);
         const playerTeamId = playerMap[playerId]?.team ?? null;
         const fixtureTiming = playerTeamId != null ? fixtureByTeamId[playerTeamId] : null;
@@ -9537,7 +9760,7 @@ fixturesHub.get("/matchup", async (c) => {
           lineup_slot: lineupSlot || null,
           is_bench: isBench,
           is_captain: !!pick.is_captain,
-          is_vice_captain: !!pick.is_vice_captain || isCupVice,
+          is_vice_captain: type === "cup" ? isCupVice : !!pick.is_vice_captain,
           is_cup_captain: isCupCaptain,
           raw_points: rawPoints,
           multiplier: isCupCaptain ? 2 : 1,
@@ -9643,6 +9866,89 @@ fixturesHub.get("/matchup", async (c) => {
       };
     })();
 
+    let cupTieSummary: {
+      leg_1_gameweek: number;
+      leg_2_gameweek: number;
+      team_1_leg_1: number | null;
+      team_1_leg_2: number | null;
+      team_2_leg_1: number | null;
+      team_2_leg_2: number | null;
+    } | null = null;
+    if (type === "cup" && cupRow && matchupId && team1?.entry_id && team2?.entry_id) {
+      const lg1 = coerceNumber(cupRow.leg_1_gameweek, 0);
+      const lg2 = coerceNumber(cupRow.leg_2_gameweek, 0);
+      const gwReq = Number(gameweek);
+      const fetchLegPairTotals = async (gw: number): Promise<{ t1: number; t2: number } | null> => {
+        if (!gw) return null;
+        try {
+          const liveP = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${gw}/live`).catch(() => null);
+          if (!liveP) return null;
+          const lm = extractLivePointsMap(liveP);
+          const lsm = extractLivePlayerStatsMap(liveP);
+          if (!Object.keys(lm).length) return null;
+          const lf = normalizeDraftList<any>(liveP?.fixtures ?? []);
+          const boot = await fetchBootstrap().catch(() => ({}));
+          const pm = extractDraftPlayerMap(boot || {});
+          const ctx = { liveFixtures: lf, elementTeamId: (eid: number) => coerceNumber(pm[eid]?.team, 0) };
+          const s1 = await computeCupGameweekScore(
+            { id: String(team1.id), entry_id: team1.entry_id },
+            gw,
+            lm,
+            supabase,
+            lsm,
+            ctx,
+          );
+          const s2 = await computeCupGameweekScore(
+            { id: String(team2.id), entry_id: team2.entry_id },
+            gw,
+            lm,
+            supabase,
+            lsm,
+            ctx,
+          );
+          if (!s1 || !s2) return null;
+          return { t1: Math.round(s1.gameweek_points), t2: Math.round(s2.gameweek_points) };
+        } catch {
+          return null;
+        }
+      };
+      let s1l1: number | null = null;
+      let s1l2: number | null = null;
+      let s2l1: number | null = null;
+      let s2l2: number | null = null;
+      if (lg1 === gwReq) {
+        s1l1 = Math.round(total1);
+        s2l1 = Math.round(total2);
+      } else if (lg1 > 0) {
+        const r = await fetchLegPairTotals(lg1);
+        if (r) {
+          s1l1 = r.t1;
+          s2l1 = r.t2;
+        }
+      }
+      if (lg2 === lg1) {
+        s1l2 = s1l1;
+        s2l2 = s2l1;
+      } else if (lg2 === gwReq) {
+        s1l2 = Math.round(total1);
+        s2l2 = Math.round(total2);
+      } else if (lg2 > 0) {
+        const r = await fetchLegPairTotals(lg2);
+        if (r) {
+          s1l2 = r.t1;
+          s2l2 = r.t2;
+        }
+      }
+      cupTieSummary = {
+        leg_1_gameweek: lg1,
+        leg_2_gameweek: lg2,
+        team_1_leg_1: s1l1,
+        team_1_leg_2: s1l2,
+        team_2_leg_1: s2l1,
+        team_2_leg_2: s2l2,
+      };
+    }
+
     return c.json({
       type,
       gameweek,
@@ -9654,6 +9960,7 @@ fixturesHub.get("/matchup", async (c) => {
         is_ongoing: gameweek === currentGw,
         has_started: hasStarted,
       },
+      cup_tie: cupTieSummary,
       team_1: {
         id: String(team1.id),
         manager_name: team1.manager_name,
@@ -9783,24 +10090,40 @@ fixturesHub.get("/lineup", async (c) => {
     }
     let liveMap: Record<number, number> = {};
     let liveStatsMap: Record<number, any> = {};
+    let liveFixturesLineup: any[] = [];
     try {
       const live = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${gameweek}/live`);
       liveMap = extractLivePointsMap(live);
       liveStatsMap = extractLivePlayerStatsMap(live);
+      liveFixturesLineup = normalizeDraftList<any>(live?.fixtures ?? []);
     } catch {
       try {
         const classicLive = await fetchJSON<any>(`${FPL_BASE_URL}/event/${gameweek}/live/`);
         liveMap = extractLivePointsMap(classicLive);
         liveStatsMap = extractLivePlayerStatsMap(classicLive);
+        liveFixturesLineup = normalizeDraftList<any>(classicLive?.fixtures ?? []);
       } catch {
         liveMap = {};
         liveStatsMap = {};
+        liveFixturesLineup = [];
       }
     }
 
     const hasStarted = gameweek <= currentGw;
     const captainMinutes = coerceNumber(liveStatsMap[captainPlayerId]?.minutes, 0);
-    const promotedVice = hasStarted && captainPlayerId > 0 && captainMinutes <= 0 && viceCaptainPlayerId > 0 ? viceCaptainPlayerId : 0;
+    const captainClubTeamIdLineup = coerceNumber(playerMap[captainPlayerId]?.team, 0);
+    const promotedVice =
+      type === "cup" &&
+      hasStarted &&
+      shouldPromoteCupViceCaptain({
+        captainPlayerId,
+        viceCaptainPlayerId,
+        captainMinutes,
+        captainClubTeamId: captainClubTeamIdLineup,
+        liveFixtures: liveFixturesLineup,
+      })
+        ? viceCaptainPlayerId
+        : 0;
     const activeCaptainId = promotedVice || captainPlayerId || viceCaptainPlayerId;
 
     const lineup = (picks.picks || []).map((pick: any) => {
@@ -9816,7 +10139,11 @@ fixturesHub.get("/lineup", async (c) => {
         (position === 2 && defensiveContributions >= 10) || (position >= 3 && position <= 4 && defensiveContributions >= 12);
       // Display: show captain badge on effective captain (selected, or promoted vice after GW started)
       const isCupCaptain = type === "cup" && activeCaptainId > 0 && playerId === activeCaptainId;
-      const isCupVice = type === "cup" && viceCaptainPlayerId > 0 && playerId === viceCaptainPlayerId;
+      const isCupVice =
+        type === "cup" &&
+        viceCaptainPlayerId > 0 &&
+        playerId === viceCaptainPlayerId &&
+        activeCaptainId !== viceCaptainPlayerId;
       const effectivePoints = rawPoints * (type === "cup" && activeCaptainId > 0 && playerId === activeCaptainId ? 2 : 1);
       return {
         player_id: playerId,
@@ -9827,7 +10154,7 @@ fixturesHub.get("/lineup", async (c) => {
         lineup_slot: lineupSlot || null,
         is_bench: isBench,
         is_captain: !!pick.is_captain,
-        is_vice_captain: !!pick.is_vice_captain || isCupVice,
+        is_vice_captain: type === "cup" ? isCupVice : !!pick.is_vice_captain,
         is_cup_captain: isCupCaptain,
         raw_points: rawPoints,
         multiplier: isCupCaptain ? 2 : 1,

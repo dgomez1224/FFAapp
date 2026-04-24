@@ -59,6 +59,15 @@ player_on_name: string;
 }>;
 };
 
+type CupTieSummary = {
+  leg_1_gameweek: number;
+  leg_2_gameweek: number;
+  team_1_leg_1: number | null;
+  team_1_leg_2: number | null;
+  team_2_leg_1: number | null;
+  team_2_leg_2: number | null;
+};
+
 type Payload = {
 type: "league" | "cup";
 gameweek: number;
@@ -72,6 +81,8 @@ round: string | null;
 matchup_id: string | null;
 has_started?: boolean;
 };
+/** Two-leg aggregate (cup knockout with matchupId); null for league or missing data. */
+cup_tie?: CupTieSummary | null;
 team_1: TeamDetail;
 team_2: TeamDetail;
 team_1_opponents_by_gw?: Record<string, string>;
@@ -130,11 +141,13 @@ type,
 gw,
 teamId,
 opponentsByGw,
+matchupId,
 }: {
 type: "league" | "cup";
 gw: number;
 teamId: string;
 opponentsByGw?: Record<string, string>;
+matchupId?: string | null;
 }) {
 const navigate = useNavigate();
 const entries = Object.entries(opponentsByGw || {});
@@ -152,7 +165,10 @@ const goTo = (targetGw: number | undefined) => {
 if (!targetGw) return;
 const opp = opponentsByGw?.[String(targetGw)];
 if (!opp) return;
-navigate(`/matchup/${type}/${targetGw}/${teamId}/${opp}`);
+const sp = new URLSearchParams();
+if (matchupId) sp.set("matchupId", matchupId);
+const qs = sp.toString();
+navigate(`/matchup/${type}/${targetGw}/${teamId}/${opp}${qs ? `?${qs}` : ""}`);
 };
 
 return (
@@ -430,7 +446,10 @@ return (
   )}
 
   <PlayerStatsTable
-    players={(team.lineup || []).map((p) => ({
+    players={(matchupType === "cup"
+      ? [...(team.lineup || [])].sort((a, b) => (a.lineup_slot ?? 99) - (b.lineup_slot ?? 99))
+      : team.lineup || []
+    ).map((p) => ({
       id: p.player_id,
       name: p.player_name,
       image_url: p.player_image_url ?? null,
@@ -457,8 +476,14 @@ return (
     showEffectivePoints={matchupType === "cup"}
   />
 
-  {/* Substitute/Bench info */}
-  {starters.length > 0 && (
+  {matchupType === "cup" && (team.lineup || []).length > 0 && (
+    <p className="mt-4 text-xs text-muted-foreground">
+      Full squad (slots 1–15) — all players score. Order follows draft lineup slots below.
+    </p>
+  )}
+
+  {/* Substitute/Bench info — league only (cup lists full squad on pitch + table) */}
+  {matchupType === "league" && starters.length > 0 && (
     <div className="mt-4 text-sm space-y-2">
       <p className="text-muted-foreground">
         {starters.filter((p) => p.position === 1).length} GK • {starters.filter((p) => p.position === 2).length} DEF •{" "}
@@ -664,14 +689,34 @@ if (loading) return <Card className="p-6"><p className="text-sm text-muted-foreg
 if (error || !data) return <Card className="p-6"><p className="text-sm text-destructive">{error || "Failed to load matchup"}</p></Card>;
 
 const currentGwNum = Number(gameweek);
-const minGw = data.type === "cup" ? 29 : 1;
-const maxGw = data.current_gameweek ?? currentGwNum;
+const matchupIdFromUrl = searchParams.get("matchupId");
+const opponentGwKeys =
+  data.team_1_opponents_by_gw != null
+    ? Object.keys(data.team_1_opponents_by_gw)
+        .map((k) => Number(k))
+        .filter((n) => Number.isFinite(n))
+        .sort((a, b) => a - b)
+    : [];
+const isCupKnockoutByMatchupId =
+  data.type === "cup" && !!matchupIdFromUrl && opponentGwKeys.length >= 1;
 const isCupGroupStage = data.type === "cup" && currentGwNum >= 29 && currentGwNum <= 32;
+
+let minGw = data.type === "cup" ? 29 : 1;
+let maxGw = data.current_gameweek ?? currentGwNum;
+if (isCupKnockoutByMatchupId) {
+  minGw = opponentGwKeys[0]!;
+  maxGw = opponentGwKeys[opponentGwKeys.length - 1]!;
+}
+
 const goToGw = (gw: number) => {
-if (gw < minGw || gw > maxGw) return;
-setGw1(gw);
-setGw2(gw);
-navigate(`/matchup/${type}/${gw}/${team1}/${team2}`);
+  if (gw < minGw || gw > maxGw) return;
+  setGw1(gw);
+  setGw2(gw);
+  const sp = new URLSearchParams();
+  const mid = searchParams.get("matchupId");
+  if (mid) sp.set("matchupId", mid);
+  const qs = sp.toString();
+  navigate(`/matchup/${type}/${gw}/${team1}/${team2}${qs ? `?${qs}` : ""}`);
 };
 
 const team1Lineup = gw1 === Number(gameweek) ? data.team_1.lineup : (team1Data ?? data.team_1).lineup;
@@ -723,10 +768,35 @@ is_auto_subbed_on: p.is_auto_subbed_on,
 is_auto_subbed_off: p.is_auto_subbed_off,
 }));
 
-const team1PitchPlayers = makeStarters(team1Lineup);
-const team2PitchPlayers = makeStarters(team2Lineup);
-const team1BenchPlayers = makeBench(team1Lineup);
-const team2BenchPlayers = makeBench(team2Lineup);
+/** Cup: entire squad on the pitch (slots 1–15), same card mapping as starters. */
+const makeFullSquadPitch = (lineup: typeof team1Lineup): PitchPlayer[] =>
+(lineup || [])
+.sort((a, b) => (a.lineup_slot ?? 99) - (b.lineup_slot ?? 99))
+.map((p) => ({
+player_id: p.player_id,
+player_name: p.player_name,
+web_name: p.web_name ?? null,
+player_image_url: p.player_image_url || null,
+position: p.position,
+raw_points: p.raw_points,
+effective_points: p.effective_points,
+is_captain: p.is_captain,
+is_vice_captain: p.is_vice_captain,
+is_cup_captain: p.is_cup_captain,
+multiplier: p.multiplier,
+goals_scored: p.goals_scored,
+assists: p.assists,
+minutes: p.minutes,
+is_auto_subbed_on: p.is_auto_subbed_on,
+is_auto_subbed_off: p.is_auto_subbed_off,
+}));
+
+const team1PitchPlayers =
+  data.type === "cup" ? makeFullSquadPitch(team1Lineup) : makeStarters(team1Lineup);
+const team2PitchPlayers =
+  data.type === "cup" ? makeFullSquadPitch(team2Lineup) : makeStarters(team2Lineup);
+const team1BenchPlayers = data.type === "cup" ? [] : makeBench(team1Lineup);
+const team2BenchPlayers = data.type === "cup" ? [] : makeBench(team2Lineup);
 
 const openH2hPlayerModal = async (fullPlayer: LineupPlayer | undefined) => {
   if (!fullPlayer) return;
@@ -790,10 +860,34 @@ const leagueLiveTeam2 = (data.team_2.lineup || []).reduce(
 (sum, player) => sum + (player.is_bench ? 0 : Number(player.effective_points || 0)),
 0,
 );
-const team1Points = data.type === "league" ? leagueLiveTeam1 : (data.matchup.team_1_points ?? data.matchup.live_team_1_points);
-const team2Points = data.type === "league" ? leagueLiveTeam2 : (data.matchup.team_2_points ?? data.matchup.live_team_2_points);
+/** Cup: header uses live lineup totals (captain + full squad). DB leg columns are often 0 until synced — `??` would keep 0. */
+const team1Points =
+  data.type === "league"
+    ? leagueLiveTeam1
+    : Number(data.matchup.live_team_1_points ?? data.matchup.team_1_points ?? 0);
+const team2Points =
+  data.type === "league"
+    ? leagueLiveTeam2
+    : Number(data.matchup.live_team_2_points ?? data.matchup.team_2_points ?? 0);
 const team1Score = Math.round(team1Points);
 const team2Score = Math.round(team2Points);
+
+const legFmt = (n: number | null | undefined) =>
+  n == null || Number.isNaN(Number(n)) ? "–" : String(Math.round(Number(n)));
+const cupTie = data.cup_tie;
+const cupAgg1 =
+  cupTie == null
+    ? null
+    : (cupTie.team_1_leg_1 ?? 0) + (cupTie.team_1_leg_2 ?? 0);
+const cupAgg2 =
+  cupTie == null
+    ? null
+    : (cupTie.team_2_leg_1 ?? 0) + (cupTie.team_2_leg_2 ?? 0);
+const cupTieHasAnyLeg =
+  cupTie != null &&
+  [cupTie.team_1_leg_1, cupTie.team_1_leg_2, cupTie.team_2_leg_1, cupTie.team_2_leg_2].some(
+    (v) => v != null && !Number.isNaN(Number(v)),
+  );
 
 return (
 <div className="space-y-6">
@@ -860,6 +954,18 @@ return (
         <p className="text-4xl font-bold">
           {team1Score} - {team2Score}
         </p>
+        <p className="text-[11px] text-muted-foreground mt-0.5">This gameweek (cup squad total)</p>
+        {data.type === "cup" && cupTie && cupTieHasAnyLeg && (
+          <div className="mt-2 rounded-md border bg-muted/30 px-2 py-1.5 text-xs">
+            <p className="font-medium text-foreground">
+              Tie aggregate: {cupAgg1 ?? "–"} – {cupAgg2 ?? "–"}
+            </p>
+            <p className="text-[11px] text-muted-foreground mt-0.5 tabular-nums">
+              GW{cupTie.leg_1_gameweek}: {legFmt(cupTie.team_1_leg_1)} / {legFmt(cupTie.team_2_leg_1)} · GW
+              {cupTie.leg_2_gameweek}: {legFmt(cupTie.team_1_leg_2)} / {legFmt(cupTie.team_2_leg_2)}
+            </p>
+          </div>
+        )}
         {data.matchup.round && <p className="text-xs text-muted-foreground mt-1">{data.matchup.round}</p>}
       </div>
       <div>
@@ -901,7 +1007,13 @@ return (
       {data.type === "league" || !isCupGroupStage ? (
         <GwNav label={data.team_1.manager_name} gw={gw1} minGw={minGw} maxGw={maxGw} onChange={setGw1} />
       ) : null}
-      <ViewMatchupLink type={data.type} gw={gw1} teamId={team1!} opponentsByGw={data.team_1_opponents_by_gw} />
+      <ViewMatchupLink
+        type={data.type}
+        gw={gw1}
+        teamId={team1!}
+        opponentsByGw={data.team_1_opponents_by_gw}
+        matchupId={matchupIdFromUrl}
+      />
       <TeamPitchDisplay
         team={gw1 === Number(gameweek) ? data.team_1 : (team1Data ?? data.team_1)}
         matchupType={data.type}
@@ -916,7 +1028,13 @@ return (
       {data.type === "league" || !isCupGroupStage ? (
         <GwNav label={data.team_2.manager_name} gw={gw2} minGw={minGw} maxGw={maxGw} onChange={setGw2} />
       ) : null}
-      <ViewMatchupLink type={data.type} gw={gw2} teamId={team2!} opponentsByGw={data.team_2_opponents_by_gw} />
+      <ViewMatchupLink
+        type={data.type}
+        gw={gw2}
+        teamId={team2!}
+        opponentsByGw={data.team_2_opponents_by_gw}
+        matchupId={matchupIdFromUrl}
+      />
       <TeamPitchDisplay
         team={gw2 === Number(gameweek) ? data.team_2 : (team2Data ?? data.team_2)}
         matchupType={data.type}

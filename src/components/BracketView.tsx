@@ -6,7 +6,7 @@
  */
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { Card } from "./ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
@@ -281,6 +281,21 @@ function resolveKnockoutSeed(
   const s = team?.seed;
   if (s != null && s > 0) return s;
   return null;
+}
+
+const CUP_MATCHUP_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** Opens cup matchup detail (captains, full XI, two-leg DB row) — same as league H2H page with type=cup + matchupId. */
+function cupKnockoutMatchupPath(m: Matchup): string | null {
+  const tid1 = m.team_1_id;
+  const tid2 = m.team_2_id;
+  if (!tid1 || !tid2) return null;
+  if (!CUP_MATCHUP_UUID_RE.test(String(m.id))) return null;
+  const leg1 = Number(m.leg_1_gameweek);
+  if (!Number.isFinite(leg1) || leg1 < 1) return null;
+  const q = new URLSearchParams({ matchupId: String(m.id) });
+  return `/matchup/cup/${leg1}/${tid1}/${tid2}?${q.toString()}`;
 }
 
 const LEGACY_BRACKETS: Array<{ season: string; src: string }> = [
@@ -812,20 +827,28 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
                       const team1Seed = resolveKnockoutSeed(m.team_1_id, m.team_1, standingRankByTeamId);
                       const team2Seed = resolveKnockoutSeed(m.team_2_id, m.team_2, standingRankByTeamId);
 
+                      const legPts = (v: unknown) =>
+                        v == null || v === "" || Number.isNaN(Number(v)) ? null : Math.round(Number(v));
+                      const t1l1 = legPts(m.team_1_leg_1_points);
+                      const t1l2 = legPts(m.team_1_leg_2_points);
+                      const t2l1 = legPts(m.team_2_leg_1_points);
+                      const t2l2 = legPts(m.team_2_leg_2_points);
+                      const legStr = (n: number | null) => (n == null ? "–" : String(n));
                       const team1Agg =
-                        (m.team_1_leg_1_points ?? 0) +
-                        (m.team_1_leg_2_points ?? 0);
+                        (t1l1 ?? 0) + (t1l2 ?? 0);
                       const team2Agg =
-                        (m.team_2_leg_1_points ?? 0) +
-                        (m.team_2_leg_2_points ?? 0);
+                        (t2l1 ?? 0) + (t2l2 ?? 0);
 
                       const winner = m.winner_id;
+                      const matchupPath = cupKnockoutMatchupPath(m);
+                      const cardShellClass =
+                        "relative w-64 rounded-md border bg-card p-3 text-xs" +
+                        (matchupPath
+                          ? " transition-colors hover:border-primary hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          : "");
 
-                      return (
-                        <div
-                          key={m.id}
-                          className="relative w-64 rounded-md border bg-card p-3 text-xs"
-                        >
+                      const cardBody = (
+                        <>
                           <div className="mb-1 flex items-center justify-between">
                             <span className="font-medium">
                               Match {m.matchup_number}
@@ -854,10 +877,8 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
                                 ) : null}
                                 <span className="truncate">{team1Name}</span>
                               </span>
-                              <span>
-                                {m.team_1_leg_1_points ?? "–"} /{" "}
-                                {m.team_1_leg_2_points ?? "–"} (
-                                {isNaN(team1Agg) ? "–" : team1Agg})
+                              <span className="tabular-nums">
+                                {legStr(t1l1)} / {legStr(t1l2)} ({legStr(t1l1) === "–" && legStr(t1l2) === "–" ? "–" : team1Agg})
                               </span>
                             </div>
                             <div
@@ -879,10 +900,8 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
                                 ) : null}
                                 <span className="truncate">{team2Name}</span>
                               </span>
-                              <span>
-                                {m.team_2_leg_1_points ?? "–"} /{" "}
-                                {m.team_2_leg_2_points ?? "–"} (
-                                {isNaN(team2Agg) ? "–" : team2Agg})
+                              <span className="tabular-nums">
+                                {legStr(t2l1)} / {legStr(t2l2)} ({legStr(t2l1) === "–" && legStr(t2l2) === "–" ? "–" : team2Agg})
                               </span>
                             </div>
                           </div>
@@ -891,6 +910,21 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
                               Tie-breaker: {m.tie_breaker_applied}
                             </div>
                           )}
+                        </>
+                      );
+
+                      return matchupPath ? (
+                        <Link
+                          key={m.id}
+                          to={matchupPath}
+                          className={`block ${cardShellClass}`}
+                          aria-label={`Cup ${round.round} match ${m.matchup_number}, gameweeks ${m.leg_1_gameweek} and ${m.leg_2_gameweek}`}
+                        >
+                          {cardBody}
+                        </Link>
+                      ) : (
+                        <div key={m.id} className={cardShellClass}>
+                          {cardBody}
                         </div>
                       );
                     })}

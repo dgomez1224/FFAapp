@@ -158,7 +158,7 @@ export default function LineupDetailPage() {
   if (error || !data) return <Card className="p-6"><p className="text-sm text-destructive">{error || "Failed to load lineup"}</p></Card>;
 
   const players: PitchPlayer[] = data.lineup.map((p) => ({ ...p }));
-  const gwNum = data.gameweek;
+  const gwNum = Number(data.gameweek);
   const isCup = data.type === "cup";
   const opponentsByGw = data.opponents_by_gw || {};
   let gwKeys = Object.keys(opponentsByGw)
@@ -166,9 +166,8 @@ export default function LineupDetailPage() {
     .filter((n) => Number.isFinite(n))
     .sort((a, b) => a - b);
   const isCupGroupStage = isCup && gwNum >= 29 && gwNum <= 32;
-  if (isCupGroupStage && gwKeys.length === 0) {
-    // Fallback: treat the first four cup gameweeks as 29–32 even if
-    // we don't have explicit opponents yet, so lineup navigation works.
+  if (isCupGroupStage) {
+    // Fixed group window so Prev/Next always work (API may omit or stringify opponent keys).
     gwKeys = [29, 30, 31, 32];
   }
   const currentIdx = gwKeys.indexOf(gwNum);
