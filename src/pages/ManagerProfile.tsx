@@ -56,6 +56,8 @@ export default function ManagerProfile() {
     opponent: string;
     manager_points: number | null;
     opponent_points: number | null;
+    cup_aggregate_manager?: number | null;
+    cup_aggregate_opponent?: number | null;
     result: "W" | "D" | "L" | null;
     is_completed: boolean;
     href: string | null;
@@ -145,6 +147,8 @@ export default function ManagerProfile() {
           opponent: string;
           manager_points: number | null;
           opponent_points: number | null;
+          cup_aggregate_manager?: number | null;
+          cup_aggregate_opponent?: number | null;
           result: "W" | "D" | "L" | null;
           is_completed: boolean;
           href: string | null;
@@ -578,11 +582,28 @@ export default function ManagerProfile() {
                             : <>{data.manager_name} vs {fixture.opponent}<span className="ml-2 text-xs text-zinc-600">[{fixture.competition}]</span></>}
                         </div>
                         <div className="px-3 py-3 text-sm font-semibold text-right">
-                          {fixture.status === "not_started"
-                            ? <span className="text-zinc-400 italic">Not started</span>
-                            : fixture.opponent_points == null
-                              ? (fixture.manager_points == null ? "—" : `${Math.round(fixture.manager_points)}`)
-                              : `${fixture.manager_points ?? 0} - ${fixture.opponent_points ?? 0}`}
+                          {fixture.status === "not_started" ? (
+                            <span className="text-zinc-400 italic">Not started</span>
+                          ) : fixture.opponent_points == null && fixture.manager_points != null ? (
+                            `${Math.round(fixture.manager_points)}`
+                          ) : fixture.manager_points == null && fixture.opponent_points == null ? (
+                            <span className="text-zinc-500">—</span>
+                          ) : (
+                            <div className="flex flex-col items-end gap-0.5">
+                              <span>
+                                {fixture.manager_points == null ? "—" : Math.round(fixture.manager_points)} —{" "}
+                                {fixture.opponent_points == null ? "—" : Math.round(fixture.opponent_points)}
+                              </span>
+                              {fixture.competition === "Cup" &&
+                                fixture.cup_aggregate_manager != null &&
+                                fixture.cup_aggregate_opponent != null && (
+                                  <span className="text-[11px] font-normal text-zinc-600">
+                                    Tie {Math.round(fixture.cup_aggregate_manager)} —{" "}
+                                    {Math.round(fixture.cup_aggregate_opponent)}
+                                  </span>
+                                )}
+                            </div>
+                          )}
                         </div>
                       </Link>
                         );

@@ -21,10 +21,10 @@ const FPL_BASE_URL = "https://fantasy.premierleague.com/api";
 const DRAFT_BASE_URL = "https://draft.premierleague.com/api";
 // Legacy: used only for David's personal FPL entry endpoints.
 // Use resolveLeagueId() for all league-level API calls.
-const STATIC_ENTRY_ID = "164475";
-const DEFAULT_DRAFT_LEAGUE_ID = 28469;
-const CURRENT_SEASON = "2025/26";
-const CUP_START_GAMEWEEK = 29;
+const STATIC_ENTRY_ID = "132262";
+const DEFAULT_DRAFT_LEAGUE_ID = 23236;
+const CURRENT_SEASON = "2026/27";
+const CUP_START_GAMEWEEK = 27;
 /** Inclusive last group-stage GW: four gameweeks (start … start+3). */
 function groupStageEndGameweek(startGw: number): number {
   return startGw + 3;
@@ -562,8 +562,122 @@ async function ensureKnockoutMatchupsIfNeeded(
   return "inserted";
 }
 
-/** Quarter-final labels in DB (legacy seeds used "QF"). */
-const KNOCKOUT_QF_ROUND_LABELS = new Set(["Quarter-finals", "QF"]);
+/** Normalize DB knockout round strings (case, spacing, unicode dashes). */
+function normalizeKnockoutRoundKey(round: unknown): string {
+  return String(round ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/\s+/g, " ");
+}
+
+function isKnockoutQuarterFinalRound(round: unknown): boolean {
+  const r = normalizeKnockoutRoundKey(round);
+  return r === "quarter-finals" || r === "qf";
+}
+
+function isKnockoutSemiFinalRound(round: unknown): boolean {
+  const compact = normalizeKnockoutRoundKey(round).replace(/-/g, "");
+  return compact === "semifinals" || compact === "semi finals";
+}
+
+function isKnockoutFinalRound(round: unknown): boolean {
+  return normalizeKnockoutRoundKey(round) === "final";
+}
+
+/**
+ * Resolve the cup `tournaments` row. When `requireMatchups` is true, only rows that already have
+ * `matchups` qualify (for persistence/advancement). Otherwise falls back to active / latest row so
+ * knockout seeding can run before any matchups exist.
+ */
+async function resolveCupTournamentRowWithMatchups(
+  supabase: any,
+  opts?: { requireMatchups?: boolean },
+): Promise<any | null> {
+  const requireMatchupsOnly = opts?.requireMatchups === true;
+  const sel =
+    "id, entry_id, name, season, status, start_gameweek, group_stage_gameweeks, is_active, created_at";
+  const hasMatchups = async (tournamentId: string): Promise<boolean> => {
+    try {
+      const { count, error } = await supabase
+        .from("matchups")
+        .select("id", { count: "exact", head: true })
+        .eq("tournament_id", tournamentId);
+      if (error) return false;
+      return (count ?? 0) > 0;
+    } catch {
+      return false;
+    }
+  };
+  const loadFull = async (id: string) => {
+    const { data } = await supabase.from("tournaments").select(sel).eq("id", id).maybeSingle();
+    return data ?? null;
+  };
+
+  try {
+    const { data: active } = await supabase
+      .from("tournaments")
+      .select("id")
+      .eq("is_active", true)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const aid = active?.id != null ? String(active.id) : "";
+    if (aid && (await hasMatchups(aid))) return await loadFull(aid);
+  } catch {
+    /* ignore */
+  }
+
+  try {
+    const { data: candidates } = await supabase
+      .from("tournaments")
+      .select("id")
+      .eq("entry_id", STATIC_ENTRY_ID)
+      .order("created_at", { ascending: false })
+      .limit(25);
+    for (const row of candidates || []) {
+      const id = row?.id != null ? String(row.id) : "";
+      if (!id) continue;
+      if (await hasMatchups(id)) return await loadFull(id);
+    }
+  } catch {
+    /* ignore */
+  }
+
+  if (requireMatchupsOnly) return null;
+
+  try {
+    const { data: activeBare } = await supabase
+      .from("tournaments")
+      .select(sel)
+      .eq("is_active", true)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (activeBare) return activeBare;
+  } catch {
+    /* ignore */
+  }
+  try {
+    const { data: latestBare } = await supabase
+      .from("tournaments")
+      .select(sel)
+      .eq("entry_id", STATIC_ENTRY_ID)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (latestBare) return latestBare;
+  } catch {
+    /* ignore */
+  }
+
+  return null;
+}
+
+async function resolveCupTournamentIdForKnockout(supabase: any): Promise<string | null> {
+  const row = await resolveCupTournamentRowWithMatchups(supabase, { requireMatchups: true });
+  return row?.id ? String(row.id) : null;
+}
 
 /**
  * When only quarter-final rows exist (e.g. partial legacy seed), insert Semi-finals + Final
@@ -580,16 +694,16 @@ async function ensureKnockoutSfFinalPlaceholdersIfNeeded(
     .eq("tournament_id", tournamentId);
   if (error || !rows?.length) return;
 
-  const qfCount = rows.filter((m: any) => KNOCKOUT_QF_ROUND_LABELS.has(String(m.round))).length;
+  const qfCount = rows.filter((m: any) => isKnockoutQuarterFinalRound(m.round)).length;
   if (qfCount < 1) return;
 
   const expectedSemi = Math.max(1, Math.floor(qfCount / 2));
   const semiNums = new Set(
     rows
-      .filter((m: any) => m.round === "Semi-finals")
+      .filter((m: any) => isKnockoutSemiFinalRound(m.round))
       .map((m: any) => coerceNumber(m.matchup_number, 0)),
   );
-  const hasFinal = rows.some((m: any) => m.round === "Final");
+  const hasFinal = rows.some((m: any) => isKnockoutFinalRound(m.round));
 
   const sfLeg1 = endGW + 3;
   const sfLeg2 = endGW + 4;
@@ -628,6 +742,451 @@ async function ensureKnockoutSfFinalPlaceholdersIfNeeded(
   const { error: insErr } = await supabase.from("matchups").insert(inserts);
   if (insErr && insErr.code !== "23505") {
     console.error("ensureKnockoutSfFinalPlaceholders: insert failed", insErr.message);
+  }
+}
+
+type KnockoutGwPack = {
+  liveMap: Record<number, number>;
+  liveStatsMap: Record<number, any>;
+  ctx: { liveFixtures: any[]; elementTeamId: (elementId: number) => number };
+};
+
+/** Draft live with classic-FPL fallback; fixtures list only when Draft payload exists. */
+async function buildKnockoutGwLivePack(gw: number): Promise<KnockoutGwPack | null> {
+  try {
+    let livePayload: any = null;
+    try {
+      livePayload = await fetchLiveGW(gw);
+    } catch {
+      livePayload = null;
+    }
+    let liveMap = extractLivePointsMap(livePayload);
+    let liveStatsMap = extractLivePlayerStatsMap(livePayload);
+    if (!Object.keys(liveMap).length) {
+      try {
+        const classic = await fetchJSON<any>(`${FPL_BASE_URL}/event/${gw}/live/`);
+        liveMap = extractLivePointsMap(classic);
+        liveStatsMap = extractLivePlayerStatsMap(classic);
+        livePayload = classic;
+      } catch {
+        /* ignore */
+      }
+    }
+    if (!Object.keys(liveMap).length) return null;
+    const liveFixtures = normalizeDraftList<any>(livePayload?.fixtures ?? []);
+    const boot = await fetchBootstrap().catch(() => ({}));
+    const pm = extractDraftPlayerMap(boot || {});
+    return {
+      liveMap,
+      liveStatsMap,
+      ctx: {
+        liveFixtures,
+        elementTeamId: (eid: number) => coerceNumber(pm[eid]?.team, 0),
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist cup leg scores from Draft live into `matchups`, then set QF/SF winners and
+ * fill Semi-finals (QF i vs QF (n−i+1)) and Final (SF1 vs SF2) when prior rounds are calendar-complete.
+ */
+async function persistKnockoutCupLegScoresAndAdvanceRounds(
+  supabase: any,
+  tournamentId: string,
+  currentGw: number,
+  depth = 0,
+): Promise<void> {
+  if (depth > 4) return;
+
+  const draftGame = await fetchDraftGame().catch(() => null);
+  const calendarGw = Math.max(coerceNumber(currentGw, 0), coerceNumber(draftGame?.current_event, 0));
+  const currentEventFinished = Boolean(draftGame?.current_event_finished);
+
+  const { data: rows, error } = await supabase
+    .from("matchups")
+    .select("*")
+    .eq("tournament_id", tournamentId);
+  if (error || !rows?.length) return;
+
+  const teamIds = new Set<string>();
+  for (const m of rows as any[]) {
+    if (m.team_1_id) teamIds.add(String(m.team_1_id));
+    if (m.team_2_id) teamIds.add(String(m.team_2_id));
+  }
+  if (!teamIds.size) return;
+
+  const { data: teamRows } = await supabase
+    .from("teams")
+    .select("id, entry_id")
+    .in("id", Array.from(teamIds));
+  const entryByTeamId: Record<string, string> = {};
+  for (const t of teamRows || []) {
+    const e = String((t as any).entry_id ?? "").trim();
+    if ((t as any).id && e) entryByTeamId[String((t as any).id)] = e;
+  }
+
+  const scoreCalendarGw = Math.max(coerceNumber(currentGw, 0), calendarGw);
+  const gwsNeeded = new Set<number>();
+  for (const m of rows as any[]) {
+    const l1 = coerceNumber(m.leg_1_gameweek, 0);
+    const l2 = coerceNumber(m.leg_2_gameweek, 0);
+    if (l1 > 0 && l1 <= scoreCalendarGw) gwsNeeded.add(l1);
+    if (l2 > 0 && l2 <= scoreCalendarGw) gwsNeeded.add(l2);
+  }
+
+  const packByGw: Record<number, KnockoutGwPack | null> = {};
+  for (const gw of Array.from(gwsNeeded).sort((a, b) => a - b)) {
+    packByGw[gw] = await buildKnockoutGwLivePack(gw);
+  }
+
+  const scoreTeamAtGw = async (teamId: string | null, gw: number): Promise<number | null> => {
+    if (!teamId) return null;
+    const entryId = entryByTeamId[String(teamId)];
+    if (!entryId) return null;
+    const pack = packByGw[gw];
+    if (pack && Object.keys(pack.liveMap).length > 0) {
+      try {
+        const s = await computeCupGameweekScore(
+          { id: String(teamId), entry_id: entryId },
+          gw,
+          pack.liveMap,
+          supabase,
+          pack.liveStatsMap,
+          pack.ctx,
+        );
+        if (s) return Math.round(s.gameweek_points);
+      } catch {
+        /* fall through to picks */
+      }
+    }
+    try {
+      const picksPayload = await fetchDraftPicksForEntries([entryId], gw, true);
+      const rawPicks = picksPayload?.picks ?? [];
+      const liveMapSynth: Record<number, number> = {};
+      for (const p of normalizeDraftList<any>(rawPicks)) {
+        const el = parsePositiveInt(p?.element ?? p?.element_id ?? p?.player_id);
+        const pts = Number.isFinite(Number(p?.points))
+          ? Number(p.points)
+          : Number.isFinite(Number(p?.total_points))
+          ? Number(p.total_points)
+          : Number.isFinite(Number(p?.stats?.total_points))
+          ? Number(p.stats.total_points)
+          : null;
+        if (el && pts != null) liveMapSynth[el] = pts;
+      }
+      if (!Object.keys(liveMapSynth).length) return null;
+      const s = await computeCupGameweekScore(
+        { id: String(teamId), entry_id: entryId },
+        gw,
+        liveMapSynth,
+        supabase,
+        {},
+        undefined,
+      );
+      return s ? Math.round(s.gameweek_points) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const isoNow = () => new Date().toISOString();
+
+  for (const m of rows as any[]) {
+    if (!m.team_1_id || !m.team_2_id) continue;
+    const l1 = coerceNumber(m.leg_1_gameweek, 0);
+    const l2 = coerceNumber(m.leg_2_gameweek, 0);
+    const patch: Record<string, unknown> = {};
+    if (l1 > 0 && l1 <= scoreCalendarGw) {
+      const s11 = await scoreTeamAtGw(m.team_1_id, l1);
+      const s21 = await scoreTeamAtGw(m.team_2_id, l1);
+      if (s11 != null) patch.team_1_leg_1_points = s11;
+      if (s21 != null) patch.team_2_leg_1_points = s21;
+    }
+    if (l2 > 0 && l2 <= scoreCalendarGw) {
+      const s12 = await scoreTeamAtGw(m.team_1_id, l2);
+      const s22 = await scoreTeamAtGw(m.team_2_id, l2);
+      if (s12 != null) patch.team_1_leg_2_points = s12;
+      if (s22 != null) patch.team_2_leg_2_points = s22;
+    }
+    if (Object.keys(patch).length > 0) {
+      patch.updated_at = isoNow();
+      await supabase.from("matchups").update(patch).eq("id", m.id);
+    }
+  }
+
+  const { data: fresh } = await supabase.from("matchups").select("*").eq("tournament_id", tournamentId);
+  if (!fresh?.length) return;
+
+  /** Prefer DB leg columns; fill gaps with the same scoring path used for persistence. */
+  const matchupAggregateTotals = async (m: any): Promise<{ t1: number; t2: number } | null> => {
+    const l1 = coerceNumber(m.leg_1_gameweek, 0);
+    const l2 = coerceNumber(m.leg_2_gameweek, 0);
+    let a1: number | null = m.team_1_leg_1_points;
+    let a2: number | null = m.team_1_leg_2_points;
+    let b1: number | null = m.team_2_leg_1_points;
+    let b2: number | null = m.team_2_leg_2_points;
+    if (a1 == null && l1 > 0 && l1 <= scoreCalendarGw) a1 = await scoreTeamAtGw(m.team_1_id, l1);
+    if (b1 == null && l1 > 0 && l1 <= scoreCalendarGw) b1 = await scoreTeamAtGw(m.team_2_id, l1);
+    if (a2 == null && l2 > 0 && l2 <= scoreCalendarGw) a2 = await scoreTeamAtGw(m.team_1_id, l2);
+    if (b2 == null && l2 > 0 && l2 <= scoreCalendarGw) b2 = await scoreTeamAtGw(m.team_2_id, l2);
+    if (a1 == null || a2 == null || b1 == null || b2 == null) return null;
+    return {
+      t1: coerceNumber(a1, 0) + coerceNumber(a2, 0),
+      t2: coerceNumber(b1, 0) + coerceNumber(b2, 0),
+    };
+  };
+
+  /**
+   * Winner when aggregate exists and either Draft calendar has moved past the tie's second leg,
+   * or our scoring GW has caught up to both legs (handles bootstrap/`current_event` lag vs real GW).
+   */
+  const winnerOfAsync = async (m: any): Promise<string | null> => {
+    if (!m.team_1_id || !m.team_2_id) return null;
+    const leg1Gw = coerceNumber(m.leg_1_gameweek, 0);
+    const leg2Gw = coerceNumber(m.leg_2_gameweek, 0);
+    if (leg1Gw <= 0 || leg2Gw <= 0) return null;
+
+    const agg = await matchupAggregateTotals(m);
+    if (!agg) return null;
+
+    const scoringCaughtUp = scoreCalendarGw >= leg1Gw && scoreCalendarGw >= leg2Gw;
+    const calendarPastSecondLeg =
+      calendarGw > leg2Gw || (calendarGw === leg2Gw && currentEventFinished);
+
+    if (!calendarPastSecondLeg && !scoringCaughtUp) return null;
+
+    if (agg.t1 > agg.t2) return String(m.team_1_id);
+    if (agg.t2 > agg.t1) return String(m.team_2_id);
+
+    // Aggregate draw: second-leg points, then first leg, then stable fallback (team_1 side).
+    const leg2A = coerceNumber(m.team_1_leg_2_points, -1);
+    const leg2B = coerceNumber(m.team_2_leg_2_points, -1);
+    if (leg2A >= 0 && leg2B >= 0 && leg2A !== leg2B) {
+      return leg2A > leg2B ? String(m.team_1_id) : String(m.team_2_id);
+    }
+    const leg1A = coerceNumber(m.team_1_leg_1_points, -1);
+    const leg1B = coerceNumber(m.team_2_leg_1_points, -1);
+    if (leg1A >= 0 && leg1B >= 0 && leg1A !== leg1B) {
+      return leg1A > leg1B ? String(m.team_1_id) : String(m.team_2_id);
+    }
+    return String(m.team_1_id);
+  };
+
+  const qfSorted = (fresh as any[])
+    .filter((m) => isKnockoutQuarterFinalRound(m.round))
+    .sort((a, b) => coerceNumber(a.matchup_number, 0) - coerceNumber(b.matchup_number, 0));
+  const qfCount = qfSorted.length;
+
+  for (const m of qfSorted) {
+    const w = await winnerOfAsync(m);
+    if (!w) continue;
+    if (String(m.winner_id ?? "") === w && String(m.status) === "completed") continue;
+    await supabase
+      .from("matchups")
+      .update({ winner_id: w, status: "completed", updated_at: isoNow() })
+      .eq("id", m.id);
+  }
+
+  const { data: fresh2 } = await supabase.from("matchups").select("*").eq("tournament_id", tournamentId);
+  if (!fresh2?.length) return;
+
+  const qfList = (fresh2 as any[])
+    .filter((m) => isKnockoutQuarterFinalRound(m.round))
+    .sort((a, b) => coerceNumber(a.matchup_number, 0) - coerceNumber(b.matchup_number, 0));
+  const qfN = qfList.length;
+  const winByQfNum: Record<number, string> = {};
+  for (const m of qfList) {
+    let w = await winnerOfAsync(m);
+    if (!w && m.winner_id) w = String(m.winner_id);
+    const num = coerceNumber(m.matchup_number, 0);
+    if (w && num > 0) winByQfNum[num] = w;
+  }
+
+  const allQfResolved =
+    qfN >= 2 &&
+    Array.from({ length: qfN }, (_, i) => winByQfNum[i + 1]).every((id) => !!id);
+
+  const semiRows = (fresh2 as any[])
+    .filter((m) => isKnockoutSemiFinalRound(m.round))
+    .sort((a, b) => coerceNumber(a.matchup_number, 0) - coerceNumber(b.matchup_number, 0));
+
+  let sfTeamsUpdated = false;
+  if (allQfResolved && qfN >= 2) {
+    for (const sf of semiRows) {
+      const i = coerceNumber(sf.matchup_number, 0);
+      if (i < 1) continue;
+      const opp = qfN - i + 1;
+      const t1 = winByQfNum[i];
+      const t2 = winByQfNum[opp];
+      if (!t1 || !t2) continue;
+      if (String(sf.team_1_id ?? "") === t1 && String(sf.team_2_id ?? "") === t2) continue;
+      sfTeamsUpdated = true;
+      await supabase
+        .from("matchups")
+        .update({
+          team_1_id: t1,
+          team_2_id: t2,
+          status: "pending",
+          updated_at: isoNow(),
+        })
+        .eq("id", sf.id);
+    }
+  }
+
+  const { data: fresh3 } = await supabase.from("matchups").select("*").eq("tournament_id", tournamentId);
+  if (!fresh3?.length) return;
+
+  const semiSorted = (fresh3 as any[])
+    .filter((m) => isKnockoutSemiFinalRound(m.round))
+    .sort((a, b) => coerceNumber(a.matchup_number, 0) - coerceNumber(b.matchup_number, 0));
+  const sfWinByNum: Record<number, string> = {};
+  for (const m of semiSorted) {
+    let w = await winnerOfAsync(m);
+    if (!w && m.winner_id) w = String(m.winner_id);
+    const num = coerceNumber(m.matchup_number, 0);
+    if (w && num > 0) sfWinByNum[num] = w;
+  }
+
+  const semiCount = semiSorted.length;
+  const finalRow = (fresh3 as any[]).find((m) => isKnockoutFinalRound(m.round));
+
+  let finalTeamsUpdated = false;
+  if (finalRow && semiCount >= 2) {
+    const allSfResolved =
+      Array.from({ length: semiCount }, (_, i) => sfWinByNum[i + 1]).every((id) => !!id);
+    if (allSfResolved) {
+      const f1 = sfWinByNum[1];
+      const f2 = sfWinByNum[2];
+      if (f1 && f2) {
+        const same =
+          String(finalRow.team_1_id ?? "") === f1 && String(finalRow.team_2_id ?? "") === f2;
+        if (!same) {
+          finalTeamsUpdated = true;
+          await supabase
+            .from("matchups")
+            .update({
+              team_1_id: f1,
+              team_2_id: f2,
+              status: "pending",
+              updated_at: isoNow(),
+            })
+            .eq("id", finalRow.id);
+        }
+      }
+    }
+  }
+
+  if (sfTeamsUpdated || finalTeamsUpdated) {
+    await persistKnockoutCupLegScoresAndAdvanceRounds(supabase, tournamentId, currentGw, depth + 1);
+  }
+}
+
+function cupKnockoutAggregateFromMatchup(m: any): { team_1: number; team_2: number } | null {
+  const a1 = m.team_1_leg_1_points;
+  const a2 = m.team_1_leg_2_points;
+  const b1 = m.team_2_leg_1_points;
+  const b2 = m.team_2_leg_2_points;
+  if (a1 == null || a2 == null || b1 == null || b2 == null) return null;
+  return {
+    team_1: coerceNumber(a1, 0) + coerceNumber(a2, 0),
+    team_2: coerceNumber(b1, 0) + coerceNumber(b2, 0),
+  };
+}
+
+/** Merge live cup leg scores into matchup rows for GET /fixtures (does not write DB). */
+async function applyLiveCupLegScoresToMatchupsForFixtures(
+  matchups: any[],
+  teamsData: any[],
+  scoreCalendarGw: number,
+  supabase: any,
+): Promise<void> {
+  if (!matchups?.length || scoreCalendarGw < 1) return;
+  const entryByTeamId: Record<string, string> = {};
+  for (const t of teamsData || []) {
+    const e = String((t as any).entry_id ?? "").trim();
+    if ((t as any).id != null && e) entryByTeamId[String((t as any).id)] = e;
+  }
+  const gwsNeeded = new Set<number>();
+  for (const m of matchups) {
+    if (!m.team_1_id || !m.team_2_id) continue;
+    const l1 = coerceNumber(m.leg_1_gameweek, 0);
+    const l2 = coerceNumber(m.leg_2_gameweek, 0);
+    if (l1 > 0 && l1 <= scoreCalendarGw) gwsNeeded.add(l1);
+    if (l2 > 0 && l2 <= scoreCalendarGw) gwsNeeded.add(l2);
+  }
+  const packByGw: Record<number, KnockoutGwPack | null> = {};
+  for (const gw of Array.from(gwsNeeded).sort((a, b) => a - b)) {
+    packByGw[gw] = await buildKnockoutGwLivePack(gw);
+  }
+  const scoreTeamAtGw = async (teamId: string | null, gw: number): Promise<number | null> => {
+    if (!teamId) return null;
+    const entryId = entryByTeamId[String(teamId)];
+    if (!entryId) return null;
+    const pack = packByGw[gw];
+    if (pack && Object.keys(pack.liveMap).length > 0) {
+      try {
+        const s = await computeCupGameweekScore(
+          { id: String(teamId), entry_id: entryId },
+          gw,
+          pack.liveMap,
+          supabase,
+          pack.liveStatsMap,
+          pack.ctx,
+        );
+        if (s) return Math.round(s.gameweek_points);
+      } catch {
+        /* fall through */
+      }
+    }
+    try {
+      const picksPayload = await fetchDraftPicksForEntries([entryId], gw, true);
+      const rawPicks = picksPayload?.picks ?? [];
+      const liveMapSynth: Record<number, number> = {};
+      for (const p of normalizeDraftList<any>(rawPicks)) {
+        const el = parsePositiveInt(p?.element ?? p?.element_id ?? p?.player_id);
+        const pts = Number.isFinite(Number(p?.points))
+          ? Number(p.points)
+          : Number.isFinite(Number(p?.total_points))
+          ? Number(p.total_points)
+          : Number.isFinite(Number(p?.stats?.total_points))
+          ? Number(p.stats.total_points)
+          : null;
+        if (el && pts != null) liveMapSynth[el] = pts;
+      }
+      if (!Object.keys(liveMapSynth).length) return null;
+      const s = await computeCupGameweekScore(
+        { id: String(teamId), entry_id: entryId },
+        gw,
+        liveMapSynth,
+        supabase,
+        {},
+        undefined,
+      );
+      return s ? Math.round(s.gameweek_points) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  for (const m of matchups) {
+    if (!m.team_1_id || !m.team_2_id) continue;
+    const l1 = coerceNumber(m.leg_1_gameweek, 0);
+    const l2 = coerceNumber(m.leg_2_gameweek, 0);
+    if (l1 > 0 && l1 <= scoreCalendarGw) {
+      const s11 = await scoreTeamAtGw(m.team_1_id, l1);
+      const s21 = await scoreTeamAtGw(m.team_2_id, l1);
+      if (s11 != null) m.team_1_leg_1_points = s11;
+      if (s21 != null) m.team_2_leg_1_points = s21;
+    }
+    if (l2 > 0 && l2 <= scoreCalendarGw) {
+      const s12 = await scoreTeamAtGw(m.team_1_id, l2);
+      const s22 = await scoreTeamAtGw(m.team_2_id, l2);
+      if (s12 != null) m.team_1_leg_2_points = s12;
+      if (s22 != null) m.team_2_leg_2_points = s22;
+    }
   }
 }
 
@@ -6726,17 +7285,7 @@ bracket.get("/", async (c) => {
       draftNameByManagerKey = {};
     }
 
-    const { data: tournament, error: tournamentError } = await supabase
-      .from("tournaments")
-      .select("id, entry_id, name, season, status, start_gameweek, group_stage_gameweeks, is_active, created_at")
-      .eq("entry_id", STATIC_ENTRY_ID)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (tournamentError && tournamentError.code !== "PGRST116") {
-      return jsonError(c, 500, "Failed to fetch tournament", tournamentError.message);
-    }
+    const tournament = await resolveCupTournamentRowWithMatchups(supabase);
 
     // Fetch all teams from the database (all league members are auto-registered)
     const { data: teams, error: teamsError } = await supabase
@@ -6955,6 +7504,25 @@ bracket.get("/", async (c) => {
 
     if (tournament?.id != null && endGW != null) {
       await ensureKnockoutSfFinalPlaceholdersIfNeeded(supabase, tournament.id, endGW);
+    }
+
+    let knockoutAdvanceGw = bracketCurrentGw;
+    if (tournament?.id && (knockoutAdvanceGw == null || knockoutAdvanceGw < 1)) {
+      try {
+        knockoutAdvanceGw = await resolveCurrentGameweek();
+      } catch {
+        knockoutAdvanceGw = null;
+      }
+    }
+    const dgKnockout = await fetchDraftGame().catch(() => null);
+    if (knockoutAdvanceGw != null && dgKnockout?.current_event != null) {
+      knockoutAdvanceGw = Math.max(
+        coerceNumber(knockoutAdvanceGw, 0),
+        coerceNumber(dgKnockout.current_event, 0),
+      );
+    }
+    if (tournament?.id != null && knockoutAdvanceGw != null && knockoutAdvanceGw > 0) {
+      await persistKnockoutCupLegScoresAndAdvanceRounds(supabase, tournament.id, knockoutAdvanceGw);
     }
 
     let rounds: Array<{ round: string; matchups: any[] }> = [];
@@ -8744,18 +9312,44 @@ fixturesHub.get("/", async (c) => {
       // Continue with persisted rows.
     }
 
-    const [teamsRes, cupRes] = await Promise.all([
-      supabase
-        .from("teams")
-        .select("id, entry_id, entry_name, manager_name"),
-      supabase
-        .from("matchups")
-        .select("id, round, matchup_number, team_1_id, team_2_id, leg_1_gameweek, leg_2_gameweek, team_1_leg_1_points, team_1_leg_2_points, team_2_leg_1_points, team_2_leg_2_points"),
-    ]);
+    const teamsRes = await supabase
+      .from("teams")
+      .select("id, entry_id, entry_name, manager_name");
 
     if (teamsRes.error) {
       return jsonError(c, 500, "Failed to fetch teams", teamsRes.error.message);
     }
+
+    try {
+      const cupTournamentId = await resolveCupTournamentIdForKnockout(supabase);
+      if (cupTournamentId) {
+        let knockoutAdvanceGw = await resolveCurrentGameweek().catch(() => null as number | null);
+        const dgKnockout = await fetchDraftGame().catch(() => null);
+        if (knockoutAdvanceGw != null && dgKnockout?.current_event != null) {
+          knockoutAdvanceGw = Math.max(
+            coerceNumber(knockoutAdvanceGw, 0),
+            coerceNumber(dgKnockout.current_event, 0),
+          );
+        }
+        if (knockoutAdvanceGw == null || knockoutAdvanceGw < 1) {
+          try {
+            knockoutAdvanceGw = await resolveCurrentGameweek();
+          } catch {
+            knockoutAdvanceGw = null;
+          }
+        }
+        if (knockoutAdvanceGw != null && knockoutAdvanceGw > 0) {
+          await persistKnockoutCupLegScoresAndAdvanceRounds(supabase, cupTournamentId, knockoutAdvanceGw);
+        }
+      }
+    } catch {
+      // Non-fatal: fixtures still serve league + cup from DB.
+    }
+
+    const cupRes = await supabase
+      .from("matchups")
+      .select("id, round, matchup_number, team_1_id, team_2_id, leg_1_gameweek, leg_2_gameweek, team_1_leg_1_points, team_1_leg_2_points, team_2_leg_1_points, team_2_leg_2_points");
+
     if (cupRes.error && cupRes.error.code !== "PGRST116") {
       return jsonError(c, 500, "Failed to fetch cup fixtures", cupRes.error.message);
     }
@@ -8912,6 +9506,13 @@ fixturesHub.get("/", async (c) => {
       rankMap = buildDraftRankMapWithLive(draftMatches, currentGw, liveEntryPointsForRank);
     }
 
+    await applyLiveCupLegScoresToMatchupsForFixtures(
+      cupRes.data || [],
+      teamsRes.data || [],
+      currentGw,
+      supabase,
+    );
+
     const leagueByGw: Record<string, any[]> = {};
     draftMatches.forEach((m: any) => {
       const gw = coerceNumber(m.event);
@@ -8947,6 +9548,7 @@ fixturesHub.get("/", async (c) => {
 
     const cupByGw: Record<string, any[]> = {};
     (cupRes.data || []).forEach((m: any) => {
+      if (!m.team_1_id || !m.team_2_id) return;
       const team1Raw = teamsMap[String(m.team_1_id)] || null;
       const team2Raw = teamsMap[String(m.team_2_id)] || null;
       const draftTeam1 = draftNameByDbTeamId[String(m.team_1_id)] || null;
@@ -8985,10 +9587,13 @@ fixturesHub.get("/", async (c) => {
           team_2_points: m.team_2_leg_2_points,
         },
       ];
+      const agg = cupKnockoutAggregateFromMatchup(m);
       rows.forEach((row) => {
         if (!row.gameweek) return;
         const key = String(row.gameweek);
         if (!cupByGw[key]) cupByGw[key] = [];
+        const tp1 = row.team_1_points;
+        const tp2 = row.team_2_points;
         cupByGw[key].push({
           fixture_id: `cup-${m.id}-leg-${row.leg}`,
           matchup_id: m.id,
@@ -8998,8 +9603,10 @@ fixturesHub.get("/", async (c) => {
           gameweek: row.gameweek,
           team_1_id: m.team_1_id,
           team_2_id: m.team_2_id,
-          team_1_points: coerceNumber(row.team_1_points, 0),
-          team_2_points: coerceNumber(row.team_2_points, 0),
+          team_1_points: tp1 != null ? coerceNumber(tp1, 0) : null,
+          team_2_points: tp2 != null ? coerceNumber(tp2, 0) : null,
+          cup_aggregate_team_1: agg?.team_1 ?? null,
+          cup_aggregate_team_2: agg?.team_2 ?? null,
           team_1_rank: row.gameweek === currentGw ? rankMap[String(m.team_1_id)] || null : null,
           team_2_rank: row.gameweek === currentGw ? rankMap[String(m.team_2_id)] || null : null,
           team_1: team1,

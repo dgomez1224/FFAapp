@@ -22,13 +22,21 @@ type Fixture = {
   leg?: number;
   team_1_id: string;
   team_2_id: string;
-  team_1_points: number;
-  team_2_points: number;
+  team_1_points: number | null;
+  team_2_points: number | null;
+  cup_aggregate_team_1?: number | null;
+  cup_aggregate_team_2?: number | null;
   team_1_rank?: number | null;
   team_2_rank?: number | null;
   team_1: TeamRef | null;
   team_2: TeamRef | null;
 };
+
+function fmtFixturePoints(v: number | null | undefined): string {
+  if (v == null || v === "") return "—";
+  const n = Number(v);
+  return Number.isFinite(n) ? String(Math.round(n)) : "—";
+}
 
 type FixtureGroup = {
   gameweek: number;
@@ -118,7 +126,16 @@ function FixtureRow({ fixture }: { fixture: Fixture }) {
             <FootballPitch players={convert(last1)} onPlayerClick={handlePlayerClick} showCaptain={true} />
           </div>
           <div className="text-center">
-            <div className="text-2xl font-bold">{fixture.team_1_points} - {fixture.team_2_points}</div>
+            <div className="text-2xl font-bold">
+              {fmtFixturePoints(fixture.team_1_points)} — {fmtFixturePoints(fixture.team_2_points)}
+            </div>
+            {fixture.type === "cup" &&
+              fixture.cup_aggregate_team_1 != null &&
+              fixture.cup_aggregate_team_2 != null && (
+              <div className="text-xs text-muted-foreground">
+                Tie {fmtFixturePoints(fixture.cup_aggregate_team_1)} — {fmtFixturePoints(fixture.cup_aggregate_team_2)}
+              </div>
+            )}
             {fixture.type === "cup" && fixture.leg ? (
               <div className="text-xs text-muted-foreground">{fixture.round || "Cup"} • Leg {fixture.leg}</div>
             ) : null}
@@ -162,7 +179,16 @@ function FixtureRow({ fixture }: { fixture: Fixture }) {
         </div>
       </div>
       <div className="text-center font-semibold">
-        {fixture.team_1_points} - {fixture.team_2_points}
+        <div>
+          {fmtFixturePoints(fixture.team_1_points)} — {fmtFixturePoints(fixture.team_2_points)}
+        </div>
+        {fixture.type === "cup" &&
+          fixture.cup_aggregate_team_1 != null &&
+          fixture.cup_aggregate_team_2 != null && (
+          <div className="text-xs font-normal text-muted-foreground">
+            Tie {fmtFixturePoints(fixture.cup_aggregate_team_1)} — {fmtFixturePoints(fixture.cup_aggregate_team_2)}
+          </div>
+        )}
         {fixture.type === "cup" && fixture.leg ? (
           <div className="text-xs text-muted-foreground">{fixture.round || "Cup"} • Leg {fixture.leg}</div>
         ) : null}
