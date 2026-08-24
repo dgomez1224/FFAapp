@@ -15,6 +15,8 @@ import { EDGE_FUNCTIONS_BASE, CURRENT_SEASON } from "../lib/constants";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { useManagerCrestMap } from "../lib/useManagerCrestMap";
 import cupTrophy from "../assets/trophies/FFA Cup Icon + Year.png";
+import { DivisionBadge } from "./DivisionBadge";
+import { getManagerDivision } from "../lib/divisions";
 
 /** Cup knockout starts at GW 29; use for lineup links from bracket. */
 const CUP_LINEUP_GAMEWEEK = 29;
@@ -171,24 +173,46 @@ function buildSyntheticKnockoutRounds(
     team_2: null,
   });
 
-  const semiCount = Math.max(1, Math.floor(pairCount / 2));
-  const semiMatchups = Array.from({ length: semiCount }, (_, i) =>
-    tbd(`preview-sf-${i + 1}`, "Semi-finals", i + 1),
-  );
+  const hasRoundOf16 = pairCount > 4;
+  const firstRoundName = hasRoundOf16 ? "Round of 16" : "Quarter-finals";
+  qfMatchups.forEach((m) => {
+    m.round = firstRoundName;
+  });
+
+  const laterRounds: BracketRound[] = [];
+  if (hasRoundOf16) {
+    const qfCount = Math.max(1, Math.floor(pairCount / 2));
+    laterRounds.push({
+      round: "Quarter-finals",
+      matchups: Array.from({ length: qfCount }, (_, i) =>
+        tbd(`preview-qf-${i + 1}`, "Quarter-finals", i + 1),
+      ),
+    });
+  }
+  const semiCount = hasRoundOf16
+    ? Math.max(1, Math.floor(pairCount / 4))
+    : Math.max(1, Math.floor(pairCount / 2));
+  laterRounds.push({
+    round: "Semi-finals",
+    matchups: Array.from({ length: semiCount }, (_, i) =>
+      tbd(`preview-sf-${i + 1}`, "Semi-finals", i + 1),
+    ),
+  });
 
   return [
-    { round: "Quarter-finals", matchups: qfMatchups },
-    { round: "Semi-finals", matchups: semiMatchups },
+    { round: firstRoundName, matchups: qfMatchups },
+    ...laterRounds,
     { round: "Final", matchups: [tbd("preview-final", "Final", 1)] },
   ];
 }
 
 /** Column order (legacy DB uses "QF"). */
 const DISPLAY_ROUND_ORDER: Record<string, number> = {
-  "Quarter-finals": 1,
-  QF: 1,
-  "Semi-finals": 2,
-  Final: 3,
+  "Round of 16": 1,
+  "Quarter-finals": 2,
+  QF: 2,
+  "Semi-finals": 3,
+  Final: 4,
 };
 
 function isQfRoundLabel(round: string): boolean {
@@ -482,29 +506,35 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
   }, [contextLoading, showLegacySelector, selectedSeason, refreshBracketTrigger]);
 
   const renderEmptyBracket = () => {
-    // Simple 8-team knockout skeleton: 4 quarter-finals, 2 semis, 1 final.
+    // 20-team cup: top 16 into Round of 16, then QF / SF / Final.
+    const last16 = [1, 2, 3, 4, 5, 6, 7, 8];
     const quarterfinals = [1, 2, 3, 4];
     const semifinals = [1, 2];
+    const placeholderMatch = (key: string, n: number) => (
+      <div key={key} className="w-48 rounded-md border bg-background/80 p-2">
+        <div className="mb-1 text-[10px] uppercase tracking-wide">Match {n}</div>
+        <div className="space-y-1">
+          <div className="flex items-center justify-between gap-2">
+            <span className="truncate">TBD</span>
+            <span className="text-[10px]">– / – (–)</span>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <span className="truncate">TBD</span>
+            <span className="text-[10px]">– / – (–)</span>
+          </div>
+        </div>
+      </div>
+    );
 
     return (
       <div className="mt-2 flex gap-6 overflow-x-auto text-xs text-muted-foreground">
         <div className="space-y-2">
+          <div className="text-center text-[11px] font-semibold uppercase">Round of 16</div>
+          {last16.map((n) => placeholderMatch(`r16-${n}`, n))}
+        </div>
+        <div className="space-y-2">
           <div className="text-center text-[11px] font-semibold uppercase">Quarter-finals</div>
-          {quarterfinals.map((n) => (
-            <div key={`qf-${n}`} className="w-48 rounded-md border bg-background/80 p-2">
-              <div className="mb-1 text-[10px] uppercase tracking-wide">Match {n}</div>
-              <div className="space-y-1">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate">TBD</span>
-                  <span className="text-[10px]">– / – (–)</span>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate">TBD</span>
-                  <span className="text-[10px]">– / – (–)</span>
-                </div>
-              </div>
-            </div>
-          ))}
+          {quarterfinals.map((n) => placeholderMatch(`qf-${n}`, n))}
         </div>
 
         <div className="space-y-2">
@@ -749,7 +779,14 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
                             <span>{team.entry_name}</span>
                           </div>
                         </TableCell>
-                        <TableCell>{team.manager_name}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <span>{team.manager_name}</span>
+                            {getManagerDivision(team.manager_name) ? (
+                              <DivisionBadge division={getManagerDivision(team.manager_name)!} />
+                            ) : null}
+                          </div>
+                        </TableCell>
                         <TableCell className="text-right font-medium">
                           {team.total_points ?? 0}
                         </TableCell>
@@ -783,7 +820,7 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
               <div className="mb-3">
                 <h2 className="text-lg font-semibold">FFA Cup Group Stage</h2>
                 <p className="text-sm text-muted-foreground">
-                  All {group.registeredCount} league members are auto-registered. Tournament begins at gameweek 29.
+                  All {group.registeredCount} league members across both divisions are auto-registered. Tournament begins at gameweek {group.start_gameweek ?? 27}.
                 </p>
               </div>
               <p className="text-sm text-muted-foreground">

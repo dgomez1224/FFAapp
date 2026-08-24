@@ -23,6 +23,7 @@ const DRAFT_BASE_URL = "https://draft.premierleague.com/api";
 // Use resolveLeagueId() for all league-level API calls.
 const STATIC_ENTRY_ID = "132262";
 const DEFAULT_DRAFT_LEAGUE_ID = 23236;
+const DEFAULT_DIVISION_TWO_LEAGUE_ID = 31913;
 const CURRENT_SEASON = "2026/27";
 const CUP_START_GAMEWEEK = 27;
 /** Inclusive last group-stage GW: four gameweeks (start … start+3). */
@@ -46,6 +47,16 @@ const PLACEMENT_POINTS: Record<number, number> = {
   8: -30,
   9: -60,
   10: -90,
+  11: -100,
+  12: -110,
+  13: -120,
+  14: -130,
+  15: -140,
+  16: -150,
+  17: -160,
+  18: -170,
+  19: -180,
+  20: -190,
 };
 const PPG_MAX = 3;
 const PPG_K = 1.4;
@@ -55,10 +66,17 @@ const ALPHA = 0.1;
 const VALID_MANAGERS = [
   "PATRICK", "MATT", "MARCO", "LENNART", "CHRIS",
   "IAN", "HENRI", "DAVID", "MAX", "BENJI",
+  "ANDREW", "BRENDAN", "CONNOR", "LUKE", "KARIM",
+  "JORDAN", "ROHUN", "ZACH", "SEBASTIAN", "GRANT",
 ] as const;
 const VALID_MANAGER_SET = new Set<string>(VALID_MANAGERS);
+const DIVISION_ONE_MANAGERS = new Set<string>(VALID_MANAGERS.slice(0, 10));
+const DIVISION_TWO_MANAGERS = new Set<string>(VALID_MANAGERS.slice(10));
+type DivisionKey = "division_one" | "division_two";
+const VALID_DIVISIONS = new Set<string>(["division_one", "division_two"]);
 const MANAGER_CANONICAL_ALIASES: Record<string, string> = {
   MATTHEW: "MATT",
+  SEB: "SEBASTIAN",
 };
 
 // ── Cache Layer ───────────────────────────────────────────────────────────────
@@ -75,8 +93,8 @@ function isFresh<T>(entry: CacheEntry<T> | null | undefined, ttl: number): boole
 
 let gameCache:              CacheEntry<any> | null = null;
 let bootstrapCache:         CacheEntry<any> | null = null;
-let leagueDetailsCache:     CacheEntry<any> | null = null;
-let elementStatusCache:     CacheEntry<any> | null = null;
+let leagueDetailsCache:     Record<number, CacheEntry<any>> = {};
+let elementStatusCache:     Record<number, CacheEntry<any>> = {};
 let playerInsightsCache:    CacheEntry<any> | null = null;
 let liveCache:              Record<number, CacheEntry<any>> = {};
 let fixturesCache:          Record<number, CacheEntry<any[]>> = {};
@@ -141,30 +159,30 @@ async function fetchLiveGW(gw: number): Promise<any> {
   } catch { return liveCache[gw]?.data ?? null; }
 }
 
-async function fetchLeagueDetails(): Promise<any> {
-  if (isFresh(leagueDetailsCache, LONG_TTL)) return leagueDetailsCache!.data;
+async function fetchLeagueDetails(leagueId: number = DEFAULT_DRAFT_LEAGUE_ID): Promise<any> {
+  if (isFresh(leagueDetailsCache[leagueId], LONG_TTL)) return leagueDetailsCache[leagueId]!.data;
   try {
     const res = await fetchWithTimeout(
-      `https://draft.premierleague.com/api/league/${DEFAULT_DRAFT_LEAGUE_ID}/details`,
+      `https://draft.premierleague.com/api/league/${leagueId}/details`,
       { headers: { "User-Agent": "Mozilla/5.0" } }
     );
     const data = res.ok ? await res.json() : null;
-    if (data) leagueDetailsCache = { data, ts: Date.now() };
+    if (data) leagueDetailsCache[leagueId] = { data, ts: Date.now() };
     return data;
-  } catch { return leagueDetailsCache?.data ?? null; }
+  } catch { return leagueDetailsCache[leagueId]?.data ?? null; }
 }
 
-async function fetchElementStatus(): Promise<any> {
-  if (isFresh(elementStatusCache, MED_TTL)) return elementStatusCache!.data;
+async function fetchElementStatus(leagueId: number = DEFAULT_DRAFT_LEAGUE_ID): Promise<any> {
+  if (isFresh(elementStatusCache[leagueId], MED_TTL)) return elementStatusCache[leagueId]!.data;
   try {
     const res = await fetchWithTimeout(
-      `https://draft.premierleague.com/api/league/${DEFAULT_DRAFT_LEAGUE_ID}/element-status`,
+      `https://draft.premierleague.com/api/league/${leagueId}/element-status`,
       { headers: { "User-Agent": "Mozilla/5.0" } }
     );
     const data = res.ok ? await res.json() : null;
-    if (data) elementStatusCache = { data, ts: Date.now() };
+    if (data) elementStatusCache[leagueId] = { data, ts: Date.now() };
     return data;
-  } catch { return elementStatusCache?.data ?? null; }
+  } catch { return elementStatusCache[leagueId]?.data ?? null; }
 }
 
 async function fetchFPLFixtures(gw: number): Promise<any[]> {
@@ -389,6 +407,29 @@ function extractDraftLeagues(entry: any) {
   return leagues;
 }
 
+const ENTRY_ID_TO_MANAGER: Record<string, string> = {
+  "258967": "BENJI",
+  "247337": "CHRIS",
+  "132262": "DAVID",
+  "135018": "HENRI",
+  "268695": "IAN",
+  "238334": "LENNART",
+  "122327": "MARCO",
+  "118187": "MATT",
+  "126340": "MAX",
+  "261017": "PATRICK",
+  "183764": "ANDREW",
+  "195884": "BRENDAN",
+  "178589": "CONNOR",
+  "165408": "GRANT",
+  "231538": "JORDAN",
+  "231380": "KARIM",
+  "216175": "LUKE",
+  "221585": "ROHUN",
+  "183859": "SEBASTIAN",
+  "215391": "ZACH",
+};
+
 const FIRST_NAME_TO_CANONICAL: Record<string, string> = {
   "matthew": "MATT",
   "max": "MAX",
@@ -400,10 +441,27 @@ const FIRST_NAME_TO_CANONICAL: Record<string, string> = {
   "henri": "HENRI",
   "lennart": "LENNART",
   "chris": "CHRIS",
+  "andrew": "ANDREW",
+  "brendan": "BRENDAN",
+  "connor": "CONNOR",
+  "luke": "LUKE",
+  "karim": "KARIM",
+  "jordan": "JORDAN",
+  "rohun": "ROHUN",
+  "zach": "ZACH",
+  "sebastian": "SEBASTIAN",
+  "seb": "SEBASTIAN",
+  "grant": "GRANT",
 };
 function formatDraftManagerName(entry: any): string {
+  const entryId = String(entry?.entry_id ?? entry?.entry ?? "").trim();
   const first = String(entry?.player_first_name || "").trim().toLowerCase();
-  return FIRST_NAME_TO_CANONICAL[first] ?? first.toUpperCase();
+  // Prefer the live Draft first name so a stale entry-id map cannot swap managers.
+  if (first && first !== "deleted") {
+    return FIRST_NAME_TO_CANONICAL[first] ?? first.toUpperCase();
+  }
+  if (entryId && ENTRY_ID_TO_MANAGER[entryId]) return ENTRY_ID_TO_MANAGER[entryId];
+  return "UNKNOWN";
 }
 
 function formatDraftTeamName(entry: any) {
@@ -421,6 +479,35 @@ function formatDraftTeamName(entry: any) {
 function coerceNumber(value: any, fallback = 0) {
   const num = typeof value === "string" ? Number.parseFloat(value) : value;
   return Number.isFinite(num) ? num : fallback;
+}
+
+function h2hPairKey(team1Id: unknown, team2Id: unknown, gameweek: unknown): string {
+  const [a, b] = [String(team1Id ?? ""), String(team2Id ?? "")].sort();
+  return `${a}::${b}::${coerceNumber(gameweek)}`;
+}
+
+/** Keep one row per unordered pair + gameweek, preferring the newest updated_at. */
+function dedupeH2hMatchups<T extends {
+  team_1_id?: unknown;
+  team_2_id?: unknown;
+  gameweek?: unknown;
+  updated_at?: unknown;
+}>(rows: T[] | null | undefined): T[] {
+  const byKey = new Map<string, T>();
+  for (const row of rows || []) {
+    const key = h2hPairKey(row.team_1_id, row.team_2_id, row.gameweek);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, row);
+      continue;
+    }
+    const existingTs = existing.updated_at ? Date.parse(String(existing.updated_at)) : Number.NaN;
+    const nextTs = row.updated_at ? Date.parse(String(row.updated_at)) : Number.NaN;
+    if (!Number.isFinite(existingTs) || (Number.isFinite(nextTs) && nextTs >= existingTs)) {
+      byKey.set(key, row);
+    }
+  }
+  return Array.from(byKey.values());
 }
 
 /** Same rule as client BracketView: group finished when all teams played full window or calendar past endGW. */
@@ -462,12 +549,9 @@ function buildKnockoutMatchupInsertRows(
   const pairCount = Math.floor(top.length / 2);
   if (pairCount < 1) return null;
 
-  const qfLeg1 = endGw + 1;
-  const qfLeg2 = endGw + 2;
-  const sfLeg1 = endGw + 3;
-  const sfLeg2 = endGw + 4;
-  const fiLeg1 = endGw + 5;
-  const fiLeg2 = endGw + 6;
+  const hasRoundOf16 = pairCount > 4;
+  const firstRoundName = hasRoundOf16 ? "Round of 16" : "Quarter-finals";
+  let nextGw = endGw + 1;
 
   const rows: Record<string, unknown>[] = [];
   for (let i = 0; i < pairCount; i++) {
@@ -475,16 +559,37 @@ function buildKnockoutMatchupInsertRows(
     const lo = top[top.length - 1 - i];
     rows.push({
       tournament_id: tournamentId,
-      round: "Quarter-finals",
+      round: firstRoundName,
       matchup_number: i + 1,
       team_1_id: hi.team_id,
       team_2_id: lo.team_id,
-      leg_1_gameweek: qfLeg1,
-      leg_2_gameweek: qfLeg2,
+      leg_1_gameweek: nextGw,
+      leg_2_gameweek: nextGw + 1,
       status: "pending",
     });
   }
-  const semiCount = Math.max(1, Math.floor(pairCount / 2));
+  nextGw += 2;
+
+  if (hasRoundOf16) {
+    const qfCount = Math.max(1, Math.floor(pairCount / 2));
+    for (let i = 1; i <= qfCount; i++) {
+      rows.push({
+        tournament_id: tournamentId,
+        round: "Quarter-finals",
+        matchup_number: i,
+        team_1_id: null,
+        team_2_id: null,
+        leg_1_gameweek: nextGw,
+        leg_2_gameweek: nextGw + 1,
+        status: "awaiting_teams",
+      });
+    }
+    nextGw += 2;
+  }
+
+  const semiCount = hasRoundOf16
+    ? Math.max(1, Math.floor(pairCount / 4))
+    : Math.max(1, Math.floor(pairCount / 2));
   for (let i = 0; i < semiCount; i++) {
     rows.push({
       tournament_id: tournamentId,
@@ -492,19 +597,20 @@ function buildKnockoutMatchupInsertRows(
       matchup_number: i + 1,
       team_1_id: null,
       team_2_id: null,
-      leg_1_gameweek: sfLeg1,
-      leg_2_gameweek: sfLeg2,
+      leg_1_gameweek: nextGw,
+      leg_2_gameweek: nextGw + 1,
       status: "awaiting_teams",
     });
   }
+  nextGw += 2;
   rows.push({
     tournament_id: tournamentId,
     round: "Final",
     matchup_number: 1,
     team_1_id: null,
     team_2_id: null,
-    leg_1_gameweek: fiLeg1,
-    leg_2_gameweek: fiLeg2,
+    leg_1_gameweek: nextGw,
+    leg_2_gameweek: nextGw + 1,
     status: "awaiting_teams",
   });
   return rows;
@@ -1233,6 +1339,70 @@ async function resolveLeagueId(): Promise<number> {
   return leagueId;
 }
 
+function parseDivisionParam(value: string | undefined | null): DivisionKey | null {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) return null;
+  if (VALID_DIVISIONS.has(normalized)) return normalized as DivisionKey;
+  return null;
+}
+
+function managerBelongsToDivision(managerName: string, division: DivisionKey): boolean {
+  const canonical = toCanonicalManagerName(managerName);
+  if (!canonical) return false;
+  return division === "division_one"
+    ? DIVISION_ONE_MANAGERS.has(canonical)
+    : DIVISION_TWO_MANAGERS.has(canonical);
+}
+
+async function resolveLeagueIdForDivision(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  division: DivisionKey,
+): Promise<number> {
+  try {
+    const { data } = await supabase
+      .from("league_divisions")
+      .select("league_id")
+      .eq("division", division)
+      .maybeSingle();
+    const configured = parsePositiveInt(data?.league_id);
+    if (configured) return configured;
+  } catch {
+    // Fall through to defaults.
+  }
+  if (division === "division_one") {
+    return resolveLeagueId();
+  }
+  const envId = parsePositiveInt(Deno.env.get("DIVISION_TWO_LEAGUE_ID"));
+  if (envId) return envId;
+  return DEFAULT_DIVISION_TWO_LEAGUE_ID;
+}
+
+async function getTeamIdSetForDivision(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  division: DivisionKey,
+): Promise<Set<string>> {
+  const { data: teams } = await supabase
+    .from("teams")
+    .select("id")
+    .eq("division", division);
+  return new Set((teams || []).map((t: any) => String(t.id)));
+}
+
+async function filterStandingsByDivision(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  standings: any[],
+  division: DivisionKey,
+): Promise<any[]> {
+  const teamIds = await getTeamIdSetForDivision(supabase, division);
+  if (teamIds.size === 0) {
+    return standings.filter((row: any) =>
+      managerBelongsToDivision(String(row.manager_name ?? ""), division),
+    );
+  }
+  const filtered = standings.filter((row: any) => teamIds.has(String(row.team_id)));
+  return filtered.map((row: any, index: number) => ({ ...row, rank: index + 1 }));
+}
+
 // ── Email and image utilities ──
 
 function normalizeEmail(value: unknown) {
@@ -1347,12 +1517,17 @@ async function fetchDraftSquadForEntries(entryIds: string[], preferredEvent: num
     if (!normalizedEntryIds.length) return null;
     try {
       const supabase = getSupabaseAdmin();
-      const leagueId = await resolveConfiguredDraftLeagueId(supabase);
-      const elementStatusPayload = await fetchJSON<any>(
-        `${DRAFT_BASE_URL}/league/${leagueId}/element-status`,
+      const [divOneId, divTwoId] = await Promise.all([
+        resolveLeagueIdForDivision(supabase, "division_one"),
+        resolveLeagueIdForDivision(supabase, "division_two"),
+      ]);
+      const statusPayloads = await Promise.all(
+        Array.from(new Set([divOneId, divTwoId])).map((id) => fetchElementStatus(id)),
       );
-      const statuses = normalizeDraftList<any>(
-        elementStatusPayload?.element_status ?? elementStatusPayload?.elements ?? [],
+      const statuses = statusPayloads.flatMap((elementStatusPayload) =>
+        normalizeDraftList<any>(
+          elementStatusPayload?.element_status ?? elementStatusPayload?.elements ?? [],
+        ),
       );
       if (!statuses.length) return null;
 
@@ -1844,8 +2019,19 @@ function canonicalManagerKey(value: unknown) {
 
 type FormResult = "W" | "D" | "L";
 
+type DivisionStatBlock = {
+  wins: number;
+  draws: number;
+  losses: number;
+  total_points: number;
+  points_plus: number;
+  points_per_game: number;
+  league_titles: number;
+};
+
 type AllTimeManagerStat = {
   manager_name: string;
+  current_division: DivisionKey | null;
   wins: number;
   losses: number;
   draws: number;
@@ -1870,6 +2056,8 @@ type AllTimeManagerStat = {
   longest_undefeated_streak_spans: string;
   longest_loss_streak_spans: string;
   longest_winless_streak_spans: string;
+  division_one: DivisionStatBlock;
+  division_two: DivisionStatBlock;
 };
 
 type GameweekRecordRow = {
@@ -2141,7 +2329,7 @@ async function fetchDerivedGameweekStats(
       // Ignore draft fallback failures.
     }
 
-    (matchupsRes.data || []).forEach((m: any) => {
+    dedupeH2hMatchups(matchupsRes.data || []).forEach((m: any) => {
       const manager1 = managerByKey[String(m.team_1_id)];
       const manager2 = managerByKey[String(m.team_2_id)];
       if (!manager1 || !manager2 || manager1 === manager2) return;
@@ -2328,18 +2516,26 @@ async function fetchDraftPicksForEntries(
 async function buildLeagueRankMap(
   supabase: ReturnType<typeof getSupabaseAdmin>,
   upToGameweek?: number | null,
+  division?: DivisionKey | null,
 ) {
   const { data: matchups, error } = await supabase
     .from("h2h_matchups")
-    .select("team_1_id, team_2_id, gameweek, winner_id, team_1_points, team_2_points")
+    .select("team_1_id, team_2_id, gameweek, winner_id, team_1_points, team_2_points, updated_at")
     .order("gameweek", { ascending: true });
   if (error && error.code !== "PGRST116") {
     throw new Error(`Failed to fetch h2h matchups for ranks: ${error.message}`);
   }
 
-  const filtered = (matchups || []).filter((m: any) =>
-    upToGameweek ? coerceNumber(m.gameweek) <= upToGameweek : true,
-  );
+  let divisionTeamIds: Set<string> | null = null;
+  if (division) {
+    divisionTeamIds = await getTeamIdSetForDivision(supabase, division);
+  }
+
+  const filtered = dedupeH2hMatchups((matchups || []).filter((m: any) => {
+    if (upToGameweek && coerceNumber(m.gameweek) > upToGameweek) return false;
+    if (!divisionTeamIds || divisionTeamIds.size === 0) return true;
+    return divisionTeamIds.has(String(m.team_1_id)) && divisionTeamIds.has(String(m.team_2_id));
+  }));
   const agg: Record<string, { points: number; points_for: number }> = {};
   const ensure = (teamId: string) => {
     if (!agg[teamId]) agg[teamId] = { points: 0, points_for: 0 };
@@ -2743,10 +2939,22 @@ async function computeAllTimeManagerStats(
   }
 
   const agg: Record<string, AllTimeManagerStat> = {};
+  function emptyDivisionBlock(): DivisionStatBlock {
+    return {
+      wins: 0,
+      draws: 0,
+      losses: 0,
+      total_points: 0,
+      points_plus: 0,
+      points_per_game: 0,
+      league_titles: 0,
+    };
+  }
   function ensureManager(manager: string) {
     if (!agg[manager]) {
       agg[manager] = {
         manager_name: manager,
+        current_division: DIVISION_TWO_MANAGERS.has(manager) ? "division_two" : "division_one",
         wins: 0,
         losses: 0,
         draws: 0,
@@ -2771,10 +2979,13 @@ async function computeAllTimeManagerStats(
       longest_undefeated_streak_spans: "",
       longest_loss_streak_spans: "",
       longest_winless_streak_spans: "",
+      division_one: emptyDivisionBlock(),
+      division_two: emptyDivisionBlock(),
       };
     }
     return agg[manager];
   }
+  VALID_MANAGERS.forEach((manager) => ensureManager(manager));
 
   const persistedLeagueRows = (standingsRes.data || [])
     .filter((row: any) => row.competition_type === "league");
@@ -2784,8 +2995,14 @@ async function computeAllTimeManagerStats(
     const bootstrap = await fetchBootstrap();
     const latestCompletedEvent = extractLatestCompletedDraftEventId(bootstrap);
     if (latestCompletedEvent && latestCompletedEvent > 0) {
-      const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
-      const entries = normalizeDraftList<any>(details?.league_entries);
+      const [divOneId, divTwoId] = await Promise.all([
+        resolveLeagueIdForDivision(supabase, "division_one"),
+        resolveLeagueIdForDivision(supabase, "division_two"),
+      ]);
+      const detailsList = await Promise.all(
+        Array.from(new Set([divOneId, divTwoId])).map((id) => fetchLeagueDetails(id)),
+      );
+      const entries = detailsList.flatMap((details) => normalizeDraftList<any>(details?.league_entries));
       const managerByKey: Record<string, string> = {};
       entries.forEach((entry: any) => {
         const id = entry.id ?? entry.league_entry_id ?? entry.entry_id ?? entry.entry;
@@ -2817,38 +3034,40 @@ async function computeAllTimeManagerStats(
         return standingsMap[manager];
       };
 
-      normalizeDraftList<any>(details?.matches).forEach((m: any) => {
-        const gw = coerceNumber(m.event);
-        if (gw < 1 || gw > latestCompletedEvent) return;
-        const team1 = String(m.league_entry_1 ?? m.entry_1 ?? m.home ?? "");
-        const team2 = String(m.league_entry_2 ?? m.entry_2 ?? m.away ?? "");
-        const manager1 = managerByKey[team1];
-        const manager2 = managerByKey[team2];
-        if (!manager1 || !manager2) return;
-        const p1 = coerceNumber(m.league_entry_1_points ?? m.score_1 ?? m.home_score);
-        const p2 = coerceNumber(m.league_entry_2_points ?? m.score_2 ?? m.away_score);
+      detailsList.forEach((details) => {
+        normalizeDraftList<any>(details?.matches).forEach((m: any) => {
+          const gw = coerceNumber(m.event);
+          if (gw < 1 || gw > latestCompletedEvent) return;
+          const team1 = String(m.league_entry_1 ?? m.entry_1 ?? m.home ?? "");
+          const team2 = String(m.league_entry_2 ?? m.entry_2 ?? m.away ?? "");
+          const manager1 = managerByKey[team1];
+          const manager2 = managerByKey[team2];
+          if (!manager1 || !manager2) return;
+          const p1 = coerceNumber(m.league_entry_1_points ?? m.score_1 ?? m.home_score);
+          const p2 = coerceNumber(m.league_entry_2_points ?? m.score_2 ?? m.away_score);
 
-        const r1 = ensure(manager1);
-        const r2 = ensure(manager2);
-        r1.points_for += p1;
-        r1.points_against += p2;
-        r2.points_for += p2;
-        r2.points_against += p1;
+          const r1 = ensure(manager1);
+          const r2 = ensure(manager2);
+          r1.points_for += p1;
+          r1.points_against += p2;
+          r2.points_for += p2;
+          r2.points_against += p1;
 
-        if (p1 > p2) {
-          r1.wins += 1;
-          r2.losses += 1;
-          r1.points += 3;
-        } else if (p2 > p1) {
-          r2.wins += 1;
-          r1.losses += 1;
-          r2.points += 3;
-        } else {
-          r1.draws += 1;
-          r2.draws += 1;
-          r1.points += 1;
-          r2.points += 1;
-        }
+          if (p1 > p2) {
+            r1.wins += 1;
+            r2.losses += 1;
+            r1.points += 3;
+          } else if (p2 > p1) {
+            r2.wins += 1;
+            r1.losses += 1;
+            r2.points += 3;
+          } else {
+            r1.draws += 1;
+            r2.draws += 1;
+            r1.points += 1;
+            r2.points += 1;
+          }
+        });
       });
 
       const ranked = Object.values(standingsMap)
@@ -2869,18 +3088,44 @@ async function computeAllTimeManagerStats(
     const manager = toCanonicalManagerName(row.manager_name);
     if (!manager) return;
     const target = ensureManager(manager);
-    target.wins += coerceNumber(row.wins);
-    target.draws += coerceNumber(row.draws);
-    target.losses += coerceNumber(row.losses);
-    target.total_points += coerceNumber(row.points, coerceNumber(row.wins) * 3 + coerceNumber(row.draws));
-    target.points_plus += coerceNumber(row.points_for);
+    const wins = coerceNumber(row.wins);
+    const draws = coerceNumber(row.draws);
+    const losses = coerceNumber(row.losses);
+    const points = coerceNumber(row.points, wins * 3 + draws);
+    const pointsFor = coerceNumber(row.points_for);
+    target.wins += wins;
+    target.draws += draws;
+    target.losses += losses;
+    target.total_points += points;
+    target.points_plus += pointsFor;
+
+    const season = String(row.season || "");
+    const division: DivisionKey =
+      season === CURRENT_SEASON && DIVISION_TWO_MANAGERS.has(manager)
+        ? "division_two"
+        : "division_one";
+    const block = division === "division_two" ? target.division_two : target.division_one;
+    block.wins += wins;
+    block.draws += draws;
+    block.losses += losses;
+    block.total_points += points;
+    block.points_plus += pointsFor;
   });
 
   (trophiesRes.data || []).forEach((row: any) => {
     const manager = toCanonicalManagerName(row.manager_name);
     if (!manager) return;
     const target = ensureManager(manager);
-    if (row.league_champion) target.league_titles += 1;
+    if (row.league_champion) {
+      target.league_titles += 1;
+      const season = String(row.season || "");
+      const division: DivisionKey =
+        season === CURRENT_SEASON && DIVISION_TWO_MANAGERS.has(manager)
+          ? "division_two"
+          : "division_one";
+      if (division === "division_two") target.division_two.league_titles += 1;
+      else target.division_one.league_titles += 1;
+    }
     if (row.cup_winner) target.cup_wins += 1;
     if (row.goblet_winner) target.goblet_wins += 1;
   });
@@ -2916,11 +3161,34 @@ async function computeAllTimeManagerStats(
     target.highest_gameweek = stats.best_gameweek_points;
   });
 
+  const { data: persistedStats } = await supabase
+    .from("all_time_manager_stats")
+    .select("manager_name, current_division, div_one_wins, div_two_wins, div_one_draws, div_two_draws, div_one_losses, div_two_losses, total_div_one_points, total_div_two_points, div_one_points_plus, div_two_points_plus, div_one_points_per_game, div_two_points_per_game, div_one_league_titles, div_two_league_titles");
+
+  (persistedStats || []).forEach((row: any) => {
+    const manager = toCanonicalManagerName(row.manager_name);
+    if (!manager) return;
+    const target = ensureManager(manager);
+    if (row.current_division === "division_one" || row.current_division === "division_two") {
+      target.current_division = row.current_division;
+    }
+  });
+
   const rows = Object.values(agg).map((row) => {
     const games = row.wins + row.draws + row.losses;
+    const d1Games = row.division_one.wins + row.division_one.draws + row.division_one.losses;
+    const d2Games = row.division_two.wins + row.division_two.draws + row.division_two.losses;
     return {
       ...row,
       points_per_game: games > 0 ? Math.round((row.total_points / games) * 100) / 100 : 0,
+      division_one: {
+        ...row.division_one,
+        points_per_game: d1Games > 0 ? Math.round((row.division_one.total_points / d1Games) * 100) / 100 : 0,
+      },
+      division_two: {
+        ...row.division_two,
+        points_per_game: d2Games > 0 ? Math.round((row.division_two.total_points / d2Games) * 100) / 100 : 0,
+      },
     };
   });
 
@@ -2952,11 +3220,11 @@ async function fetchUnifiedAllTimeH2H(
     supabase
       .from("legacy_h2h_stats")
       .select("manager_name, opponent_name, season, wins, draws, losses, games_played, avg_points")
-      .is("season", null)
+      .neq("season", "All-Time")
       .order("opponent_name", { ascending: true }),
     supabase
       .from("h2h_matchups")
-      .select("team_1_id, team_2_id, gameweek, team_1_points, team_2_points, winner_id"),
+      .select("team_1_id, team_2_id, gameweek, team_1_points, team_2_points, winner_id, updated_at"),
     supabase
       .from("teams")
       .select("id, entry_id, manager_name"),
@@ -3001,18 +3269,27 @@ async function fetchUnifiedAllTimeH2H(
 
   // Fallback for live Draft league-entry IDs used in h2h_matchups.
   try {
-    const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
-    const entries = normalizeDraftList<any>(details?.league_entries);
-    entries.forEach((entry: any) => {
-      const id = entry.id ?? entry.league_entry_id ?? entry.entry_id ?? entry.entry;
-      if (!id) return;
-      const manager = toCanonicalManagerName(formatDraftManagerName(entry));
-      if (!manager) return;
-      managerByTeamId[String(id)] = manager;
-      const rawEntryId = entry.entry_id ?? entry.entry;
-      if (rawEntryId !== null && rawEntryId !== undefined) {
-        managerByTeamId[String(rawEntryId)] = manager;
-      }
+    const [divOneId, divTwoId] = await Promise.all([
+      resolveLeagueIdForDivision(supabase, "division_one"),
+      resolveLeagueIdForDivision(supabase, "division_two"),
+    ]);
+    const detailsList = await Promise.all(
+      Array.from(new Set([divOneId, divTwoId].filter(Boolean))).map((id) =>
+        resolveDraftLeagueDetails(STATIC_ENTRY_ID, id),
+      ),
+    );
+    detailsList.forEach(({ details }) => {
+      normalizeDraftList<any>(details?.league_entries).forEach((entry: any) => {
+        const id = entry.id ?? entry.league_entry_id ?? entry.entry_id ?? entry.entry;
+        if (!id) return;
+        const manager = toCanonicalManagerName(formatDraftManagerName(entry));
+        if (!manager) return;
+        managerByTeamId[String(id)] = manager;
+        const rawEntryId = entry.entry_id ?? entry.entry;
+        if (rawEntryId !== null && rawEntryId !== undefined) {
+          managerByTeamId[String(rawEntryId)] = manager;
+        }
+      });
     });
   } catch {
     // Ignore draft fallback failures and continue with existing mappings.
@@ -3041,6 +3318,8 @@ async function fetchUnifiedAllTimeH2H(
     const manager = toCanonicalManagerName(row.manager_name);
     const opponent = toCanonicalManagerName(row.opponent_name);
     if (!manager || !opponent) return;
+    // Current season is applied from live h2h_matchups below so it is not double-counted.
+    if (String(row.season || "") === CURRENT_SEASON) return;
     if (managerNameFilter && manager !== managerNameFilter) return;
 
     const target = ensureRow(manager, opponent);
@@ -3052,7 +3331,7 @@ async function fetchUnifiedAllTimeH2H(
     target.total_result_points += legacyAvg * coerceNumber(row.games_played);
   });
 
-  let seasonSource = (matchupsRes.data || []).map((m: any) => ({
+  let seasonSource = dedupeH2hMatchups(matchupsRes.data || []).map((m: any) => ({
     team_1_id: m.team_1_id,
     team_2_id: m.team_2_id,
     gameweek: m.gameweek,
@@ -3063,15 +3342,25 @@ async function fetchUnifiedAllTimeH2H(
 
   if (seasonSource.length === 0) {
     try {
-      const { details } = await resolveDraftLeagueDetails(await resolveLeagueId());
-      seasonSource = normalizeDraftList<any>(details?.matches).map((m: any) => ({
-        team_1_id: m.league_entry_1 ?? m.entry_1 ?? m.home,
-        team_2_id: m.league_entry_2 ?? m.entry_2 ?? m.away,
-        gameweek: m.event,
-        team_1_points: m.league_entry_1_points ?? m.score_1 ?? m.home_score,
-        team_2_points: m.league_entry_2_points ?? m.score_2 ?? m.away_score,
-        winner_id: null,
-      }));
+      const [divOneId, divTwoId] = await Promise.all([
+        resolveLeagueIdForDivision(supabase, "division_one"),
+        resolveLeagueIdForDivision(supabase, "division_two"),
+      ]);
+      const detailsList = await Promise.all(
+        Array.from(new Set([divOneId, divTwoId].filter(Boolean))).map((id) =>
+          resolveDraftLeagueDetails(STATIC_ENTRY_ID, id),
+        ),
+      );
+      seasonSource = detailsList.flatMap(({ details }) =>
+        normalizeDraftList<any>(details?.matches).map((m: any) => ({
+          team_1_id: m.league_entry_1 ?? m.entry_1 ?? m.home,
+          team_2_id: m.league_entry_2 ?? m.entry_2 ?? m.away,
+          gameweek: m.event,
+          team_1_points: m.league_entry_1_points ?? m.score_1 ?? m.home_score,
+          team_2_points: m.league_entry_2_points ?? m.score_2 ?? m.away_score,
+          winner_id: null,
+        })),
+      );
     } catch {
       seasonSource = [];
     }
@@ -3301,7 +3590,7 @@ async function fetchClassicH2HStandings(entryId: string) {
 async function resolveLeagueContextFromDb(supabase: ReturnType<typeof getSupabaseAdmin>) {
   const { data: teams, error: teamsError } = await supabase
     .from("teams")
-    .select("id, entry_id, entry_name, manager_name, manager_short_name, seed");
+    .select("id, entry_id, entry_name, manager_name, manager_short_name, seed, division");
 
   if (teamsError) {
     throw new Error(`Failed to load teams: ${teamsError.message}`);
@@ -3519,7 +3808,10 @@ leagueStandings.get("/", async (c) => {
 leagueStandings.get("/matches", async (c) => {
   try {
     const supabase = getSupabaseAdmin();
-    const leagueId = await resolveConfiguredDraftLeagueId(supabase);
+    const division = parseDivisionParam(c.req.query("division"));
+    const leagueId = division
+      ? await resolveLeagueIdForDivision(supabase, division)
+      : await resolveConfiguredDraftLeagueId(supabase);
     const details = await fetchJSON<any>(
       `${DRAFT_BASE_URL}/league/${leagueId}/details`
     );
@@ -3566,7 +3858,7 @@ leagueStandings.get("/matches", async (c) => {
       // Non-fatal: if live override fails, fall back to stored match scores.
     }
 
-    return c.json({ matches, league_entries: entries });
+    return c.json({ matches, league_entries: entries, division: division ?? "all", league_id: leagueId });
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to fetch matches");
   }
@@ -3850,14 +4142,25 @@ async function resolveCurrentGameweek(): Promise<number | null> {
   }
 }
 
-/** Fetch draft league matches and map any match key (draft id, league_entry_id, entry_id) -> team_id (UUID). */
+/** Fetch draft league matches from both divisions and map match keys -> team_id (UUID). */
 async function fetchDraftMatches(supabase: ReturnType<typeof getSupabaseAdmin>): Promise<{
   matches: any[];
   entryIdToTeamId: Record<string, string>;
 }> {
-  const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
-  const entries = normalizeDraftList<any>(details?.league_entries ?? []);
-  const matches = normalizeDraftList<any>(details?.matches ?? []);
+  const [divOneId, divTwoId] = await Promise.all([
+    resolveLeagueIdForDivision(supabase, "division_one"),
+    resolveLeagueIdForDivision(supabase, "division_two"),
+  ]);
+  const leagueIds = Array.from(new Set([divOneId, divTwoId].filter(Boolean)));
+  const detailsList = await Promise.all(leagueIds.map((id) => fetchLeagueDetails(id)));
+
+  const entries: any[] = [];
+  const matches: any[] = [];
+  detailsList.forEach((details) => {
+    entries.push(...normalizeDraftList<any>(details?.league_entries ?? []));
+    matches.push(...normalizeDraftList<any>(details?.matches ?? []));
+  });
+
   const fplEntryIds = entries.map((e: any) => String(e?.entry_id ?? e?.entry ?? "")).filter(Boolean);
   const entryIdToTeamId: Record<string, string> = {};
   if (fplEntryIds.length > 0) {
@@ -4281,11 +4584,11 @@ async function computeLeagueMatchupStyleScores(
 async function rebuildGobletStandings(supabase: ReturnType<typeof getSupabaseAdmin>): Promise<void> {
   const { data: matches, error } = await supabase
     .from("h2h_matchups")
-    .select("team_1_id, team_2_id, gameweek, team_1_points, team_2_points");
+    .select("team_1_id, team_2_id, gameweek, team_1_points, team_2_points, updated_at");
   if (error || !matches || matches.length === 0) return;
 
   const byTeamByGw: Record<string, Record<number, number>> = {};
-  for (const m of matches) {
+  for (const m of dedupeH2hMatchups(matches)) {
     const t1 = String(m.team_1_id);
     const t2 = String(m.team_2_id);
     const gw = coerceNumber(m.gameweek);
@@ -4353,6 +4656,10 @@ async function syncGobletLive(supabase: ReturnType<typeof getSupabaseAdmin>): Pr
   const h2hRows: any[] = [];
   for (const match of matches) {
     const gw = coerceNumber(match.event);
+    if (gw < 1 || gw > currentGw) continue;
+    const started = match?.started === true;
+    const finished = match?.finished === true;
+    if (gw === currentGw && !started && !finished) continue;
     const entry1Id = String(match.league_entry_1 ?? match.entry_1 ?? match.home ?? "");
     const entry2Id = String(match.league_entry_2 ?? match.entry_2 ?? match.away ?? "");
     const team1Id = entryIdToTeamId[entry1Id];
@@ -4385,7 +4692,7 @@ async function syncGobletLive(supabase: ReturnType<typeof getSupabaseAdmin>): Pr
   }
 
   if (h2hRows.length > 0) {
-    await supabase.from("h2h_matchups").upsert(h2hRows, { onConflict: "team_1_id,team_2_id,gameweek" });
+    await supabase.from("h2h_matchups").upsert(dedupeH2hMatchups(h2hRows), { onConflict: "team_1_id,team_2_id,gameweek" });
   }
 
   await rebuildGobletStandings(supabase);
@@ -4426,14 +4733,14 @@ gobletStandings.get("/", async (c) => {
 
     const { data: dbMatchups, error: dbMatchupsError } = await supabase
       .from("h2h_matchups")
-      .select("team_1_id, team_2_id, gameweek, team_1_points, team_2_points");
+      .select("team_1_id, team_2_id, gameweek, team_1_points, team_2_points, updated_at");
 
     if (!dbMatchupsError && (dbMatchups || []).length > 0) {
       const aggCurrent: Record<string, any> = {};
       const aggBaseline: Record<string, any> = {};
       const hasBaselineGw = latestCompletedEvent != null;
 
-      (dbMatchups || []).forEach((m: any) => {
+      dedupeH2hMatchups(dbMatchups || []).forEach((m: any) => {
         const gw = coerceNumber(m.gameweek);
         const includeInCurrent =
           maxGwForGoblet != null ? gw <= maxGwForGoblet : true;
@@ -4635,6 +4942,7 @@ gobletStandings.get("/", async (c) => {
             const id1 = draftIdToTeamId[String(m.league_entry_1 ?? m.entry_1 ?? m.home)];
             const id2 = draftIdToTeamId[String(m.league_entry_2 ?? m.entry_2 ?? m.away)];
             if (!id1 || !id2) return;
+            if (gw < 1 || (currentEventFallback != null && gw > currentEventFallback)) return;
             const e1Key = String(m.league_entry_1 ?? m.entry_1 ?? m.home ?? "");
             const e2Key = String(m.league_entry_2 ?? m.entry_2 ?? m.away ?? "");
             const useLive = gw === currentEventFallback && Object.keys(liveEntryPointsFallback).length > 0;
@@ -4648,7 +4956,7 @@ gobletStandings.get("/", async (c) => {
             h2hRows.push({ team_1_id: id1, team_2_id: id2, gameweek: gw, team_1_points: p1, team_2_points: p2, winner_id: winnerId, updated_at: new Date().toISOString() });
           });
           if (h2hRows.length > 0) {
-            await supabase.from("h2h_matchups").upsert(h2hRows, { onConflict: "team_1_id,team_2_id,gameweek" });
+            await supabase.from("h2h_matchups").upsert(dedupeH2hMatchups(h2hRows), { onConflict: "team_1_id,team_2_id,gameweek" });
           }
           const pointsByTeamGw: Record<string, Record<number, number>> = {};
           matches.forEach((m: any) => {
@@ -5265,8 +5573,15 @@ playerInsights.get("/", async (c) => {
     let ownershipResolvedFromDraft = false;
     try {
       const supabase = getSupabaseAdmin();
-      const leagueDetails = await fetchLeagueDetails();
-      const leagueEntries = normalizeDraftList<any>(leagueDetails?.league_entries || []);
+      const [divOneId, divTwoId] = await Promise.all([
+        resolveLeagueIdForDivision(supabase, "division_one"),
+        resolveLeagueIdForDivision(supabase, "division_two"),
+      ]);
+      const leagueIds = Array.from(new Set([divOneId, divTwoId]));
+      const detailsList = await Promise.all(leagueIds.map((id) => fetchLeagueDetails(id)));
+      const leagueEntries = detailsList.flatMap((leagueDetails) =>
+        normalizeDraftList<any>(leagueDetails?.league_entries || []),
+      );
       ownershipDebug.team_keys_from_player_selections_sample = leagueEntries
         .slice(0, 20)
         .map((entry: any) => String(entry?.entry_id ?? "").trim())
@@ -5282,16 +5597,17 @@ playerInsights.get("/", async (c) => {
         ownerLabelByOwnerId[key] = ownerLabel;
       });
       ownershipDebug.team_lookup_sample = {
-        league_id: DEFAULT_DRAFT_LEAGUE_ID,
+        league_ids: leagueIds,
         entries_count: leagueEntries.length,
         owner_key_count: Object.keys(ownerLabelByOwnerId).length,
       };
 
-      // Primary ownership source: current league element status.
-      // This reflects current roster ownership including post-waiver states.
-      const elementStatusPayload = await fetchElementStatus();
-      const elementStatusRows = normalizeDraftList<any>(
-        elementStatusPayload?.element_status ?? elementStatusPayload?.elements ?? [],
+      // Primary ownership source: current league element status from both divisions.
+      const statusPayloads = await Promise.all(leagueIds.map((id) => fetchElementStatus(id)));
+      const elementStatusRows = statusPayloads.flatMap((elementStatusPayload) =>
+        normalizeDraftList<any>(
+          elementStatusPayload?.element_status ?? elementStatusPayload?.elements ?? [],
+        ),
       );
       ownershipDebug.source = "draft_element_status";
       ownershipDebug.ownership_rows_count = elementStatusRows.length;
@@ -5314,7 +5630,7 @@ playerInsights.get("/", async (c) => {
       });
 
       Object.entries(ownersMap).forEach(([id, managers]) => {
-        ownerManagerMap[Number(id)] = managers.length > 0 ? managers[0] : null;
+        ownerManagerMap[Number(id)] = managers.length > 0 ? managers.join(" / ") : null;
       });
       ownershipResolvedFromDraft = Object.keys(ownerManagerMap).length > 0;
       ownershipDebug.matched_team_keys_count = ownerIdsSeen.size - unmatchedOwnerIds.size;
@@ -5643,8 +5959,16 @@ playerInsights.get("/", async (c) => {
 // Lightweight ownership map for frontend overrides: player_id -> manager_name (or null if unowned).
 playerInsights.get("/ownership", async (c) => {
   try {
-    const leagueDetails = await fetchLeagueDetails();
-    const leagueEntries = normalizeDraftList<any>(leagueDetails?.league_entries || []);
+    const supabase = getSupabaseAdmin();
+    const [divOneId, divTwoId] = await Promise.all([
+      resolveLeagueIdForDivision(supabase, "division_one"),
+      resolveLeagueIdForDivision(supabase, "division_two"),
+    ]);
+    const leagueIds = Array.from(new Set([divOneId, divTwoId]));
+    const detailsList = await Promise.all(leagueIds.map((id) => fetchLeagueDetails(id)));
+    const leagueEntries = detailsList.flatMap((leagueDetails) =>
+      normalizeDraftList<any>(leagueDetails?.league_entries || []),
+    );
     const ownerLabelByOwnerId: Record<number, string> = {};
     leagueEntries.forEach((entry: any) => {
       const managerName = formatDraftManagerName(entry);
@@ -5655,9 +5979,11 @@ playerInsights.get("/ownership", async (c) => {
       ownerLabelByOwnerId[key] = ownerLabel;
     });
 
-    const elementStatusPayload = await fetchElementStatus();
-    const elementStatusRows = normalizeDraftList<any>(
-      elementStatusPayload?.element_status ?? elementStatusPayload?.elements ?? [],
+    const statusPayloads = await Promise.all(leagueIds.map((id) => fetchElementStatus(id)));
+    const elementStatusRows = statusPayloads.flatMap((elementStatusPayload) =>
+      normalizeDraftList<any>(
+        elementStatusPayload?.element_status ?? elementStatusPayload?.elements ?? [],
+      ),
     );
 
     const owners: Record<number, string | null> = {};
@@ -5668,7 +5994,11 @@ playerInsights.get("/ownership", async (c) => {
       if (ownerKey == null) return;
       const ownerLabel = ownerLabelByOwnerId[ownerKey] || null;
       if (!ownerLabel) return;
-      if (!owners[playerId]) owners[playerId] = ownerLabel;
+      if (!owners[playerId]) {
+        owners[playerId] = ownerLabel;
+      } else if (owners[playerId] !== ownerLabel && !String(owners[playerId]).includes(ownerLabel)) {
+        owners[playerId] = `${owners[playerId]} / ${ownerLabel}`;
+      }
     });
 
     return c.json({ owners });
@@ -5851,29 +6181,34 @@ playerHistory.get("/", async (c) => {
 h2hStandings.get("/", async (c) => {
   try {
     const supabase = getSupabaseAdmin();
+    const division = parseDivisionParam(c.req.query("division"));
     try {
       await syncCurrentSeasonLegacyStats(supabase);
     } catch {
       // Continue with live reads even if legacy sync fails.
     }
     let latestCompletedEvent: number | null = null;
+    let currentEvent: number | null = null;
     try {
       const bootstrap = await fetchBootstrap();
       latestCompletedEvent = extractLatestCompletedDraftEventId(bootstrap);
+      currentEvent = extractDraftCurrentEventId(bootstrap);
     } catch {
       latestCompletedEvent = null;
+      currentEvent = null;
     }
+    const maxGwForStandings = currentEvent ?? latestCompletedEvent;
 
     // DB-first
     const { data: dbMatchups, error: dbError } = await supabase
       .from("h2h_matchups")
-      .select("team_1_id, team_2_id, gameweek, team_1_points, team_2_points, winner_id");
+      .select("team_1_id, team_2_id, gameweek, team_1_points, team_2_points, winner_id, updated_at");
 
     if (!dbError && (dbMatchups || []).length > 0) {
       const map: Record<string, any> = {};
-      (dbMatchups || [])
+      dedupeH2hMatchups(dbMatchups || [])
         .filter((m: any) =>
-          latestCompletedEvent ? coerceNumber(m.gameweek) <= latestCompletedEvent : true
+          maxGwForStandings ? coerceNumber(m.gameweek) <= maxGwForStandings : true
         )
         .forEach((m: any) => {
         if (!map[m.team_1_id]) map[m.team_1_id] = { team_id: m.team_1_id, wins: 0, losses: 0, draws: 0, points_for: 0, points_against: 0, margin_victory_sum: 0, margin_defeat_sum: 0 };
@@ -5924,12 +6259,15 @@ h2hStandings.get("/", async (c) => {
             avg_margin_victory: row.wins > 0 ? Math.round((row.margin_victory_sum || 0) / row.wins * 10) / 10 : null,
             avg_margin_defeat: row.losses > 0 ? Math.round((row.margin_defeat_sum || 0) / row.losses * 10) / 10 : null,
           }))
-          .sort((a: any, b: any) => b.points - a.points || b.points_for - a.points_for)
-          .map((row: any, idx: number) => ({ ...row, rank: idx + 1 }));
+          .sort((a: any, b: any) => b.points - a.points || b.points_for - a.points_for);
+
+        let rankedStandings = standings.map((row: any, idx: number) => ({ ...row, rank: idx + 1 }));
 
         // Overlay real names from Draft league entries using FPL entry_id.
         try {
-          const leagueId = await resolveLeagueId();
+          const leagueId = division
+            ? await resolveLeagueIdForDivision(supabase, division)
+            : await resolveLeagueId();
           const { details } = await resolveDraftLeagueDetails(String(leagueId), leagueId);
           const draftEntries = normalizeDraftList<any>(details?.league_entries ?? []);
           const nameByEntryId: Record<string, { entry_name: string; manager_name: string }> = {};
@@ -5943,7 +6281,7 @@ h2hStandings.get("/", async (c) => {
           });
 
           if (Object.keys(nameByEntryId).length > 0) {
-            standings.forEach((row: any) => {
+            rankedStandings.forEach((row: any) => {
               const fplId = String(row.entry_id ?? "").trim();
               const names = fplId ? nameByEntryId[fplId] : null;
               if (names) {
@@ -5956,13 +6294,21 @@ h2hStandings.get("/", async (c) => {
           // Non-fatal: fall back to DB/team names.
         }
 
-        return c.json({ standings, source: "database" });
+        if (division) {
+          rankedStandings = await filterStandingsByDivision(supabase, rankedStandings, division);
+        }
+
+        return c.json({ standings: rankedStandings, division: division ?? "all", source: "database" });
       }
     }
 
     const entryId = c.req.query("entryId") || STATIC_ENTRY_ID;
     const leagueIdOverride = c.req.query("leagueId");
-    const leagueIdValue = leagueIdOverride ? Number.parseInt(leagueIdOverride, 10) : null;
+    const leagueIdValue = leagueIdOverride
+      ? Number.parseInt(leagueIdOverride, 10)
+      : division
+      ? await resolveLeagueIdForDivision(supabase, division)
+      : null;
     try {
       const { details } = await resolveDraftLeagueDetails(entryId, leagueIdValue);
       const entries = details?.league_entries || [];
@@ -6047,7 +6393,14 @@ h2hStandings.get("/", async (c) => {
           rank: index + 1,
         }));
 
-      return c.json({ standings, source: "draft" });
+      let rankedStandings = standings;
+      if (division) {
+        rankedStandings = standings.filter((row: any) =>
+          managerBelongsToDivision(String(row.manager_name ?? ""), division),
+        ).map((row: any, index: number) => ({ ...row, rank: index + 1 }));
+      }
+
+      return c.json({ standings: rankedStandings, division: division ?? "all", source: "draft" });
     } catch (_draftErr: any) {
       const h2h = await fetchClassicH2HStandings(entryId);
       const standings = (h2h.standings || [])
@@ -6085,6 +6438,7 @@ h2hMatchups.get("/", async (c) => {
   try {
     const gameweekParam = c.req.query("gameweek");
     let gameweek = gameweekParam ? Number(gameweekParam) : 1;
+    const division = parseDivisionParam(c.req.query("division"));
     const supabase = getSupabaseAdmin();
     try {
       await syncCurrentSeasonLegacyStats(supabase);
@@ -6112,9 +6466,10 @@ h2hMatchups.get("/", async (c) => {
       return jsonError(c, 400, "Missing gameweek");
     }
 
+    const cacheKey = `${division ?? "all"}-${gameweek}`;
     // Cache check — 30s TTL
-    if (isFresh(h2hMatchupsCache[gameweek], 30 * 1000)) {
-      return c.json(h2hMatchupsCache[gameweek]!.data);
+    if (isFresh(h2hMatchupsCache[cacheKey], 30 * 1000)) {
+      return c.json(h2hMatchupsCache[cacheKey]!.data);
     }
 
     const latestCompletedForRanks: number | null = bootstrap
@@ -6123,7 +6478,7 @@ h2hMatchups.get("/", async (c) => {
 
     let rankMap: Record<string, number> = {};
     try {
-      rankMap = await buildLeagueRankMap(supabase, latestCompletedForRanks);
+      rankMap = await buildLeagueRankMap(supabase, latestCompletedForRanks, division);
     } catch {
       rankMap = {};
     }
@@ -6138,11 +6493,20 @@ h2hMatchups.get("/", async (c) => {
     // DB-first
     const { data: dbMatchups, error: dbError } = await supabase
       .from("h2h_matchups")
-      .select("team_1_id, team_2_id, gameweek, team_1_points, team_2_points, winner_id")
+      .select("team_1_id, team_2_id, gameweek, team_1_points, team_2_points, winner_id, updated_at")
       .eq("gameweek", gameweek);
 
     if (!dbError && (dbMatchups || []).length > 0) {
-      const teamIds = Array.from(new Set((dbMatchups || []).flatMap((m: any) => [m.team_1_id, m.team_2_id])));
+      let divisionTeamIds: Set<string> | null = null;
+      if (division) {
+        divisionTeamIds = await getTeamIdSetForDivision(supabase, division);
+      }
+      const scopedMatchups = dedupeH2hMatchups((dbMatchups || []).filter((m: any) => {
+        if (!divisionTeamIds || divisionTeamIds.size === 0) return true;
+        return divisionTeamIds.has(String(m.team_1_id)) && divisionTeamIds.has(String(m.team_2_id));
+      }));
+
+      const teamIds = Array.from(new Set(scopedMatchups.flatMap((m: any) => [m.team_1_id, m.team_2_id])));
       const { data: teams } = await supabase
         .from("teams")
         .select("id, entry_id, entry_name, manager_name")
@@ -6153,7 +6517,10 @@ h2hMatchups.get("/", async (c) => {
       // Attempt to overlay real names from Draft league entries using entry_id.
       const draftNameByEntryId: Record<string, { entry_name: string; manager_name: string }> = {};
       try {
-        const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
+        const leagueId = division
+          ? await resolveLeagueIdForDivision(supabase, division)
+          : await resolveLeagueId();
+        const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID, leagueId);
         const draftEntries = normalizeDraftList<any>(details?.league_entries ?? []);
         draftEntries.forEach((entry: any) => {
           const fplId = String(entry.entry_id ?? entry.entry ?? "").trim();
@@ -6167,7 +6534,7 @@ h2hMatchups.get("/", async (c) => {
         // Non-fatal: fall back to teams table names when draft overlay is unavailable.
       }
 
-      let formatted = (dbMatchups || []).map((m: any) => {
+      let formatted = scopedMatchups.map((m: any) => {
         const team1 = teamMap[m.team_1_id] || null;
         const team2 = teamMap[m.team_2_id] || null;
         const team1EntryId = team1?.entry_id != null ? String(team1.entry_id) : "";
@@ -6220,8 +6587,8 @@ h2hMatchups.get("/", async (c) => {
         }
       }
 
-      const resultDb = { gameweek, matchups: formatted, source: "database" };
-      h2hMatchupsCache[gameweek] = { data: resultDb, ts: Date.now() };
+      const resultDb = { gameweek, division: division ?? "all", matchups: formatted, source: "database" };
+      h2hMatchupsCache[cacheKey] = { data: resultDb, ts: Date.now() };
       return c.json(resultDb);
     }
 
@@ -6367,6 +6734,7 @@ h2hMatchups.get("/", async (c) => {
 h2hRivalries.get("/", async (c) => {
   try {
     const supabase = getSupabaseAdmin();
+    const division = parseDivisionParam(c.req.query("division"));
     try {
       await syncCurrentSeasonLegacyStats(supabase);
     } catch {
@@ -6389,20 +6757,30 @@ h2hRivalries.get("/", async (c) => {
     }
 
     const [teamsRes, seasonMatchupsRes, thisWeekRes] = await Promise.all([
-      supabase.from("teams").select("id, entry_id, entry_name, manager_name"),
+      supabase.from("teams").select("id, entry_id, entry_name, manager_name, division"),
       supabase
         .from("h2h_matchups")
-        .select("team_1_id, team_2_id, gameweek, winner_id, team_1_points, team_2_points")
+        .select("team_1_id, team_2_id, gameweek, winner_id, team_1_points, team_2_points, updated_at")
         .order("gameweek", { ascending: true }),
       supabase
         .from("h2h_matchups")
-        .select("team_1_id, team_2_id, gameweek")
+        .select("team_1_id, team_2_id, gameweek, updated_at")
         .eq("gameweek", displayEvent),
     ]);
 
     const teams = teamsRes.data || [];
-    const seasonMatchups = seasonMatchupsRes.data || [];
-    const thisWeekMatchups = thisWeekRes.data || [];
+    let divisionTeamIds: Set<string> | null = null;
+    if (division) {
+      divisionTeamIds = await getTeamIdSetForDivision(supabase, division);
+    }
+    const seasonMatchups = dedupeH2hMatchups((seasonMatchupsRes.data || []).filter((m: any) => {
+      if (!divisionTeamIds || divisionTeamIds.size === 0) return true;
+      return divisionTeamIds.has(String(m.team_1_id)) && divisionTeamIds.has(String(m.team_2_id));
+    }));
+    const thisWeekMatchups = dedupeH2hMatchups((thisWeekRes.data || []).filter((m: any) => {
+      if (!divisionTeamIds || divisionTeamIds.size === 0) return true;
+      return divisionTeamIds.has(String(m.team_1_id)) && divisionTeamIds.has(String(m.team_2_id));
+    }));
     const teamMap: Record<string, { entry_name: string | null; manager_name: string | null }> = {};
     teams.forEach((t: any) => {
       const val = {
@@ -6512,6 +6890,7 @@ h2hRivalries.get("/", async (c) => {
     if (dbMatchups.length > 0) {
       return c.json({
         gameweek: displayEvent,
+        division: division ?? "all",
         latest_completed_gameweek: latestCompletedEvent,
         matchups: dbMatchups,
         source: "database",
@@ -6520,7 +6899,11 @@ h2hRivalries.get("/", async (c) => {
 
     const entryId = c.req.query("entryId") || STATIC_ENTRY_ID;
     const leagueIdOverride = c.req.query("leagueId");
-    const leagueIdValue = leagueIdOverride ? Number.parseInt(leagueIdOverride, 10) : null;
+    const leagueIdValue = leagueIdOverride
+      ? Number.parseInt(leagueIdOverride, 10)
+      : division
+      ? await resolveLeagueIdForDivision(supabase, division)
+      : null;
     const { details } = await resolveDraftLeagueDetails(entryId, leagueIdValue);
     const entries = normalizeDraftList<any>(details?.league_entries);
     const matches = normalizeDraftList<any>(details?.matches);
@@ -6879,7 +7262,7 @@ managerRatings.get("/", async (c) => {
     const { data: standings, error: standingsError } = await supabase
       .from("legacy_season_standings")
       .select("manager_name, final_rank, competition_type")
-      .lt("season", HISTORICAL_STATS_CUTOFF_SEASON);
+      .lt("season", CURRENT_SEASON);
 
     if (standingsError) {
       return jsonError(c, 500, "Failed to fetch legacy standings", standingsError.message);
@@ -6888,7 +7271,7 @@ managerRatings.get("/", async (c) => {
     const { data: trophies, error: trophiesError } = await supabase
       .from("legacy_season_trophies")
       .select("manager_name, league_champion, cup_winner, goblet_winner")
-      .lt("season", HISTORICAL_STATS_CUTOFF_SEASON);
+      .lt("season", CURRENT_SEASON);
 
     if (trophiesError) {
       return jsonError(c, 500, "Failed to fetch legacy trophies", trophiesError.message);
@@ -7255,8 +7638,16 @@ bracket.get("/", async (c) => {
     let draftNameByManagerKey: Record<string, { entry_name: string; manager_name: string }> = {};
 
     try {
-      const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
-      const draftEntries = normalizeDraftList<any>(details?.league_entries);
+      const [divOneId, divTwoId] = await Promise.all([
+        resolveLeagueIdForDivision(supabase, "division_one"),
+        resolveLeagueIdForDivision(supabase, "division_two"),
+      ]);
+      const detailsList = await Promise.all(
+        Array.from(new Set([divOneId, divTwoId])).map((id) => fetchLeagueDetails(id)),
+      );
+      const draftEntries = detailsList.flatMap((details) =>
+        normalizeDraftList<any>(details?.league_entries),
+      );
       draftEntries.forEach((entry: any) => {
         const managerName = formatDraftManagerName(entry);
         const teamName = formatDraftTeamName(entry);
@@ -7954,21 +8345,21 @@ adminRefresh.post("/refresh-current-season", async (c) => {
         leagueId = resolvedLeagueId || null;
       }
 
-      if (leagueId) {
-        const details = await fetchJSON<any>(`${DRAFT_BASE_URL}/league/${leagueId}/details`);
+      const [divOneId, divTwoId] = await Promise.all([
+        resolveLeagueIdForDivision(supabase, "division_one"),
+        resolveLeagueIdForDivision(supabase, "division_two"),
+      ]);
+      const syncLeagueIds = Array.from(new Set([leagueId, divOneId, divTwoId].filter(Boolean))) as number[];
+      for (const syncLeagueId of syncLeagueIds) {
+        const details = await fetchLeagueDetails(syncLeagueId);
         const draftEntries = normalizeDraftList<any>(details?.league_entries ?? []);
         for (const entry of draftEntries) {
           const entryId = String(entry?.entry_id ?? entry?.entry ?? "").trim();
           if (!entryId) continue;
           const entryName = entry?.entry_name ?? formatDraftTeamName(entry);
-          const firstName = String(entry?.player_first_name ?? "").trim();
-          const lastName = String(entry?.player_last_name ?? "").trim();
-          const hasNames = firstName || lastName;
-          const managerName = hasNames
-            ? `${firstName}${firstName && lastName ? " " : ""}${lastName}`
-            : formatDraftManagerName(entry);
+          const managerName = toCanonicalManagerName(formatDraftManagerName(entry)) || formatDraftManagerName(entry);
           const managerShortName =
-            String(entry?.short_name ?? "").trim() || null;
+            String(entry?.short_name ?? "").trim() || managerName;
 
           await supabase
             .from("teams")
@@ -8001,7 +8392,7 @@ adminRefresh.post("/refresh-current-season", async (c) => {
       .eq("season", CURRENT_SEASON)
       .maybeSingle();
     let tournamentId: string | null = existingTournament?.id ?? null;
-    let startGameweek = existingTournament?.start_gameweek ?? 29;
+    let startGameweek = existingTournament?.start_gameweek ?? CUP_START_GAMEWEEK;
     if (!existingTournament) {
       const { data: newTournament } = await supabase
         .from("tournaments")
@@ -8010,8 +8401,11 @@ adminRefresh.post("/refresh-current-season", async (c) => {
           name: "FFA Cup",
           season: CURRENT_SEASON,
           status: "group_stage",
-          start_gameweek: 29,
+          start_gameweek: CUP_START_GAMEWEEK,
+          end_gameweek: 38,
           group_stage_gameweeks: 4,
+          knockout_gameweeks: 8,
+          teams_advance_pct: 0.8,
           is_active: true,
         })
         .select("id, start_gameweek")
@@ -9797,9 +10191,13 @@ fixturesHub.get("/", async (c) => {
 leagueActivity.get("/waivers", async (c) => {
   try {
     const supabase = getSupabaseAdmin();
-    const leagueId = await resolveConfiguredDraftLeagueId(supabase);
-    const [{ details }, bootstrap] = await Promise.all([
-      resolveDraftLeagueDetails(STATIC_ENTRY_ID, leagueId),
+    const [divOneId, divTwoId] = await Promise.all([
+      resolveLeagueIdForDivision(supabase, "division_one"),
+      resolveLeagueIdForDivision(supabase, "division_two"),
+    ]);
+    const [{ details: detailsOne }, { details: detailsTwo }, bootstrap] = await Promise.all([
+      resolveDraftLeagueDetails(STATIC_ENTRY_ID, divOneId),
+      resolveDraftLeagueDetails(STATIC_ENTRY_ID, divTwoId),
       fetchBootstrap(),
     ]);
     const currentGameweek = extractDraftCurrentEventId(bootstrap) || 1;
@@ -9807,14 +10205,23 @@ leagueActivity.get("/waivers", async (c) => {
       extractLatestCompletedDraftEventId(bootstrap) || (currentGameweek > 1 ? currentGameweek - 1 : null);
     const targetEvent = resolveDisplayGameweek(currentGameweek, latestCompletedGameweek);
     const playersById = extractDraftPlayerMap(bootstrap);
-    const entries = normalizeDraftList<any>(details?.league_entries);
-    const entryMap: Record<string, { manager_name: string; team_name: string }> = {};
+    const entries = [
+      ...normalizeDraftList<any>(detailsOne?.league_entries),
+      ...normalizeDraftList<any>(detailsTwo?.league_entries),
+    ];
+    const entryMap: Record<string, { manager_name: string; team_name: string; division: DivisionKey | null }> = {};
     entries.forEach((entry: any) => {
       const entryId = parsePositiveInt(entry?.entry_id) ?? parsePositiveInt(entry?.entry);
       if (!entryId) return;
+      const managerName = toCanonicalManagerName(formatDraftManagerName(entry)) || formatDraftManagerName(entry);
+      const canonical = toCanonicalManagerName(managerName);
+      const division: DivisionKey | null = canonical
+        ? (DIVISION_TWO_MANAGERS.has(canonical) ? "division_two" : DIVISION_ONE_MANAGERS.has(canonical) ? "division_one" : null)
+        : null;
       entryMap[String(entryId)] = {
-        manager_name: toCanonicalManagerName(formatDraftManagerName(entry)) || formatDraftManagerName(entry),
+        manager_name: managerName,
         team_name: formatDraftTeamName(entry),
+        division,
       };
     });
 
@@ -9823,59 +10230,70 @@ leagueActivity.get("/waivers", async (c) => {
       manager_name: string;
       team_name: string;
       team_id: number;
+      division: DivisionKey | null;
       transaction_type: string;
       player_in_id: number | null;
       player_in_name: string | null;
       player_out_id: number | null;
       player_out_name: string | null;
+      sort_key: number;
     }> = [];
 
     try {
-      const txPayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/draft/league/${leagueId}/transactions`);
-      const transactions = normalizeDraftList<any>(txPayload?.transactions);
-      transactions
-        .filter((tx: any) => {
-          const event = coerceNumber(tx?.event);
-          const kind = String(tx?.kind || "").toLowerCase();
-          const result = String(tx?.result || "").toLowerCase();
-          if (event !== targetEvent) return false;
-          if (kind !== "w" && kind !== "f") return false;
-          // Keep completed/accepted outcomes only.
-          if (result && result !== "a") return false;
-          return true;
-        })
-        .forEach((tx: any) => {
-          const entryId = parsePositiveInt(tx?.entry);
-          if (!entryId) return;
-          const mapped = entryMap[String(entryId)];
-          if (!mapped) return;
-          const inId = parsePositiveInt(tx?.element_in);
-          const outId = parsePositiveInt(tx?.element_out);
-          transactionMoves.push({
-            gameweek: targetEvent,
-            manager_name: mapped.manager_name,
-            team_name: mapped.team_name,
-            team_id: entryId,
-            transaction_type: String(tx?.kind || "").toLowerCase() === "w" ? "Waiver" : "Free Agent",
-            player_in_id: inId,
-            player_in_name: inId ? (playersById[inId]?.name || `Player ${inId}`) : null,
-            player_out_id: outId,
-            player_out_name: outId ? (playersById[outId]?.name || `Player ${outId}`) : null,
+      const txPayloads = await Promise.all(
+        [divOneId, divTwoId].map((leagueId) =>
+          fetchJSON<any>(`${DRAFT_BASE_URL}/draft/league/${leagueId}/transactions`).catch(() => null),
+        ),
+      );
+      txPayloads.forEach((txPayload) => {
+        const transactions = normalizeDraftList<any>(txPayload?.transactions);
+        transactions
+          .filter((tx: any) => {
+            const event = coerceNumber(tx?.event);
+            const kind = String(tx?.kind || "").toLowerCase();
+            const result = String(tx?.result || "").toLowerCase();
+            if (event !== targetEvent) return false;
+            if (kind !== "w" && kind !== "f") return false;
+            if (result && result !== "a") return false;
+            return true;
+          })
+          .forEach((tx: any) => {
+            const entryId = parsePositiveInt(tx?.entry);
+            if (!entryId) return;
+            const mapped = entryMap[String(entryId)];
+            if (!mapped) return;
+            const inId = parsePositiveInt(tx?.element_in);
+            const outId = parsePositiveInt(tx?.element_out);
+            transactionMoves.push({
+              gameweek: targetEvent,
+              manager_name: mapped.manager_name,
+              team_name: mapped.team_name,
+              team_id: entryId,
+              division: mapped.division,
+              transaction_type: String(tx?.kind || "").toLowerCase() === "w" ? "Waiver" : "Free Agent",
+              player_in_id: inId,
+              player_in_name: inId ? (playersById[inId]?.name || `Player ${inId}`) : null,
+              player_out_id: outId,
+              player_out_name: outId ? (playersById[outId]?.name || `Player ${outId}`) : null,
+              sort_key: coerceNumber(tx?.id ?? tx?.event),
+            });
           });
-        });
+      });
     } catch {
       // Fall through to event-delta fallback below.
     }
 
     if (transactionMoves.length > 0) {
       transactionMoves.sort((a, b) =>
+        String(a.division || "").localeCompare(String(b.division || "")) ||
+        a.sort_key - b.sort_key ||
         String(a.manager_name).localeCompare(String(b.manager_name)) ||
         String(a.player_in_name || "").localeCompare(String(b.player_in_name || "")),
       );
       return c.json({
         gameweek: targetEvent,
         completed_since_gameweek: latestCompletedGameweek,
-        moves: transactionMoves,
+        moves: transactionMoves.map(({ sort_key: _sortKey, ...move }) => move),
         source: "draft_latest_transactions",
       });
     }
@@ -9916,6 +10334,7 @@ leagueActivity.get("/waivers", async (c) => {
       if (selectedDiff.pairCount === 0) return;
 
       const managerName = toCanonicalManagerName(formatDraftManagerName(entry)) || formatDraftManagerName(entry);
+      const canonical = toCanonicalManagerName(managerName);
       const teamName = formatDraftTeamName(entry);
       for (let i = 0; i < selectedDiff.pairCount; i += 1) {
         const inId = selectedDiff.inIds[i] ?? null;
@@ -9925,16 +10344,24 @@ leagueActivity.get("/waivers", async (c) => {
           manager_name: managerName,
           team_name: teamName,
           team_id: teamId,
+          division: canonical && DIVISION_TWO_MANAGERS.has(canonical)
+            ? "division_two"
+            : canonical && DIVISION_ONE_MANAGERS.has(canonical)
+              ? "division_one"
+              : null,
           transaction_type: "Completed Waiver/Free Agent",
           player_in_id: inId,
           player_in_name: inId ? (playersById[inId]?.name || `Player ${inId}`) : null,
           player_out_id: outId,
           player_out_name: outId ? (playersById[outId]?.name || `Player ${outId}`) : null,
+          sort_key: i,
         });
       }
     }));
 
     fallbackMoves.sort((a, b) =>
+      String(a.division || "").localeCompare(String(b.division || "")) ||
+      a.sort_key - b.sort_key ||
       String(a.manager_name).localeCompare(String(b.manager_name)) ||
       String(a.player_in_name || "").localeCompare(String(b.player_in_name || "")),
     );
@@ -9942,7 +10369,7 @@ leagueActivity.get("/waivers", async (c) => {
     return c.json({
       gameweek: targetEvent,
       completed_since_gameweek: referenceGameweek,
-      moves: fallbackMoves,
+      moves: fallbackMoves.map(({ sort_key: _sortKey, ...move }) => move),
       source: "draft_event_delta",
     });
   } catch (err: any) {
@@ -9996,9 +10423,18 @@ fixturesHub.get("/matchup", async (c) => {
       let entries: any[] = [];
       let matches: any[] = [];
       try {
-        const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
-        entries = normalizeDraftList<any>(details?.league_entries);
-        matches = normalizeDraftList<any>(details?.matches);
+        const [divOneId, divTwoId] = await Promise.all([
+          resolveLeagueIdForDivision(supabase, "division_one"),
+          resolveLeagueIdForDivision(supabase, "division_two"),
+        ]);
+        const leagueIds = Array.from(new Set([divOneId, divTwoId].filter(Boolean)));
+        const detailsList = await Promise.all(
+          leagueIds.map((id) => resolveDraftLeagueDetails(STATIC_ENTRY_ID, id)),
+        );
+        detailsList.forEach(({ details }) => {
+          entries.push(...normalizeDraftList<any>(details?.league_entries ?? []));
+          matches.push(...normalizeDraftList<any>(details?.matches ?? []));
+        });
       } catch {
         const [dbTeamsRes, dbMatchesRes] = await Promise.all([
           supabase
@@ -11002,8 +11438,8 @@ legacyStats.get("/season-standings/:season", async (c) => {
     const season = c.req.param("season");
     const competitionType = c.req.query("type") || "league"; // 'league' or 'goblet'
 
-    if (season >= HISTORICAL_STATS_CUTOFF_SEASON) {
-      return jsonError(c, 400, "Season must be before 2025/26");
+    if (season >= CURRENT_SEASON) {
+      return jsonError(c, 400, "Season must be a completed historical season");
     }
 
     const supabase = getSupabaseAdmin();
@@ -11089,9 +11525,12 @@ legacyStats.get("/manager/:managerName", async (c) => {
       competition_type: s.competition_type ?? "league",
     }));
 
-    // Append current season (2025/26) row from Draft API live standings
+    // Append current season row from Draft API live standings (division-specific league)
     try {
-      const leagueId = await resolveLeagueId();
+      const managerDivision = DIVISION_TWO_MANAGERS.has(managerName)
+        ? "division_two" as DivisionKey
+        : "division_one" as DivisionKey;
+      const leagueId = await resolveLeagueIdForDivision(supabase, managerDivision);
       const draftRes = await fetch(
         `${DRAFT_BASE_URL}/league/${leagueId}/details`
       );
@@ -11162,10 +11601,12 @@ legacyStats.get("/manager/:managerName", async (c) => {
       item._points_total += coerceNumber(row.avg_points) * coerceNumber(row.games_played);
       item.avg_points = item.games_played > 0 ? Math.round((item._points_total / item.games_played) * 100) / 100 : null;
     });
-    const h2hBySeason = Object.values(h2hSeasonMap).map((row: any) => {
-      const { _points_total, ...rest } = row;
-      return rest;
-    });
+    const h2hBySeason = Object.values(h2hSeasonMap)
+      .map((row: any) => {
+        const { _points_total, ...rest } = row;
+        return rest;
+      })
+      .filter((row: any) => row.season && row.season !== "All-Time");
 
     // Fetch season trophies
     const { data: trophiesRaw } = await supabase
@@ -11307,7 +11748,7 @@ legacyStats.get("/seasons", async (c) => {
     const { data, error } = await supabase
       .from("legacy_season_standings")
       .select("season")
-      .lt("season", HISTORICAL_STATS_CUTOFF_SEASON);
+      .lt("season", CURRENT_SEASON);
 
     if (error) {
       return jsonError(c, 500, "Failed to fetch seasons", error.message);
@@ -11334,7 +11775,7 @@ export default app;
 debugOwnership.get("/", async (c) => {
   try {
     const [davidSquad, lennartSquad] = await Promise.all([
-      fetch(`${DRAFT_BASE_URL}/entry/164475/squad`, {
+      fetch(`${DRAFT_BASE_URL}/entry/132262/squad`, {
         headers: { "User-Agent": "Mozilla/5.0" },
       })
         .then((r) => (r.ok ? r.json() : null))

@@ -6,6 +6,8 @@ import {
 } from "../lib/playerImage";
 import { Card } from "./ui/card";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
+import type { Division } from "../lib/divisions";
+import { getDivisionShortLabel, getManagerDivision } from "../lib/divisions";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import type { LiveDataResponse } from "../lib/types/api";
 
@@ -82,12 +84,24 @@ interface MatchupPayload {
   };
 }
 
+interface UpdateOwner {
+  manager_name: string;
+  division: Division | null;
+  team_name?: string | null;
+  opp_manager_name?: string | null;
+  opp_team_name?: string | null;
+  fixture_score: string;
+  is_benched: boolean;
+  points: number;
+}
+
 interface PlayerSnapshot {
   key: string;
   player_id: number;
   player_name: string;
   player_image_url?: string | null;
   manager_name: string;
+  opp_manager_name?: string | null;
   team_name?: string | null;
   opp_team_name?: string | null;
   team_score: number;
@@ -125,6 +139,7 @@ interface UpdateRow {
   player_name: string;
   player_image_url?: string | null;
   manager_name: string;
+  owners: UpdateOwner[];
   is_benched: boolean;
   team_name?: string | null;
   opp_team_name?: string | null;
@@ -153,6 +168,87 @@ function sortUpdates(rows: UpdateRow[]): UpdateRow[] {
     if (diff !== 0) return diff;
     return a.id.localeCompare(b.id);
   });
+}
+
+function ownerFromSnapshot(snapshot: PlayerSnapshot): UpdateOwner {
+  return {
+    manager_name: snapshot.manager_name,
+    division: getManagerDivision(snapshot.manager_name),
+    team_name: snapshot.team_name ?? null,
+    opp_manager_name: snapshot.opp_manager_name ?? null,
+    opp_team_name: snapshot.opp_team_name ?? null,
+    fixture_score: `${snapshot.team_score}-${snapshot.opp_score}`,
+    is_benched: snapshot.is_bench,
+    points: snapshot.points,
+  };
+}
+
+function ownerFromRow(row: UpdateRow): UpdateOwner {
+  return {
+    manager_name: row.manager_name,
+    division: getManagerDivision(row.manager_name),
+    team_name: row.team_name ?? null,
+    opp_manager_name: row.owners?.[0]?.opp_manager_name ?? null,
+    opp_team_name: row.opp_team_name ?? null,
+    fixture_score: row.fixture_score,
+    is_benched: row.is_benched,
+    points: row.points,
+  };
+}
+
+function mergeOwners(existing: UpdateOwner[] | undefined, incoming: UpdateOwner[]): UpdateOwner[] {
+  const merged = [...(existing || [])];
+  incoming.forEach((owner) => {
+    if (!merged.some((item) => item.manager_name === owner.manager_name)) {
+      merged.push(owner);
+    }
+  });
+  return merged;
+}
+
+function groupUpdatesByPlayerStat(rows: UpdateRow[]): UpdateRow[] {
+  const byKey = new Map<string, UpdateRow>();
+  rows.forEach((row) => {
+    const key = `${row.player_id}-${row.statKey ?? row.action}`;
+    const incomingOwners = row.owners?.length ? row.owners : [ownerFromRow(row)];
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, { ...row, owners: incomingOwners });
+      return;
+    }
+    existing.owners = mergeOwners(existing.owners, incomingOwners);
+    existing.event_time = Math.max(existing.event_time, row.event_time);
+    existing.at = Math.max(existing.at, row.at);
+    if (incomingOwners.length > existing.owners.length - incomingOwners.length) {
+      existing.id = row.id;
+    }
+  });
+  return sortUpdates(Array.from(byKey.values()));
+}
+
+function formatOwnerMatchup(owner: UpdateOwner): string {
+  const short = owner.division ? getDivisionShortLabel(owner.division) : null;
+  const name = short ? `${owner.manager_name} (${short})` : owner.manager_name;
+  const opponent = owner.opp_manager_name || owner.opp_team_name;
+  return opponent ? `${name} vs ${opponent}` : name;
+}
+
+function formatOwnersLine(owners: UpdateOwner[]): string {
+  if (owners.length === 1) return formatOwnerMatchup(owners[0]);
+  if (owners.length === 2) {
+    return `${formatOwnerMatchup(owners[0])} and ${formatOwnerMatchup(owners[1])}`;
+  }
+  const last = owners[owners.length - 1];
+  return `${owners.slice(0, -1).map(formatOwnerMatchup).join(", ")}, and ${formatOwnerMatchup(last)}`;
+}
+
+function dedupeMatchupsByPair<T extends { team_1_id: string; team_2_id: string }>(rows: T[]): T[] {
+  const byKey = new Map<string, T>();
+  rows.forEach((row) => {
+    const key = [String(row.team_1_id), String(row.team_2_id)].sort().join("::");
+    byKey.set(key, row);
+  });
+  return Array.from(byKey.values());
 }
 
 const POLL_INTERVAL_MS = 300_000;
@@ -334,13 +430,27 @@ export default function LivePlayerUpdates() {
         return true;
       }
 
-      const matchupsUrl = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-matchups`;
-      const matchupsRes = await fetch(matchupsUrl, { headers: getSupabaseFunctionHeaders() });
-      const matchupsPayload: MatchupsResponse = await matchupsRes.json();
+      const divisions: Division[] = ["division_one", "division_two"];
+      const matchupsResponses = await Promise.all(
+        divisions.map(async (division) => {
+          const params = new URLSearchParams({ division });
+          const res = await fetch(
+            `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-matchups?${params}`,
+            { headers: getSupabaseFunctionHeaders() },
+          );
+          const payload: MatchupsResponse = await res.json();
+          if (!res.ok || (payload as any)?.error) {
+            return { gameweek: 0, matchups: [] } as MatchupsResponse;
+          }
+          return payload;
+        }),
+      );
 
-      if (!matchupsRes.ok || (matchupsPayload as any)?.error) {
-        throw new Error((matchupsPayload as any)?.error?.message || "Failed to fetch matchups");
-      }
+      const allMatchups = dedupeMatchupsByPair(matchupsResponses.flatMap((p) => p.matchups || []));
+      const matchupsPayload: MatchupsResponse = {
+        gameweek: matchupsResponses[0]?.gameweek ?? 1,
+        matchups: allMatchups,
+      };
 
       setGameweek(matchupsPayload.gameweek);
 
@@ -389,6 +499,7 @@ export default function LivePlayerUpdates() {
             player_name: p.player_name,
             player_image_url: p.player_image_url || null,
             manager_name: payload.team_1.manager_name,
+            opp_manager_name: payload.team_2.manager_name,
             team_name: team1Name,
             opp_team_name: team2Name,
             team_score: t1,
@@ -423,6 +534,7 @@ export default function LivePlayerUpdates() {
             player_name: p.player_name,
             player_image_url: p.player_image_url || null,
             manager_name: payload.team_2.manager_name,
+            opp_manager_name: payload.team_1.manager_name,
             team_name: team2Name,
             opp_team_name: team1Name,
             team_score: t2,
@@ -507,6 +619,7 @@ export default function LivePlayerUpdates() {
             player_name: snapshot.player_name,
             player_image_url: snapshot.player_image_url,
             manager_name: snapshot.manager_name,
+            owners: [ownerFromSnapshot(snapshot)],
             is_benched: snapshot.is_bench,
             team_name: snapshot.team_name ?? null,
             opp_team_name: snapshot.opp_team_name ?? null,
@@ -526,7 +639,7 @@ export default function LivePlayerUpdates() {
       }));
 
       if (nextRows.length > 0) {
-        setRows((prev) => [...nextRows, ...prev].slice(0, MAX_ROWS));
+        setRows((prev) => groupUpdatesByPlayerStat([...nextRows, ...prev]).slice(0, MAX_ROWS));
       }
 
       previousRef.current = current;
@@ -578,7 +691,7 @@ export default function LivePlayerUpdates() {
     };
   }, [load]);
 
-  const visibleRows = useMemo(() => sortUpdates(rows), [rows]);
+  const visibleRows = useMemo(() => groupUpdatesByPlayerStat(rows), [rows]);
 
   if (loading) {
     return (
@@ -614,7 +727,11 @@ export default function LivePlayerUpdates() {
         <p className="text-sm text-muted-foreground">No live stat events yet. Updates will appear as games progress.</p>
       ) : (
         <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
-          {visibleRows.map((row) => (
+          {visibleRows.map((row) => {
+            const owners = row.owners?.length ? row.owners : [ownerFromRow(row)];
+            const mixedBench = owners.some((owner) => owner.is_benched) && owners.some((owner) => !owner.is_benched);
+            const statusLabel = mixedBench ? "Mixed" : owners.every((owner) => owner.is_benched) ? "Benched" : "Started";
+            return (
             <div key={row.id} className="grid grid-cols-[2.5rem_1fr_auto] items-center gap-2 rounded-md border bg-background/70 p-2">
               <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded-full border bg-muted">
                 {row.player_image_url ? (
@@ -639,30 +756,35 @@ export default function LivePlayerUpdates() {
                 <p className="truncate text-sm font-medium">
                   {row.player_name}
                   <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">
-                    ({row.is_benched ? "Benched" : "Started"})
+                    ({statusLabel})
                   </span>
                 </p>
-                <p className="truncate text-xs text-muted-foreground flex items-center gap-1.5">
+                <p className="text-xs text-muted-foreground flex items-start gap-1.5">
                   {row.statKey && (
                     <span className="shrink-0 text-sm" title={row.action} aria-hidden>
                       {STAT_ICONS[row.statKey]}
                     </span>
                   )}
-                  <span>{row.action}</span>
-                  <span>•</span>
-                  <span>{row.manager_name}</span>
-                  {row.competition ? ` • ${row.competition}` : ""}
-                  {row.competition_detail ? ` • ${row.competition_detail}` : ""}
+                  <span className={owners.length > 1 ? "whitespace-normal" : "truncate"}>
+                    {row.action}
+                    {" • "}
+                    {formatOwnersLine(owners)}
+                    {row.competition ? ` • ${row.competition}` : ""}
+                    {row.competition_detail ? ` • ${row.competition_detail}` : ""}
+                  </span>
                 </p>
               </div>
               <div className="text-right">
                 <p className="text-xs font-semibold">{row.points} pts</p>
                 <p className="text-[11px] text-muted-foreground">
-                  {[row.team_name, row.fixture_score, row.opp_team_name].filter(Boolean).join(" ")}
+                  {owners.length === 1
+                    ? [row.team_name, row.fixture_score, row.opp_team_name].filter(Boolean).join(" ")
+                    : owners.map((owner) => `${owner.manager_name} ${owner.fixture_score}`).join(" · ")}
                 </p>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </Card>

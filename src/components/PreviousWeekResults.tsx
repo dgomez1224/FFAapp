@@ -10,6 +10,9 @@ import {
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { useNavigate } from "react-router-dom";
 import { Star } from "lucide-react";
+import type { Division } from "../lib/divisions";
+import { getDivisionLabel, getManagerDivision } from "../lib/divisions";
+import { DivisionBadge } from "./DivisionBadge";
 
 interface PotmRow {
   player_id: number;
@@ -104,98 +107,113 @@ export function PreviousWeekResults() {
       <p className="text-xs text-muted-foreground mb-3">
         League fixtures and Player of the Match for GW {data.gameweek}.
       </p>
-      <div className="fpl-table-container">
-        <Table>
-          <TableHeader>
-            <TableRow className="fpl-table-header">
-              <TableHead>Team 1</TableHead>
-              <TableHead className="text-center">Score</TableHead>
-              <TableHead>Team 2</TableHead>
-              <TableHead className="flex items-center gap-1">
-                <Star className="h-3 w-3 text-yellow-500" />
-                <span>POTM</span>
-              </TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {data.fixtures.map((f) => {
-              const team1Label = f.team_1.team_name || f.team_1.manager_name;
-              const team2Label = f.team_2.team_name || f.team_2.manager_name;
-              const scoreLabel = `${Math.round(f.team_1.points)} – ${Math.round(f.team_2.points)}`;
-              return (
-                <TableRow
-                  key={`${f.team_1.manager_name}-${f.team_2.manager_name}`}
-                  className="cursor-pointer hover:bg-muted/40"
-                  onClick={() =>
-                    navigate(
-                      `/matchup/league/${f.gameweek}/${encodeURIComponent(
-                        String(f.team_1.entry_id || ""),
-                      )}/${encodeURIComponent(String(f.team_2.entry_id || ""))}`,
-                    )
-                  }
-                >
-                  <TableCell className="align-top">
-                    <div className="text-sm font-medium">{team1Label}</div>
-                  </TableCell>
-                  <TableCell className="text-center align-top text-sm font-semibold whitespace-nowrap">
-                    {scoreLabel}
-                  </TableCell>
-                  <TableCell className="align-top">
-                    <div className="text-sm font-medium">{team2Label}</div>
-                  </TableCell>
-                  <TableCell className="align-top text-xs text-muted-foreground">
-                    {f.potm && f.potm.length > 0 ? (
-                      <div className="flex flex-col gap-1">
-                        {f.potm.map((p) => (
-                          <div key={`${p.player_id}-${p.manager_name}`} className="flex items-center gap-2">
-                            {p.player_image_url ? (
-                              <div className="relative h-6 w-6 shrink-0 overflow-hidden rounded-full border">
-                                <img
-                                  src={getProxiedImageUrl(p.player_image_url) ?? undefined}
-                                  alt={p.player_name}
-                                  className="h-full w-full object-cover"
-                                  onError={(e) =>
-                                    handlePlayerImageErrorWithWikipediaFallback(e, p.player_name, {
-                                      fallbackClassName:
-                                        "absolute inset-0 flex items-center justify-center bg-muted text-[10px] font-bold text-muted-foreground",
-                                    })
-                                  }
-                                />
-                              </div>
-                            ) : (
-                              <div className="h-6 w-6 rounded-full border bg-muted flex items-center justify-center text-[10px] font-bold text-muted-foreground">
-                                {getPlayerInitialsAbbrev(p.player_name)}
-                              </div>
-                            )}
-                            <div className="flex flex-col">
-                              <span className="text-[11px] font-medium">
-                                {p.player_name} ({p.total_points} pts) / {p.team_name || p.manager_name}
-                              </span>
-                              <div className="flex flex-wrap items-center gap-1 mt-0.5 text-[11px]">
-                                {p.goals_scored ? <span>⚽{xOrOne(p.goals_scored)}</span> : null}
-                                {p.assists ? <span>👟{xOrOne(p.assists)}</span> : null}
-                                {p.clean_sheets ? <span>🛡️</span> : null}
-                                {p.defensive_return ? <span>🔒</span> : null}
-                                {p.penalties_saved ? <span>🧤{xOrOne(p.penalties_saved)}</span> : null}
-                                {p.saves ? <span>🧤{xOrOne(p.saves)}</span> : null}
-                                {p.bonus ? (
-                                  <span className="text-emerald-600 font-semibold">+{p.bonus}</span>
-                                ) : null}
-                              </div>
+      {(["division_one", "division_two"] as Division[]).map((division) => {
+        const fixtures = (data.fixtures || []).filter((f) => {
+          const div = getManagerDivision(f.team_1.manager_name) || getManagerDivision(f.team_2.manager_name);
+          return div === division;
+        });
+        if (!fixtures.length) return null;
+        return (
+          <div key={division} className="mb-6 last:mb-0">
+            <div className="mb-2 flex items-center gap-2">
+              <h3 className="text-sm font-semibold">{getDivisionLabel(division)}</h3>
+              <DivisionBadge division={division} />
+            </div>
+            <div className="fpl-table-container">
+              <Table>
+                <TableHeader>
+                  <TableRow className="fpl-table-header">
+                    <TableHead>Team 1</TableHead>
+                    <TableHead className="text-center">Score</TableHead>
+                    <TableHead>Team 2</TableHead>
+                    <TableHead className="flex items-center gap-1">
+                      <Star className="h-3 w-3 text-yellow-500" />
+                      <span>POTM</span>
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {fixtures.map((f) => {
+                    const team1Label = f.team_1.team_name || f.team_1.manager_name;
+                    const team2Label = f.team_2.team_name || f.team_2.manager_name;
+                    const scoreLabel = `${Math.round(f.team_1.points)} – ${Math.round(f.team_2.points)}`;
+                    return (
+                      <TableRow
+                        key={`${division}-${f.team_1.manager_name}-${f.team_2.manager_name}`}
+                        className="cursor-pointer hover:bg-muted/40"
+                        onClick={() =>
+                          navigate(
+                            `/matchup/league/${f.gameweek}/${encodeURIComponent(
+                              String(f.team_1.entry_id || ""),
+                            )}/${encodeURIComponent(String(f.team_2.entry_id || ""))}`,
+                          )
+                        }
+                      >
+                        <TableCell className="align-top">
+                          <div className="text-sm font-medium">{team1Label}</div>
+                        </TableCell>
+                        <TableCell className="text-center align-top text-sm font-semibold whitespace-nowrap">
+                          {scoreLabel}
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <div className="text-sm font-medium">{team2Label}</div>
+                        </TableCell>
+                        <TableCell className="align-top text-xs text-muted-foreground">
+                          {f.potm && f.potm.length > 0 ? (
+                            <div className="flex flex-col gap-1">
+                              {f.potm.map((p) => (
+                                <div key={`${p.player_id}-${p.manager_name}`} className="flex items-center gap-2">
+                                  {p.player_image_url ? (
+                                    <div className="relative h-6 w-6 shrink-0 overflow-hidden rounded-full border">
+                                      <img
+                                        src={getProxiedImageUrl(p.player_image_url) ?? undefined}
+                                        alt={p.player_name}
+                                        className="h-full w-full object-cover"
+                                        onError={(e) =>
+                                          handlePlayerImageErrorWithWikipediaFallback(e, p.player_name, {
+                                            fallbackClassName:
+                                              "absolute inset-0 flex items-center justify-center bg-muted text-[10px] font-bold text-muted-foreground",
+                                          })
+                                        }
+                                      />
+                                    </div>
+                                  ) : (
+                                    <div className="h-6 w-6 rounded-full border bg-muted flex items-center justify-center text-[10px] font-bold text-muted-foreground">
+                                      {getPlayerInitialsAbbrev(p.player_name)}
+                                    </div>
+                                  )}
+                                  <div className="flex flex-col">
+                                    <span className="text-[11px] font-medium">
+                                      {p.player_name} ({p.total_points} pts) / {p.team_name || p.manager_name}
+                                    </span>
+                                    <div className="flex flex-wrap items-center gap-1 mt-0.5 text-[11px]">
+                                      {p.goals_scored ? <span>⚽{xOrOne(p.goals_scored)}</span> : null}
+                                      {p.assists ? <span>👟{xOrOne(p.assists)}</span> : null}
+                                      {p.clean_sheets ? <span>🛡️</span> : null}
+                                      {p.defensive_return ? <span>🔒</span> : null}
+                                      {p.penalties_saved ? <span>🧤{xOrOne(p.penalties_saved)}</span> : null}
+                                      {p.saves ? <span>🧤{xOrOne(p.saves)}</span> : null}
+                                      {p.bonus ? (
+                                        <span className="text-emerald-600 font-semibold">+{p.bonus}</span>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
                             </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      "—"
-                    )}
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
-      </div>
+                          ) : (
+                            "—"
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+        );
+      })}
     </Card>
   );
 }

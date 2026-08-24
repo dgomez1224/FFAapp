@@ -12,6 +12,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import { useManagerCrestMap } from "../lib/useManagerCrestMap";
 import gobletTrophy from "../assets/trophies/Goblet Icon.png";
+import { DivisionBadge } from "./DivisionBadge";
+import { getManagerDivision } from "../lib/divisions";
 
 interface GobletStanding {
   team_id: string;
@@ -307,7 +309,14 @@ export default function GobletStandings() {
                       <span>{standing.entry_name || standing.team_id}</span>
                     </div>
                   </TableCell>
-                  <TableCell className="fpl-manager-name">{standing.manager_name || "–"}</TableCell>
+                  <TableCell className="fpl-manager-name">
+                    <div className="flex items-center gap-2">
+                      <span>{standing.manager_name || "–"}</span>
+                      {standing.manager_name && getManagerDivision(standing.manager_name) ? (
+                        <DivisionBadge division={getManagerDivision(standing.manager_name)!} />
+                      ) : null}
+                    </div>
+                  </TableCell>
                   <TableCell className="fpl-points">{standing.points_for ?? standing.total_points}</TableCell>
                   </TableRow>
                 );

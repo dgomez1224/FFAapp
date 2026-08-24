@@ -11,7 +11,8 @@ import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { Card } from "../components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
-import { CANONICAL_MANAGERS } from "../lib/canonicalManagers";
+import { CANONICAL_MANAGERS, getManagerDivision } from "../lib/canonicalManagers";
+import { DivisionBadge } from "../components/DivisionBadge";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import leagueTrophy from "../assets/trophies/League Cup Icon.png";
 import cupTrophy from "../assets/trophies/FFA Cup Icon + Year.png";
@@ -34,6 +35,7 @@ function normalizeFixtureManagerName(name: string) {
   if (!normalized) return "";
   const first = normalized.split(/\s+/)[0] || normalized;
   if (first === "MATTHEW") return "MATT";
+  if (first === "SEB") return "SEBASTIAN";
   return first;
 }
 
@@ -124,14 +126,16 @@ export default function ManagerProfile() {
     if (!data?.manager_name) return;
     async function loadCurrentSeasonExtras() {
       try {
+        const division = getManagerDivision(data.manager_name);
+        const divisionQuery = division ? `?division=${division}` : "";
         const [fixturesRes, standingsRes, matchupsRes] = await Promise.all([
           fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/fixtures`, {
             headers: getSupabaseFunctionHeaders(),
           }),
-          fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-standings`, {
+          fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-standings${divisionQuery}`, {
             headers: getSupabaseFunctionHeaders(),
           }),
-          fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-matchups`, {
+          fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-matchups${divisionQuery}`, {
             headers: getSupabaseFunctionHeaders(),
           }),
         ]);
@@ -466,7 +470,12 @@ export default function ManagerProfile() {
             ← Back to Managers
           </Link>
         </div>
-        <h1 className="text-3xl font-bold text-zinc-900">{data.manager_name} Manager Insights</h1>
+        <h1 className="text-3xl font-bold text-zinc-900 flex items-center gap-3 flex-wrap">
+          {data.manager_name} Manager Insights
+          {getManagerDivision(data.manager_name) ? (
+            <DivisionBadge division={getManagerDivision(data.manager_name)!} />
+          ) : null}
+        </h1>
         <p className="text-sm text-zinc-700 mt-2">Historical performance dashboard</p>
       </div>
 
@@ -498,6 +507,22 @@ export default function ManagerProfile() {
                   <div>
                     <p className="text-sm text-zinc-700">L</p>
                     <p className="text-4xl font-bold">{data.all_time_stats.losses || 0}</p>
+                  </div>
+                </div>
+                <div className="mt-4 grid grid-cols-2 gap-3 text-center text-xs">
+                  <div className="rounded-xl border border-zinc-300 bg-white/60 p-2">
+                    <p className="font-semibold text-zinc-700">Division One</p>
+                    <p className="mt-1 text-zinc-600">
+                      {data.all_time_stats.division_one?.wins ?? 0}W–{data.all_time_stats.division_one?.draws ?? 0}D–{data.all_time_stats.division_one?.losses ?? 0}L
+                    </p>
+                    <p className="text-zinc-500">{data.all_time_stats.division_one?.total_points ?? 0} pts</p>
+                  </div>
+                  <div className="rounded-xl border border-zinc-300 bg-white/60 p-2">
+                    <p className="font-semibold text-zinc-700">Division Two</p>
+                    <p className="mt-1 text-zinc-600">
+                      {data.all_time_stats.division_two?.wins ?? 0}W–{data.all_time_stats.division_two?.draws ?? 0}D–{data.all_time_stats.division_two?.losses ?? 0}L
+                    </p>
+                    <p className="text-zinc-500">{data.all_time_stats.division_two?.total_points ?? 0} pts</p>
                   </div>
                 </div>
               </Card>

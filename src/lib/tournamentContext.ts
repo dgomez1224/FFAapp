@@ -3,7 +3,7 @@
  * 
  * This context provides league and tournament data using the static entry ID.
  * No authentication or localStorage is required - all data is derived from
- * the static entry ID (164475).
+ * the static entry ID (David's current-season Draft entry).
  * 
  * All components should use this context to access league information.
  */

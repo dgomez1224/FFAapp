@@ -6,12 +6,14 @@
  */
 
 import React, { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { getSupabaseFunctionHeaders, supabase, supabaseUrl } from "../lib/supabaseClient";
 import { Card } from "../components/ui/card";
 import { LegacyStandingsTable } from "../components/LegacyStandingsTable";
-import { EDGE_FUNCTIONS_BASE, HISTORICAL_STATS_CUTOFF_SEASON } from "../lib/constants";
+import { EDGE_FUNCTIONS_BASE, CURRENT_SEASON } from "../lib/constants";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
-import { Link } from "react-router-dom";
+import { getManagerDivision } from "../lib/divisions";
+import { DivisionBadge } from "../components/DivisionBadge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
 interface AllTimeStat {
@@ -25,6 +27,25 @@ interface AllTimeStat {
   league_titles: number;
   cup_wins: number;
   goblet_wins: number;
+  current_division?: "division_one" | "division_two";
+  division_one?: {
+    wins: number;
+    draws: number;
+    losses: number;
+    total_points: number;
+    points_plus: number;
+    points_per_game: number;
+    league_titles: number;
+  };
+  division_two?: {
+    wins: number;
+    draws: number;
+    losses: number;
+    total_points: number;
+    points_plus: number;
+    points_per_game: number;
+    league_titles: number;
+  };
 }
 
 interface SeasonStanding {
@@ -91,6 +112,7 @@ export default function Home() {
     dir: "desc",
   });
   const [leaders, setLeaders] = useState<LegacyLeadersPayload | null>(null);
+  const [standingsView, setStandingsView] = useState<"all-time" | "division-one" | "division-two">("all-time");
 
   useEffect(() => {
     async function loadData() {
@@ -111,7 +133,7 @@ export default function Home() {
         const { data: seasonsData, error: seasonsError } = await supabase
           .from("legacy_season_standings")
           .select("season")
-          .lt("season", HISTORICAL_STATS_CUTOFF_SEASON);
+          .lt("season", CURRENT_SEASON);
         if (seasonsError) {
           throw new Error(seasonsError.message);
         }
@@ -274,14 +296,44 @@ export default function Home() {
     );
   }
 
-  const allTimeTableData = allTimeStats.map((stat) => ({
-    manager_name: stat.manager_name,
-    wins: stat.wins,
-    draws: stat.draws,
-    losses: stat.losses,
-    points_for: stat.points_plus,
-    points: stat.total_points,
-  }));
+  const emptyDivisionBlock = {
+    wins: 0,
+    draws: 0,
+    losses: 0,
+    total_points: 0,
+    points_plus: 0,
+    points_per_game: 0,
+    league_titles: 0,
+  };
+
+  const allTimeTableData = allTimeStats.map((stat) => {
+    const block =
+      standingsView === "division-one"
+        ? stat.division_one || emptyDivisionBlock
+        : standingsView === "division-two"
+          ? stat.division_two || emptyDivisionBlock
+          : null;
+    const wins = block ? block.wins : stat.wins;
+    const draws = block ? block.draws : stat.draws;
+    const losses = block ? block.losses : stat.losses;
+    const points = block ? block.total_points : stat.total_points;
+    const pointsFor = block ? block.points_plus : stat.points_plus;
+    const played = wins + draws + losses;
+    const ppg = block
+      ? block.points_per_game
+      : stat.points_per_game;
+    return {
+      manager_name: stat.manager_name,
+      wins,
+      draws,
+      losses,
+      played,
+      points_for: pointsFor,
+      points,
+      points_per_game: ppg,
+      division: getManagerDivision(stat.manager_name),
+    };
+  });
 
   const sortedAllTimeTableData = [...allTimeTableData].sort((a: any, b: any) => {
     const av = a?.[allTimeSort.key];
@@ -366,28 +418,80 @@ export default function Home() {
         <TabsContent value="all-time" className="mt-4">
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <Card className="p-4">
-              <h3 className="text-lg font-semibold mb-3 text-gray-900">All-Time League Standings</h3>
+              <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <h3 className="text-lg font-semibold text-gray-900">All-Time League Standings</h3>
+                <select
+                  className="rounded-md border bg-background px-3 py-1.5 text-sm sm:hidden"
+                  value={standingsView}
+                  onChange={(event) => {
+                    setStandingsView(event.target.value as typeof standingsView);
+                    setAllTimeSort({ key: "points", dir: "desc" });
+                  }}
+                >
+                  <option value="all-time">All-Time</option>
+                  <option value="division-one">Division 1</option>
+                  <option value="division-two">Division 2</option>
+                </select>
+                <div className="hidden rounded-lg border bg-muted p-1 sm:inline-flex">
+                  {([
+                    ["all-time", "All-Time"],
+                    ["division-one", "Division 1"],
+                    ["division-two", "Division 2"],
+                  ] as const).map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => {
+                        setStandingsView(id);
+                        setAllTimeSort({ key: "points", dir: "desc" });
+                      }}
+                      className={`rounded-md px-3 py-1 text-xs font-semibold ${
+                        standingsView === id ? "bg-background shadow-sm" : "text-muted-foreground"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <p className="mb-3 text-xs text-muted-foreground">
+                {standingsView === "all-time"
+                  ? "Combined stats from all divisions"
+                  : standingsView === "division-one"
+                    ? "Stats from Division One only"
+                    : "Stats from Division Two only"}
+              </p>
               <div className="fpl-table-container">
                 <Table>
                   <TableHeader>
                     <TableRow className="fpl-table-header">
+                    <TableHead className="w-10">#</TableHead>
                     <TableHead className="cursor-pointer" onClick={() => toggleAllTimeSort("manager_name")}>Manager{allTimeSortLabel("manager_name")}</TableHead>
+                    <TableHead className="cursor-pointer text-right" onClick={() => toggleAllTimeSort("played")}>P{allTimeSortLabel("played")}</TableHead>
                     <TableHead className="cursor-pointer text-right" onClick={() => toggleAllTimeSort("wins")}>W{allTimeSortLabel("wins")}</TableHead>
                     <TableHead className="cursor-pointer text-right" onClick={() => toggleAllTimeSort("draws")}>D{allTimeSortLabel("draws")}</TableHead>
                     <TableHead className="cursor-pointer text-right" onClick={() => toggleAllTimeSort("losses")}>L{allTimeSortLabel("losses")}</TableHead>
-                    <TableHead className="cursor-pointer text-right" onClick={() => toggleAllTimeSort("points_for")}>For{allTimeSortLabel("points_for")}</TableHead>
                     <TableHead className="cursor-pointer text-right" onClick={() => toggleAllTimeSort("points")}>Pts{allTimeSortLabel("points")}</TableHead>
+                    <TableHead className="cursor-pointer text-right" onClick={() => toggleAllTimeSort("points_per_game")}>PPG{allTimeSortLabel("points_per_game")}</TableHead>
+                    <TableHead>Div</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody className="fpl-table-body">
-                    {sortedAllTimeTableData.map((row) => (
+                    {sortedAllTimeTableData.map((row, index) => (
                       <TableRow key={row.manager_name}>
+                        <TableCell className="fpl-numeric">{index + 1}</TableCell>
                         <TableCell className="fpl-manager-name">{row.manager_name}</TableCell>
+                        <TableCell className="fpl-numeric">{row.played}</TableCell>
                         <TableCell className="fpl-numeric">{row.wins}</TableCell>
                         <TableCell className="fpl-numeric">{row.draws}</TableCell>
                         <TableCell className="fpl-numeric">{row.losses}</TableCell>
-                        <TableCell className="fpl-numeric">{row.points_for}</TableCell>
                         <TableCell className="fpl-points">{row.points}</TableCell>
+                        <TableCell className="fpl-numeric">
+                          {Number(row.points_per_game || 0).toFixed(2)}
+                        </TableCell>
+                        <TableCell>
+                          {row.division ? <DivisionBadge division={row.division} /> : "—"}
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

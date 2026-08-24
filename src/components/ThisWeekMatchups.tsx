@@ -16,6 +16,7 @@ import {
   handlePlayerImageErrorWithWikipediaFallback,
 } from "../lib/playerImage";
 import { summarizeMatchupHighlights } from "./LivePlayerUpdates";
+import { getDivisionLabel, type Division } from "../lib/divisions";
 
 interface MatchupRow {
   fixture_id?: string;
@@ -46,7 +47,14 @@ interface MatchupRow {
 interface MatchupsResponse {
   gameweek: number;
   matchups: MatchupRow[];
+  division?: string;
 }
+
+type DivisionMatchups = {
+  division: Division;
+  gameweek: number;
+  matchups: MatchupRow[];
+};
 
 type FormResult = "W" | "D" | "L";
 
@@ -74,8 +82,18 @@ const avatarFallback = (name: string) =>
   `https://ui-avatars.com/api/?name=${encodeURIComponent(name || "Player")}&background=1f2937&color=ffffff&size=128&bold=true`;
 const sanitizeImageUrl = (url?: string | null) => String(url || "").replace(/^http:\/\//i, "https://").trim();
 
+function dedupeMatchupsByPair<T extends { team_1_id: string; team_2_id: string }>(rows: T[]): T[] {
+  const byKey = new Map<string, T>();
+  rows.forEach((row) => {
+    const key = [String(row.team_1_id), String(row.team_2_id)].sort().join("::");
+    byKey.set(key, row);
+  });
+  return Array.from(byKey.values());
+}
+
 export function ThisWeekMatchups() {
-  const [data, setData] = useState<MatchupsResponse | null>(null);
+  const [divisionsData, setDivisionsData] = useState<DivisionMatchups[]>([]);
+  const [gameweek, setGameweek] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -93,23 +111,46 @@ export function ThisWeekMatchups() {
       }
       setError(null);
 
-      const [matchupsRes, rivalriesRes] = await Promise.all([
-        fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-matchups`, { headers: getSupabaseFunctionHeaders() }),
-        fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-rivalries`, { headers: getSupabaseFunctionHeaders() }),
-      ]);
-      const payload: MatchupsResponse = await matchupsRes.json();
-      const rivalryPayload: H2HStandingsResponse = await rivalriesRes.json();
+      const divisions: Division[] = ["division_one", "division_two"];
+      const divisionResults = await Promise.all(
+        divisions.map(async (division) => {
+          const params = new URLSearchParams({ division });
+          const [matchupsRes, rivalriesRes] = await Promise.all([
+            fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-matchups?${params}`, {
+              headers: getSupabaseFunctionHeaders(),
+            }),
+            fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-rivalries?${params}`, {
+              headers: getSupabaseFunctionHeaders(),
+            }),
+          ]);
+          const payload: MatchupsResponse = await matchupsRes.json();
+          const rivalryPayload: H2HStandingsResponse = await rivalriesRes.json();
 
-      if (!matchupsRes.ok || (payload as any)?.error) {
-        throw new Error((payload as any)?.error?.message || "Failed to fetch matchups");
-      }
-      if (!rivalriesRes.ok || (rivalryPayload as any)?.error) {
-        throw new Error((rivalryPayload as any)?.error?.message || "Failed to fetch rivalry data");
-      }
+          if (!matchupsRes.ok || (payload as any)?.error) {
+            return {
+              division,
+              payload: { gameweek: 0, matchups: [] } as MatchupsResponse,
+              rivalryPayload: { gameweek: 0, matchups: [] } as H2HStandingsResponse,
+            };
+          }
+          if (!rivalriesRes.ok || (rivalryPayload as any)?.error) {
+            return {
+              division,
+              payload,
+              rivalryPayload: { gameweek: 0, matchups: [] } as H2HStandingsResponse,
+            };
+          }
+
+          return { division, payload, rivalryPayload };
+        }),
+      );
+
+      const gw = divisionResults[0]?.payload.gameweek ?? 1;
+      setGameweek(gw);
 
       const startsByPlayerId: Record<number, number> = {};
       try {
-        const liveUrl = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/api/live?event=${payload.gameweek}`;
+        const liveUrl = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/api/live?event=${gw}`;
         const liveRes = await fetch(liveUrl, { headers: getSupabaseFunctionHeaders() });
         if (liveRes.ok) {
           const livePayload: LiveDataResponse = await liveRes.json();
@@ -126,77 +167,84 @@ export function ThisWeekMatchups() {
         // Non-blocking
       }
 
-      const detailPayloads = await Promise.all(
-        (payload.matchups || []).map(async (m) => {
-          const params = new URLSearchParams({
-            type: "league",
-            gameweek: String(m.gameweek || payload.gameweek),
-            team1: String(m.team_1_entry_id || m.team_1_id),
-            team2: String(m.team_2_entry_id || m.team_2_id),
+      const mergedDivisions: DivisionMatchups[] = await Promise.all(
+        divisionResults.map(async ({ division, payload, rivalryPayload }) => {
+          const detailPayloads = await Promise.all(
+            dedupeMatchupsByPair(payload.matchups || []).map(async (m) => {
+              const params = new URLSearchParams({
+                type: "league",
+                gameweek: String(m.gameweek || payload.gameweek),
+                team1: String(m.team_1_entry_id || m.team_1_id),
+                team2: String(m.team_2_entry_id || m.team_2_id),
+              });
+              const detailUrl = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/fixtures/matchup?${params.toString()}`;
+              const detailRes = await fetch(detailUrl, { headers: getSupabaseFunctionHeaders() });
+              if (!detailRes.ok) return null;
+              const detail = await detailRes.json();
+              if (detail?.error) return null;
+              const team1LeagueLive = (detail?.team_1?.lineup || []).reduce(
+                (sum: number, player: any) => sum + (player?.is_bench ? 0 : Number(player?.effective_points || 0)),
+                0,
+              );
+              const team2LeagueLive = (detail?.team_2?.lineup || []).reduce(
+                (sum: number, player: any) => sum + (player?.is_bench ? 0 : Number(player?.effective_points || 0)),
+                0,
+              );
+              const detailForHighlights = {
+                ...detail,
+                matchup: {
+                  ...(detail?.matchup || {}),
+                  live_team_1_points: team1LeagueLive,
+                  live_team_2_points: team2LeagueLive,
+                },
+              };
+              return {
+                key: `${m.team_1_id}__${m.team_2_id}`,
+                live_team_1_points: team1LeagueLive,
+                live_team_2_points: team2LeagueLive,
+                live_highlights: summarizeMatchupHighlights(detailForHighlights, startsByPlayerId, 8),
+              };
+            }),
+          );
+
+          const detailMap: Record<string, (typeof detailPayloads)[number]> = {};
+          detailPayloads.filter(Boolean).forEach((row) => {
+            if (!row) return;
+            detailMap[String(row.key)] = row;
           });
-          const detailUrl = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/fixtures/matchup?${params.toString()}`;
-          const detailRes = await fetch(detailUrl, { headers: getSupabaseFunctionHeaders() });
-          if (!detailRes.ok) return null;
-          const detail = await detailRes.json();
-          if (detail?.error) return null;
-          const team1LeagueLive = (detail?.team_1?.lineup || []).reduce(
-            (sum: number, player: any) => sum + (player?.is_bench ? 0 : Number(player?.effective_points || 0)),
-            0,
-          );
-          const team2LeagueLive = (detail?.team_2?.lineup || []).reduce(
-            (sum: number, player: any) => sum + (player?.is_bench ? 0 : Number(player?.effective_points || 0)),
-            0,
-          );
-          const detailForHighlights = {
-            ...detail,
-            matchup: {
-              ...(detail?.matchup || {}),
-              live_team_1_points: team1LeagueLive,
-              live_team_2_points: team2LeagueLive,
-            },
-          };
+
+          const rivalryMap: Record<string, any> = {};
+          (rivalryPayload.matchups || []).forEach((m) => {
+            rivalryMap[`${m.team_1_id}__${m.team_2_id}`] = m;
+            rivalryMap[`${m.team_2_id}__${m.team_1_id}`] = {
+              ...m,
+              current_season_record_1: m.current_season_record_2,
+              current_season_record_2: m.current_season_record_1,
+              all_time_record_1: m.all_time_record_2,
+              all_time_record_2: m.all_time_record_1,
+            };
+          });
+
+          const matchups = dedupeMatchupsByPair(payload.matchups || []).map((m) => {
+            const detail = detailMap[`${m.team_1_id}__${m.team_2_id}`];
+            return {
+              ...m,
+              live_team_1_points: detail?.live_team_1_points,
+              live_team_2_points: detail?.live_team_2_points,
+              live_highlights: detail?.live_highlights || [],
+              rivalry: rivalryMap[`${m.team_1_id}__${m.team_2_id}`] || null,
+            };
+          });
+
           return {
-            key: `${m.team_1_id}__${m.team_2_id}`,
-            live_team_1_points: team1LeagueLive,
-            live_team_2_points: team2LeagueLive,
-            live_highlights: summarizeMatchupHighlights(detailForHighlights, startsByPlayerId, 8),
+            division,
+            gameweek: payload.gameweek,
+            matchups: matchups as MatchupRow[],
           };
         }),
       );
 
-      const detailMap: Record<string, (typeof detailPayloads)[number]> = {};
-      detailPayloads.filter(Boolean).forEach((row) => {
-        if (!row) return;
-        detailMap[String(row.key)] = row;
-      });
-
-      const rivalryMap: Record<string, any> = {};
-      (rivalryPayload.matchups || []).forEach((m) => {
-        rivalryMap[`${m.team_1_id}__${m.team_2_id}`] = m;
-        rivalryMap[`${m.team_2_id}__${m.team_1_id}`] = {
-          ...m,
-          current_season_record_1: m.current_season_record_2,
-          current_season_record_2: m.current_season_record_1,
-          all_time_record_1: m.all_time_record_2,
-          all_time_record_2: m.all_time_record_1,
-        };
-      });
-
-      const merged: MatchupsResponse = {
-        ...payload,
-        matchups: (payload.matchups || []).map((m) => {
-          const detail = detailMap[`${m.team_1_id}__${m.team_2_id}`];
-          return {
-            ...m,
-            live_team_1_points: detail?.live_team_1_points,
-            live_team_2_points: detail?.live_team_2_points,
-            live_highlights: detail?.live_highlights || [],
-            rivalry: rivalryMap[`${m.team_1_id}__${m.team_2_id}`] || null,
-          };
-        }),
-      } as any;
-
-      setData(merged);
+      setDivisionsData(mergedDivisions);
       setLastUpdated(Date.now());
     } catch (err: any) {
       setError(err.message || "Failed to load matchups");
@@ -253,7 +301,7 @@ export function ThisWeekMatchups() {
     );
   }
 
-  if (!data || data.matchups.length === 0) {
+  if (!divisionsData.length || divisionsData.every((d) => d.matchups.length === 0)) {
     return (
       <Card className="p-6">
         <h1 className="mb-4 text-xl font-semibold">This Week's Matchups</h1>
@@ -262,91 +310,82 @@ export function ThisWeekMatchups() {
     );
   }
 
-  return (
-    <Card className="p-4">
-      <div className="mb-4 flex items-start justify-between gap-2">
-        <div>
-          <h2 className="text-lg font-semibold">This Week's Matchups</h2>
-          <p className="text-sm text-muted-foreground">Gameweek {data.gameweek}</p>
-        </div>
-        <div className="text-right">
-          {refreshing ? <p className="text-xs text-muted-foreground">Updating...</p> : null}
-          {lastUpdated ? <p className="text-[11px] text-muted-foreground">{new Date(lastUpdated).toLocaleTimeString()}</p> : null}
-        </div>
-      </div>
-      <div className="space-y-3">
-        {data.matchups.map((m, idx) => {
-          const href = `/matchup/league/${m.gameweek || data.gameweek}/${m.team_1_entry_id || m.team_1_id}/${m.team_2_entry_id || m.team_2_id}`;
-          const rivalry = (m as any).rivalry;
-          const team1Form = ((rivalry?.recent_form_1 || []) as FormResult[]).slice(-5);
-          const team2Form = ((rivalry?.recent_form_2 || []) as FormResult[]).slice(-5);
-          const season1Wins = rivalry?.current_season_record_1?.wins ?? "—";
-          const seasonDraws = rivalry?.current_season_record_1?.draws ?? "—";
-          const season2Wins = rivalry?.current_season_record_2?.wins ?? "—";
-          const allTime1Wins = rivalry?.all_time_record_1?.wins ?? "—";
-          const allTimeDraws = rivalry?.all_time_record_1?.draws ?? "—";
-          const allTime2Wins = rivalry?.all_time_record_2?.wins ?? "—";
-          const score1 = Math.round(Number(m.live_team_1_points ?? m.team_1_points ?? 0));
-          const score2 = Math.round(Number(m.live_team_2_points ?? m.team_2_points ?? 0));
-          const highlights = m.live_highlights || [];
+  const renderMatchup = (m: MatchupRow, dataGw: number, idx: number) => {
+    const href = `/matchup/league/${m.gameweek || dataGw}/${m.team_1_entry_id || m.team_1_id}/${m.team_2_entry_id || m.team_2_id}`;
+    const rivalry = (m as any).rivalry;
+    const team1Form = ((rivalry?.recent_form_1 || []) as FormResult[]).slice(-5);
+    const team2Form = ((rivalry?.recent_form_2 || []) as FormResult[]).slice(-5);
+    const season1Wins = rivalry?.current_season_record_1?.wins ?? "—";
+    const seasonDraws = rivalry?.current_season_record_1?.draws ?? "—";
+    const season2Wins = rivalry?.current_season_record_2?.wins ?? "—";
+    const allTime1Wins = rivalry?.all_time_record_1?.wins ?? "—";
+    const allTimeDraws = rivalry?.all_time_record_1?.draws ?? "—";
+    const allTime2Wins = rivalry?.all_time_record_2?.wins ?? "—";
+    const score1 = Math.round(Number(m.live_team_1_points ?? m.team_1_points ?? 0));
+    const score2 = Math.round(Number(m.live_team_2_points ?? m.team_2_points ?? 0));
+    const highlights = m.live_highlights || [];
 
-          return (
-            <HoverCard key={`${m.team_1_id}-${m.team_2_id}-${idx}`} openDelay={120} closeDelay={100}>
-              <HoverCardTrigger asChild>
-                <Link
-                  to={href}
-                  className="block w-full rounded-md border bg-background/80 p-4 text-foreground no-underline transition-colors hover:bg-background hover:no-underline visited:text-foreground"
-                >
-                  <div className="mb-3 grid grid-cols-[1fr_auto_1fr] gap-4">
-                    <div className="text-center">
-                      <div className="mb-1 inline-flex items-center justify-center gap-1 text-sm font-semibold">
-                        {getCrest(m.team_1?.manager_name) ? (
-                          <img
-                            src={getCrest(m.team_1?.manager_name)!}
-                            alt=""
-                            className="h-4 w-4 rounded object-cover border"
-                          />
-                        ) : null}
-                        <span>{m.team_1?.entry_name || "—"}</span>
-                        {m.team_1_rank != null ? <span className="text-[10px] text-muted-foreground">#{m.team_1_rank}</span> : null}
-                      </div>
-                      <div className="text-xs text-muted-foreground">{m.team_1?.manager_name || "—"}</div>
-                      <div className="mt-1 flex items-center justify-center gap-1">
-                        {team1Form.map((result, formIdx) => (
-                          <span
-                            key={`${m.team_1_id}-${formIdx}-${result}`}
-                            className={`inline-flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-bold text-white ${
-                              result === "W" ? "bg-emerald-500" : result === "D" ? "bg-zinc-400" : "bg-rose-500"
-                            }`}
-                            title={result === "W" ? "Win" : result === "D" ? "Draw" : "Loss"}
-                          >
-                            {result}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-center">
-                      <div className="w-20 text-center">
-                        <div className="text-3xl font-bold leading-none">
-                          <span>{score1}</span>
-                          <span className="mx-1">-</span>
-                          <span>{score2}</span>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="text-center">
-                      <div className="mb-1 inline-flex items-center justify-center gap-1 text-sm font-semibold">
-                        {getCrest(m.team_2?.manager_name) ? (
-                          <img
-                            src={getCrest(m.team_2?.manager_name)!}
-                            alt=""
-                            className="h-4 w-4 rounded object-cover border"
-                          />
-                        ) : null}
-                        <span>{m.team_2?.entry_name || "—"}</span>
-                        {m.team_2_rank != null ? <span className="text-[10px] text-muted-foreground">#{m.team_2_rank}</span> : null}
-                      </div>
-                      <div className="text-xs text-muted-foreground">{m.team_2?.manager_name || "—"}</div>
+    return (
+      <HoverCard key={`${m.team_1_id}-${m.team_2_id}-${idx}`} openDelay={120} closeDelay={100}>
+        <HoverCardTrigger asChild>
+          <Link
+            to={href}
+            className="block w-full rounded-md border bg-background/80 p-4 text-foreground no-underline transition-colors hover:bg-background hover:no-underline visited:text-foreground"
+          >
+            <div className="mb-3 grid grid-cols-[1fr_auto_1fr] gap-4">
+              <div className="text-center">
+                <div className="mb-1 inline-flex items-center justify-center gap-1 text-sm font-semibold">
+                  {getCrest(m.team_1?.manager_name) ? (
+                    <img
+                      src={getCrest(m.team_1?.manager_name)!}
+                      alt=""
+                      className="h-4 w-4 rounded object-cover border"
+                    />
+                  ) : null}
+                  <span>{m.team_1?.entry_name || "—"}</span>
+                  {m.team_1_rank != null ? (
+                    <span className="text-[10px] text-muted-foreground">#{m.team_1_rank}</span>
+                  ) : null}
+                </div>
+                <div className="text-xs text-muted-foreground">{m.team_1?.manager_name || "—"}</div>
+                <div className="mt-1 flex items-center justify-center gap-1">
+                  {team1Form.map((result, formIdx) => (
+                    <span
+                      key={`${m.team_1_id}-${formIdx}-${result}`}
+                      className={`inline-flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-bold text-white ${
+                        result === "W" ? "bg-emerald-500" : result === "D" ? "bg-zinc-400" : "bg-rose-500"
+                      }`}
+                      title={result === "W" ? "Win" : result === "D" ? "Draw" : "Loss"}
+                    >
+                      {result}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center justify-center">
+                <div className="w-20 text-center">
+                  <div className="text-3xl font-bold leading-none">
+                    <span>{score1}</span>
+                    <span className="mx-1">-</span>
+                    <span>{score2}</span>
+                  </div>
+                </div>
+              </div>
+              <div className="text-center">
+                <div className="mb-1 inline-flex items-center justify-center gap-1 text-sm font-semibold">
+                  {getCrest(m.team_2?.manager_name) ? (
+                    <img
+                      src={getCrest(m.team_2?.manager_name)!}
+                      alt=""
+                      className="h-4 w-4 rounded object-cover border"
+                    />
+                  ) : null}
+                  <span>{m.team_2?.entry_name || "—"}</span>
+                  {m.team_2_rank != null ? (
+                    <span className="text-[10px] text-muted-foreground">#{m.team_2_rank}</span>
+                  ) : null}
+                </div>
+                <div className="text-xs text-muted-foreground">{m.team_2?.manager_name || "—"}</div>
                       <div className="mt-1 flex items-center justify-center gap-1">
                         {team2Form.map((result, formIdx) => (
                           <span
@@ -428,8 +467,32 @@ export function ThisWeekMatchups() {
                 </div>
               </HoverCardContent>
             </HoverCard>
-          );
-        })}
+    );
+  };
+
+  return (
+    <Card className="p-4">
+      <div className="mb-4 flex items-start justify-between gap-2">
+        <div>
+          <h2 className="text-lg font-semibold">This Week&apos;s Matchups</h2>
+          <p className="text-sm text-muted-foreground">Gameweek {gameweek ?? "—"}</p>
+        </div>
+        <div className="text-right">
+          {refreshing ? <p className="text-xs text-muted-foreground">Updating...</p> : null}
+          {lastUpdated ? (
+            <p className="text-[11px] text-muted-foreground">{new Date(lastUpdated).toLocaleTimeString()}</p>
+          ) : null}
+        </div>
+      </div>
+      <div className="space-y-8">
+        {divisionsData.map((block) => (
+          <div key={block.division}>
+            <h3 className="mb-3 text-base font-semibold">{getDivisionLabel(block.division)}</h3>
+            <div className="space-y-3">
+              {block.matchups.map((m, idx) => renderMatchup(m, block.gameweek, idx))}
+            </div>
+          </div>
+        ))}
       </div>
     </Card>
   );

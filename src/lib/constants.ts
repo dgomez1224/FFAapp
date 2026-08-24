@@ -1,4 +1,5 @@
 import { CANONICAL_MANAGERS, type CanonicalManager } from "./canonicalManagers";
+import type { Division } from "./divisions";
 
 /**
  * Public Read-Only Mode Constants
@@ -10,12 +11,11 @@ import { CANONICAL_MANAGERS, type CanonicalManager } from "./canonicalManagers";
  * All public endpoints and components should use this constant to resolve
  * league context and fetch associated data.
  * 
- * NOTE: The STATIC_ENTRY_ID (164475) is David's entry ID for the current season.
- * Manager aliases are stored in the manager_aliases table and map entry IDs to
- * canonical manager names. See supabase/migrations/20260127_update_manager_aliases.sql
- * for the current mappings (Patrick: 148669, David: 164475).
+ * NOTE: STATIC_ENTRY_ID is David's current-season Draft entry ID.
+ * Manager aliases are stored in manager_aliases and map entry IDs to
+ * canonical manager names.
  */
-export const STATIC_ENTRY_ID = "164475";
+export const STATIC_ENTRY_ID = "132262";
 
 /**
  * FPL API Base URL
@@ -26,7 +26,17 @@ export const FPL_BASE_URL = "https://fantasy.premierleague.com/api";
  * Draft FPL API Base URL and League ID
  */
 export const DRAFT_BASE_URL = "https://draft.premierleague.com/api";
-export const LEAGUE_ID = "28469";
+/** FPL Draft league ID for Division One */
+export const LEAGUE_ID = "23236";
+
+/** FPL Draft league ID for Division Two (override via VITE_DIVISION_TWO_LEAGUE_ID) */
+export const LEAGUE_ID_DIVISION_TWO =
+  import.meta.env.VITE_DIVISION_TWO_LEAGUE_ID || "31913";
+
+export const LEAGUE_ID_BY_DIVISION: Record<Division, string> = {
+  division_one: LEAGUE_ID,
+  division_two: LEAGUE_ID_DIVISION_TWO,
+};
 
 /**
  * Supabase Edge Functions Base Path
@@ -50,7 +60,7 @@ export const HISTORICAL_STATS_CUTOFF_SEASON = "2025/26";
  * Current Season
  * Used to determine if data should be auto-computed or loaded from CSV
  */
-export const CURRENT_SEASON = "2025/26";
+export const CURRENT_SEASON = "2026/27";
 
 /**
  * Canonical manager list re-exported for convenience.

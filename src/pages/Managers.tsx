@@ -11,6 +11,9 @@ import { contrastText, extractPaletteFromImage, mix, rgbCss } from "../lib/color
 import leagueTrophy from "../assets/trophies/League Cup Icon.png";
 import cupTrophy from "../assets/trophies/FFA Cup Icon + Year.png";
 import gobletTrophy from "../assets/trophies/Goblet Icon.png";
+import { CANONICAL_MANAGERS, getManagerDivision } from "../lib/canonicalManagers";
+import { DivisionBadge } from "../components/DivisionBadge";
+import { getDivisionLabel, type Division } from "../lib/divisions";
 
 interface ManagerCardData {
   manager_name: string;
@@ -42,6 +45,7 @@ type ManagerCardTheme = {
 function normalizeManagerName(value: string | null | undefined) {
   const normalized = String(value || "").trim().toUpperCase();
   if (normalized === "MATTHEW") return "MATT";
+  if (normalized === "SEB") return "SEBASTIAN";
   return normalized;
 }
 
@@ -73,17 +77,35 @@ export default function ManagersPage() {
           throw new Error(mediaPayload?.error?.message || "Failed to load manager media");
         }
 
-        const merged = (payload?.stats || []).map((row: any) => ({
-          manager_name: row.manager_name,
-          total_points: row.total_points || 0,
-          points_per_game: row.points_per_game ?? null,
-          league_titles: row.league_titles ?? 0,
-          cup_wins: row.cup_wins ?? 0,
-          goblet_wins: row.goblet_wins ?? 0,
-          best_gameweek_details: row.best_gameweek_details ?? null,
-        }));
+        const byName: Record<string, ManagerCardData> = {};
+        (payload?.stats || []).forEach((row: any) => {
+          const name = normalizeManagerName(row.manager_name);
+          if (!name) return;
+          byName[name] = {
+            manager_name: name,
+            total_points: row.total_points || 0,
+            points_per_game: row.points_per_game ?? null,
+            league_titles: row.league_titles ?? 0,
+            cup_wins: row.cup_wins ?? 0,
+            goblet_wins: row.goblet_wins ?? 0,
+            best_gameweek_details: row.best_gameweek_details ?? null,
+          };
+        });
+        CANONICAL_MANAGERS.forEach((name) => {
+          if (!byName[name]) {
+            byName[name] = {
+              manager_name: name,
+              total_points: 0,
+              points_per_game: null,
+              league_titles: 0,
+              cup_wins: 0,
+              goblet_wins: 0,
+              best_gameweek_details: null,
+            };
+          }
+        });
 
-        setManagers(merged);
+        setManagers(Object.values(byName));
 
         const mediaRows: ManagerMediaRow[] = Array.isArray(mediaPayload?.media) ? mediaPayload.media : [];
         const nextMediaMap: Record<string, { logo: string | null; photo: string | null }> = {};
@@ -150,10 +172,19 @@ export default function ManagersPage() {
     buildThemes();
   }, [mediaByManager]);
 
-  const sortedManagers = useMemo(
-    () => [...managers].sort((a, b) => b.total_points - a.total_points),
-    [managers]
-  );
+  const managersByDivision = useMemo(() => {
+    const groups: Record<Division, ManagerCardData[]> = {
+      division_one: [],
+      division_two: [],
+    };
+    [...managers]
+      .sort((a, b) => b.total_points - a.total_points)
+      .forEach((manager) => {
+        const division = getManagerDivision(manager.manager_name) ?? "division_one";
+        groups[division].push(manager);
+      });
+    return groups;
+  }, [managers]);
 
   if (loading) {
     return (
@@ -182,8 +213,14 @@ export default function ManagersPage() {
         </p>
       </div>
 
+      {(["division_one", "division_two"] as Division[]).map((division) => (
+      <div key={division} className="space-y-3">
+        <div className="flex items-center gap-2">
+          <h2 className="text-xl font-semibold">{getDivisionLabel(division)}</h2>
+          <DivisionBadge division={division} />
+        </div>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {sortedManagers.map((manager) => {
+        {managersByDivision[division].map((manager) => {
           const managerKey = normalizeManagerName(manager.manager_name);
           const media = mediaByManager[managerKey];
           const cardTheme = themeByManager[managerKey];
@@ -209,7 +246,12 @@ export default function ManagersPage() {
                   </div>
                 )}
                 <div>
-                  <h2 className="text-lg font-semibold">{manager.manager_name}</h2>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h2 className="text-lg font-semibold">{manager.manager_name}</h2>
+                    {getManagerDivision(manager.manager_name) ? (
+                      <DivisionBadge division={getManagerDivision(manager.manager_name)!} />
+                    ) : null}
+                  </div>
                   <p className="text-xs text-muted-foreground" style={cardTheme ? { color: cardTheme.mutedText } : undefined}>
                     All-time points: {manager.total_points}
                   </p>
@@ -284,6 +326,8 @@ export default function ManagersPage() {
           );
         })}
       </div>
+      </div>
+      ))}
     </div>
   );
 }
