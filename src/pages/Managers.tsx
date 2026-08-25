@@ -55,6 +55,13 @@ export default function ManagersPage() {
   const [themeByManager, setThemeByManager] = useState<Record<string, ManagerCardTheme>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isAdmin] = useState(() => typeof localStorage !== "undefined" && localStorage.getItem("ffa_is_admin") === "true");
+  const [adminToken, setAdminToken] = useState(() => (typeof sessionStorage !== "undefined" ? sessionStorage.getItem("ffa_admin_token") || "" : ""));
+  const [promotedNames, setPromotedNames] = useState("");
+  const [relegatedNames, setRelegatedNames] = useState("");
+  const [incrementTenure, setIncrementTenure] = useState(false);
+  const [adminSaving, setAdminSaving] = useState(false);
+  const [adminMessage, setAdminMessage] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadManagers() {
@@ -212,6 +219,113 @@ export default function ManagersPage() {
           League leaders and all-time highlights.
         </p>
       </div>
+
+      {isAdmin ? (
+        <Card className="space-y-3 p-4">
+          <h2 className="text-lg font-semibold">Admin: season-end division stats</h2>
+          <p className="text-xs text-muted-foreground">
+            Tenure already includes 2026/27. At season end, enter the two promoted and two relegated managers. Check increment tenure only at the start of the next season.
+          </p>
+          <label className="block text-sm">
+            Admin token
+            <input
+              type="password"
+              className="mt-1 w-full rounded border px-2 py-1"
+              value={adminToken}
+              onChange={(e) => setAdminToken(e.target.value)}
+            />
+          </label>
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="text-sm">
+              Promoted (comma-separated)
+              <input className="mt-1 w-full rounded border px-2 py-1" value={promotedNames} onChange={(e) => setPromotedNames(e.target.value)} placeholder="SEBASTIAN, KARIM" />
+            </label>
+            <label className="text-sm">
+              Relegated (comma-separated)
+              <input className="mt-1 w-full rounded border px-2 py-1" value={relegatedNames} onChange={(e) => setRelegatedNames(e.target.value)} placeholder="IAN, HENRI" />
+            </label>
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={incrementTenure} onChange={(e) => setIncrementTenure(e.target.checked)} />
+            Increment seasons in current division
+          </label>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              disabled={adminSaving}
+              className="rounded border px-3 py-1 text-sm disabled:opacity-50"
+              onClick={async () => {
+                setAdminSaving(true);
+                setAdminMessage(null);
+                try {
+                  if (adminToken) sessionStorage.setItem("ffa_admin_token", adminToken);
+                  const parseNames = (value: string) => value.split(",").map((name) => name.trim()).filter(Boolean);
+                  const res = await fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/admin/apply-season-end-division-stats`, {
+                    method: "POST",
+                    headers: {
+                      ...getSupabaseFunctionHeaders(),
+                      "Content-Type": "application/json",
+                      "x-admin-token": adminToken,
+                    },
+                    body: JSON.stringify({
+                      increment_tenure: incrementTenure,
+                      promoted: parseNames(promotedNames),
+                      relegated: parseNames(relegatedNames),
+                      dry_run: true,
+                    }),
+                  });
+                  const payload = await res.json();
+                  if (!res.ok || payload?.error) throw new Error(payload?.error?.message || "Dry run failed");
+                  setAdminMessage(`Dry run: ${payload.changes?.length || 0} manager(s) would change.`);
+                } catch (err: any) {
+                  setAdminMessage(err.message || "Dry run failed");
+                } finally {
+                  setAdminSaving(false);
+                }
+              }}
+            >
+              Preview
+            </button>
+            <button
+              type="button"
+              disabled={adminSaving}
+              className="rounded bg-zinc-800 px-3 py-1 text-sm text-white disabled:opacity-50"
+              onClick={async () => {
+                setAdminSaving(true);
+                setAdminMessage(null);
+                try {
+                  if (adminToken) sessionStorage.setItem("ffa_admin_token", adminToken);
+                  const parseNames = (value: string) => value.split(",").map((name) => name.trim()).filter(Boolean);
+                  const res = await fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/admin/apply-season-end-division-stats`, {
+                    method: "POST",
+                    headers: {
+                      ...getSupabaseFunctionHeaders(),
+                      "Content-Type": "application/json",
+                      "x-admin-token": adminToken,
+                    },
+                    body: JSON.stringify({
+                      increment_tenure: incrementTenure,
+                      promoted: parseNames(promotedNames),
+                      relegated: parseNames(relegatedNames),
+                      dry_run: false,
+                    }),
+                  });
+                  const payload = await res.json();
+                  if (!res.ok || payload?.error) throw new Error(payload?.error?.message || "Apply failed");
+                  setAdminMessage(`Applied ${payload.changes?.length || 0} manager update(s).`);
+                } catch (err: any) {
+                  setAdminMessage(err.message || "Apply failed");
+                } finally {
+                  setAdminSaving(false);
+                }
+              }}
+            >
+              Apply
+            </button>
+          </div>
+          {adminMessage ? <p className="text-sm text-muted-foreground">{adminMessage}</p> : null}
+        </Card>
+      ) : null}
 
       {(["division_one", "division_two"] as Division[]).map((division) => (
       <div key={division} className="space-y-3">

@@ -208,6 +208,10 @@ export interface AllTimeStatsRow {
   league_titles: number;
   cup_wins: number;
   goblet_wins: number;
+  promotions?: number;
+  relegations?: number;
+  seasons_in_div_one?: number;
+  seasons_in_div_two?: number;
   fifty_plus_weeks: number;
   sub_twenty_weeks: number;
   largest_margin_win: number;
@@ -248,6 +252,10 @@ export function parseAllTimeStats(csvContent: string): AllTimeStatsRow[] {
       league_titles: parseInt(String(row['League Titles'] || row.league_titles || 0)) || 0,
       cup_wins: parseInt(String(row['FFA Cups'] || row.cup_wins || 0)) || 0,
       goblet_wins: parseInt(String(row.Goblets || row.goblets || 0)) || 0,
+      promotions: parseInt(String(row.Promotions || row.promotions || 0)) || 0,
+      relegations: parseInt(String(row.Relegations || row.relegations || 0)) || 0,
+      seasons_in_div_one: parseInt(String(row['Seasons in Division One'] || row.seasons_in_div_one || 0)) || 0,
+      seasons_in_div_two: parseInt(String(row['Seasons in Division Two'] || row.seasons_in_div_two || 0)) || 0,
       fifty_plus_weeks: parseInt(String(row['50+ PTS'] || row.fifty_plus_weeks || 0)) || 0,
       sub_twenty_weeks: parseInt(String(row['20- PTS'] || row.sub_twenty_weeks || 0)) || 0,
       largest_margin_win: parseFloat(String(row['Margin Win'] || row.largest_margin_win || 0)) || 0,

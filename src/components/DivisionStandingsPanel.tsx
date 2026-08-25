@@ -47,9 +47,15 @@ export function DivisionStandingsPanel({ division, compact = false }: DivisionSt
   return (
     <div className="space-y-3">
       <h2 className={`${compact ? "text-lg" : "text-xl"} font-semibold`}>{title}</h2>
+      {division === "division_one" ? (
+        <p className="text-xs text-muted-foreground">Bottom two places are in the relegation zone.</p>
+      ) : (
+        <p className="text-xs text-muted-foreground">Top two places are in the promotion zone.</p>
+      )}
       <Card className="p-4">
         <StandingsTable
           rows={rowsToRender}
+          division={division}
           baselineById={baselineById}
           baselineRanksRef={baselineRanksRef}
           isLiveGameweek={isLiveGameweek}

@@ -17,6 +17,7 @@ import { getManagerDivision } from "../lib/divisions";
 
 interface GobletStanding {
   team_id: string;
+  entry_id?: string;
   entry_name?: string;
   manager_name?: string;
   points_for?: number;
@@ -95,21 +96,11 @@ export default function GobletStandings() {
           baselineRanksRef.current = initial;
         }
 
-        // Overlay real names and compute live standings from h2h-matchups league entries / teams.
+        // Overlay real Draft names from both divisions (D1-only overlay left D2 on placeholders).
         try {
-          const matchupsRes = await fetch(
-            `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-matchups`,
-            { headers: getSupabaseFunctionHeaders() },
-          );
-          if (matchupsRes.ok) {
-            const matchupsJson: any = await matchupsRes.json();
-            const matchups: any[] = Array.isArray(matchupsJson?.matchups)
-              ? matchupsJson.matchups
-              : [];
-
-            const nameByTeamId: Record<string, { entry_name: string; manager_name: string }> = {};
-            const nameByEntryId: Record<string, { entry_name: string; manager_name: string }> = {};
-
+          const nameByTeamId: Record<string, { entry_name: string; manager_name: string }> = {};
+          const nameByEntryId: Record<string, { entry_name: string; manager_name: string }> = {};
+          const collectNames = (matchups: any[]) => {
             matchups.forEach((m: any) => {
               const t1 = m.team_1 || null;
               const t2 = m.team_2 || null;
@@ -143,28 +134,46 @@ export default function GobletStandings() {
                 };
               }
             });
+          };
 
-            if (
-              (Object.keys(nameByEntryId).length > 0 ||
-                Object.keys(nameByTeamId).length > 0) &&
-              Array.isArray(payload.standings) &&
-              payload.standings.length
-            ) {
-              const overlaid = (payload.standings || []).map((s: any) => {
-                const teamId = String(s.team_id ?? "");
-                const entryId = String(s.entry_id ?? "");
-                const fromEntry = entryId ? nameByEntryId[entryId] : undefined;
-                const fromTeam = teamId ? nameByTeamId[teamId] : undefined;
-                const names = fromEntry || fromTeam || null;
-                return names ? { ...s, ...names } : s;
-              });
-              payload = { ...payload, standings: overlaid };
-            }
-
-            // Use server standings as-is for points (no client-side live add).
-            // League standings already reflect live; goblet shows same source of truth.
-            setLiveStandings(null);
+          const [d1Res, d2Res] = await Promise.all([
+            fetch(
+              `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-matchups?division=division_one`,
+              { headers: getSupabaseFunctionHeaders() },
+            ),
+            fetch(
+              `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-matchups?division=division_two`,
+              { headers: getSupabaseFunctionHeaders() },
+            ),
+          ]);
+          for (const matchupsRes of [d1Res, d2Res]) {
+            if (!matchupsRes.ok) continue;
+            const matchupsJson: any = await matchupsRes.json();
+            const matchups: any[] = Array.isArray(matchupsJson?.matchups)
+              ? matchupsJson.matchups
+              : [];
+            collectNames(matchups);
           }
+
+          if (
+            (Object.keys(nameByEntryId).length > 0 ||
+              Object.keys(nameByTeamId).length > 0) &&
+            Array.isArray(payload.standings) &&
+            payload.standings.length
+          ) {
+            const overlaid = (payload.standings || []).map((s: any) => {
+              const teamId = String(s.team_id ?? "");
+              const entryId = String(s.entry_id ?? "");
+              const fromEntry = entryId ? nameByEntryId[entryId] : undefined;
+              const fromTeam = teamId ? nameByTeamId[teamId] : undefined;
+                const names = fromEntry || fromTeam || null;
+                return names ? { ...s, entry_name: names.entry_name || s.entry_name } : s;
+            });
+            payload = { ...payload, standings: overlaid };
+          }
+
+          // Use server standings as-is for points (no client-side live add).
+          setLiveStandings(null);
         } catch {
           // Non-fatal: fall back to database names and baseline-only view.
           setLiveStandings(null);

@@ -28,7 +28,7 @@ import {
   clearCaptainSessionToken,
   getCaptainSessionToken,
 } from "../lib/captainSession";
-import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
+import { EDGE_FUNCTIONS_BASE, CUP_START_GAMEWEEK } from "../lib/constants";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { contrastText, ensureReadableText, extractPaletteFromImage, mix, rgbCss } from "../lib/colorPalette";
 import leagueTrophy from "../assets/trophies/League Cup Icon.png";
@@ -36,6 +36,8 @@ import cupTrophy from "../assets/trophies/FFA Cup Icon + Year.png";
 import gobletTrophy from "../assets/trophies/Goblet Icon.png";
 import { Button } from "../components/ui/button";
 import { MoreHorizontal } from "lucide-react";
+import { RequireCupTypeUnlocked, RequireCupUnlocked } from "../components/RequireCupUnlocked";
+import { useCurrentGameweek } from "../lib/useCurrentGameweek";
 
 function RequireCaptainSignIn({ children }: { children: React.ReactElement }) {
   const location = useLocation();
@@ -55,6 +57,8 @@ function Shell() {
   const [token, setToken] = useState<string | null>(() => getCaptainSessionToken());
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const mobileMenuRef = useRef<HTMLDivElement | null>(null);
+  const { currentGameweek } = useCurrentGameweek();
+  const showCupFeatures = currentGameweek >= CUP_START_GAMEWEEK;
   const mobileRoutes = [
     { label: "League", path: "/league-standings" },
     { label: "Goblet", path: "/goblet" },
@@ -65,7 +69,7 @@ function Shell() {
     { label: "Legacy GW", path: "/legacy-gameweek-standings" },
     { label: "GW Standings", path: "/standings-by-gameweek" },
     { label: "FFA Cup", path: "/bracket" },
-    { label: "Pick Captain", path: "/pick-captain" },
+    ...(showCupFeatures ? [{ label: "Pick Captain", path: "/pick-captain" }] : []),
     { label: "My Page", path: "/my-page" },
   ];
 
@@ -279,9 +283,11 @@ function Shell() {
                 Sign In
               </Link>
             )}
-            <Link to="/pick-captain" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-              Pick Captain
-            </Link>
+            {showCupFeatures ? (
+              <Link to="/pick-captain" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
+                Pick Captain
+              </Link>
+            ) : null}
             <Link to="/my-page" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               My Page
             </Link>
@@ -355,27 +361,45 @@ function Shell() {
             <Route path="/managers" element={<ManagersPage />} />
             <Route path="/players" element={<PlayerInsights />} />
             <Route path="/fixtures" element={<FixturesPage />} />
-            <Route path="/matchup/:type/:gameweek/:team1/:team2" element={<MatchupDetailPage />} />
-            <Route path="/lineup/:type/:gameweek/:teamId" element={<LineupDetailPage />} />
+            <Route
+              path="/matchup/:type/:gameweek/:team1/:team2"
+              element={
+                <RequireCupTypeUnlocked>
+                  <MatchupDetailPage />
+                </RequireCupTypeUnlocked>
+              }
+            />
+            <Route
+              path="/lineup/:type/:gameweek/:teamId"
+              element={
+                <RequireCupTypeUnlocked>
+                  <LineupDetailPage />
+                </RequireCupTypeUnlocked>
+              }
+            />
             <Route path="/legacy-gameweek-standings" element={<LegacyGameweekStandings />} />
             <Route path="/standings-by-gameweek" element={<StandingsByGameweek />} />
-            <Route path="/bracket" element={<BracketView />} />
+            <Route path="/bracket" element={<RequireCupUnlocked title="FFA Bench Boost Cup"><BracketView /></RequireCupUnlocked>} />
             <Route path="/set-entry" element={<Navigate to="/sign-in" replace />} />
             <Route path="/sign-in" element={<SignIn />} />
             <Route
               path="/pick_captain"
               element={
-                <RequireCaptainSignIn>
-                  <PickCaptain />
-                </RequireCaptainSignIn>
+                <RequireCupUnlocked title="Pick Captain">
+                  <RequireCaptainSignIn>
+                    <PickCaptain />
+                  </RequireCaptainSignIn>
+                </RequireCupUnlocked>
               }
             />
             <Route
               path="/pick-captain"
               element={
-                <RequireCaptainSignIn>
-                  <PickCaptain />
-                </RequireCaptainSignIn>
+                <RequireCupUnlocked title="Pick Captain">
+                  <RequireCaptainSignIn>
+                    <PickCaptain />
+                  </RequireCaptainSignIn>
+                </RequireCupUnlocked>
               }
             />
             <Route

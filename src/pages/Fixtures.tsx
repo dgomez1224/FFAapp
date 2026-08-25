@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Card } from "../components/ui/card";
-import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
+import { EDGE_FUNCTIONS_BASE, CUP_START_GAMEWEEK } from "../lib/constants";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { FootballPitch, PitchPlayer } from "../components/FootballPitch";
 import { PlayerStats, PlayerStatsModal } from "../components/PlayerStatsModal";
@@ -247,28 +247,33 @@ export default function FixturesPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold">Season Fixtures</h1>
-        <p className="text-sm text-muted-foreground mt-2">League and FFA Cup fixtures ordered by gameweek. Click matchups for lineups.</p>
+        <p className="text-sm text-muted-foreground mt-2">
+          League{Number(data.current_gameweek || 1) >= CUP_START_GAMEWEEK ? " and FFA Cup" : ""} fixtures ordered by gameweek. Click matchups for lineups.
+        </p>
       </div>
 
       <Card className="p-4">
         <h2 className="text-xl font-semibold mb-3">All Fixtures</h2>
         {(() => {
           const gwMap: Record<number, { league: Fixture[]; cup: Fixture[]; cupGroup: NonNullable<Payload["cup_group"]>[number]["rows"] }> = {};
+          const showCup = Number(data.current_gameweek || 1) >= CUP_START_GAMEWEEK;
           (data.league || []).forEach((group) => {
             const gw = Number(group.gameweek || 0);
             if (!gwMap[gw]) gwMap[gw] = { league: [], cup: [], cupGroup: [] };
             gwMap[gw].league.push(...(group.matchups || []));
           });
-          (data.cup || []).forEach((group) => {
-            const gw = Number(group.gameweek || 0);
-            if (!gwMap[gw]) gwMap[gw] = { league: [], cup: [], cupGroup: [] };
-            gwMap[gw].cup.push(...(group.matchups || []));
-          });
-          (data.cup_group || []).forEach((group) => {
-            const gw = Number(group.gameweek || 0);
-            if (!gwMap[gw]) gwMap[gw] = { league: [], cup: [], cupGroup: [] };
-            gwMap[gw].cupGroup.push(...(group.rows || []));
-          });
+          if (showCup) {
+            (data.cup || []).forEach((group) => {
+              const gw = Number(group.gameweek || 0);
+              if (!gwMap[gw]) gwMap[gw] = { league: [], cup: [], cupGroup: [] };
+              gwMap[gw].cup.push(...(group.matchups || []));
+            });
+            (data.cup_group || []).forEach((group) => {
+              const gw = Number(group.gameweek || 0);
+              if (!gwMap[gw]) gwMap[gw] = { league: [], cup: [], cupGroup: [] };
+              gwMap[gw].cupGroup.push(...(group.rows || []));
+            });
+          }
           const gameweeks = Object.keys(gwMap).map(Number).sort((a, b) => a - b);
 
           return (

@@ -185,8 +185,16 @@ async function fetchElementStatus(leagueId: number = DEFAULT_DRAFT_LEAGUE_ID): P
   } catch { return elementStatusCache[leagueId]?.data ?? null; }
 }
 
+function isFplFixtureComplete(fix: any): boolean {
+  if (!fix) return false;
+  if (fix.finished === true || fix.finished_provisional === true) return true;
+  return coerceNumber(fix.minutes ?? fix.elapsed, 0) >= 90;
+}
+
 async function fetchFPLFixtures(gw: number): Promise<any[]> {
-  if (isFresh(fixturesCache[gw], LONG_TTL)) return fixturesCache[gw]!.data;
+  const currentEvent = coerceNumber(gameCache?.data?.current_event, 99);
+  const ttl = gw < currentEvent ? LONG_TTL : LIVE_TTL;
+  if (isFresh(fixturesCache[gw], ttl)) return fixturesCache[gw]!.data;
   try {
     const res = await fetchWithTimeout(
       `https://fantasy.premierleague.com/api/fixtures/?event=${gw}`,
@@ -249,14 +257,16 @@ function buildFixturesByTeam(
 ): Record<number, { started: boolean; finished: boolean }> {
   const map: Record<number, { started: boolean; finished: boolean }> = {};
   for (const fix of fixtures ?? []) {
+    const complete = isFplFixtureComplete(fix);
     const upd = (tid: number) => {
+      if (!tid) return;
       const ex = map[tid];
       map[tid] = ex
-        ? { started: ex.started || !!fix.started, finished: ex.finished && !!fix.finished }
-        : { started: !!fix.started, finished: !!fix.finished };
+        ? { started: ex.started || !!fix.started, finished: ex.finished && complete }
+        : { started: !!fix.started, finished: complete };
     };
-    upd(fix.team_h);
-    upd(fix.team_a);
+    upd(coerceNumber(fix.team_h, 0));
+    upd(coerceNumber(fix.team_a, 0));
   }
   return map;
 }
@@ -449,6 +459,8 @@ const FIRST_NAME_TO_CANONICAL: Record<string, string> = {
   "jordan": "JORDAN",
   "rohun": "ROHUN",
   "zach": "ZACH",
+  "zachary": "ZACH",
+  "zachary-michael": "ZACH",
   "sebastian": "SEBASTIAN",
   "seb": "SEBASTIAN",
   "grant": "GRANT",
@@ -1388,6 +1400,58 @@ async function getTeamIdSetForDivision(
   return new Set((teams || []).map((t: any) => String(t.id)));
 }
 
+type DraftDisplayName = { entry_name: string; manager_name: string };
+
+/** Live Draft team/manager names for both divisions, keyed by FPL entry id and canonical manager. */
+async function loadDraftDisplayNamesForAllDivisions(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+): Promise<{
+  byEntryId: Record<string, DraftDisplayName>;
+  byManager: Record<string, DraftDisplayName>;
+}> {
+  const byEntryId: Record<string, DraftDisplayName> = {};
+  const byManager: Record<string, DraftDisplayName> = {};
+  try {
+    const [divOneId, divTwoId] = await Promise.all([
+      resolveLeagueIdForDivision(supabase, "division_one"),
+      resolveLeagueIdForDivision(supabase, "division_two"),
+    ]);
+    const detailsList = await Promise.all(
+      Array.from(new Set([divOneId, divTwoId])).map((id) => fetchLeagueDetails(id)),
+    );
+    detailsList
+      .flatMap((details) => normalizeDraftList<any>(details?.league_entries))
+      .forEach((entry: any) => {
+        const managerName = formatDraftManagerName(entry);
+        const teamName = formatDraftTeamName(entry);
+        const names = { entry_name: teamName, manager_name: managerName };
+        const fplId = String(entry.entry_id ?? entry.entry ?? "").trim();
+        if (fplId) byEntryId[fplId] = names;
+        const canonical =
+          toCanonicalManagerName(managerName) || normalizeManagerName(managerName);
+        if (canonical) byManager[canonical] = names;
+      });
+  } catch {
+    // Callers fall back to teams.entry_name.
+  }
+  return { byEntryId, byManager };
+}
+
+function resolveDraftDisplayName(
+  team: { entry_id?: unknown; manager_name?: unknown },
+  draftNames: {
+    byEntryId: Record<string, DraftDisplayName>;
+    byManager: Record<string, DraftDisplayName>;
+  },
+): DraftDisplayName | undefined {
+  const entryId = String(team.entry_id ?? "").trim();
+  if (entryId && draftNames.byEntryId[entryId]) return draftNames.byEntryId[entryId];
+  const canonical =
+    toCanonicalManagerName(team.manager_name) || normalizeManagerName(team.manager_name);
+  if (canonical && draftNames.byManager[canonical]) return draftNames.byManager[canonical];
+  return undefined;
+}
+
 async function filterStandingsByDivision(
   supabase: ReturnType<typeof getSupabaseAdmin>,
   standings: any[],
@@ -2058,6 +2122,10 @@ type AllTimeManagerStat = {
   longest_winless_streak_spans: string;
   division_one: DivisionStatBlock;
   division_two: DivisionStatBlock;
+  promotions: number;
+  relegations: number;
+  seasons_in_div_one: number;
+  seasons_in_div_two: number;
 };
 
 type GameweekRecordRow = {
@@ -2981,6 +3049,10 @@ async function computeAllTimeManagerStats(
       longest_winless_streak_spans: "",
       division_one: emptyDivisionBlock(),
       division_two: emptyDivisionBlock(),
+      promotions: 0,
+      relegations: 0,
+      seasons_in_div_one: 0,
+      seasons_in_div_two: 0,
       };
     }
     return agg[manager];
@@ -3163,7 +3235,7 @@ async function computeAllTimeManagerStats(
 
   const { data: persistedStats } = await supabase
     .from("all_time_manager_stats")
-    .select("manager_name, current_division, div_one_wins, div_two_wins, div_one_draws, div_two_draws, div_one_losses, div_two_losses, total_div_one_points, total_div_two_points, div_one_points_plus, div_two_points_plus, div_one_points_per_game, div_two_points_per_game, div_one_league_titles, div_two_league_titles");
+    .select("manager_name, current_division, promotions, relegations, seasons_in_div_one, seasons_in_div_two, div_one_wins, div_two_wins, div_one_draws, div_two_draws, div_one_losses, div_two_losses, total_div_one_points, total_div_two_points, div_one_points_plus, div_two_points_plus, div_one_points_per_game, div_two_points_per_game, div_one_league_titles, div_two_league_titles");
 
   (persistedStats || []).forEach((row: any) => {
     const manager = toCanonicalManagerName(row.manager_name);
@@ -3172,6 +3244,10 @@ async function computeAllTimeManagerStats(
     if (row.current_division === "division_one" || row.current_division === "division_two") {
       target.current_division = row.current_division;
     }
+    target.promotions = coerceNumber(row.promotions, 0);
+    target.relegations = coerceNumber(row.relegations, 0);
+    target.seasons_in_div_one = coerceNumber(row.seasons_in_div_one, 0);
+    target.seasons_in_div_two = coerceNumber(row.seasons_in_div_two, 0);
   });
 
   const rows = Object.values(agg).map((row) => {
@@ -4213,6 +4289,88 @@ interface AutoSubResult {
   subs: SubEvent[];
 }
 
+type OfficialDraftSub = {
+  element_in: number | null;
+  element_out: number | null;
+};
+
+function normalizeOfficialDraftSubs(raw: any): OfficialDraftSub[] {
+  return normalizeDraftList<any>(raw ?? [])
+    .map((s: any) => ({
+      element_in: parsePositiveInt(s?.element_in ?? s?.player_in_id),
+      element_out: parsePositiveInt(s?.element_out ?? s?.player_out_id),
+    }))
+    .filter((s: OfficialDraftSub) => !!s.element_in && !!s.element_out);
+}
+
+/** Apply Draft API auto-subs as an XI swap so subbed-on players count in totals. */
+function applyOfficialDraftSubs(lineup: any[], officialSubs: OfficialDraftSub[]): AutoSubResult {
+  const events: SubEvent[] = [];
+  if (!officialSubs?.length) return { lineup, subs: events };
+
+  const byId = new Map<number, any>();
+  lineup.forEach((p) => {
+    const id = coerceNumber(p?.player_id, 0);
+    if (id) byId.set(id, p);
+  });
+
+  for (const s of officialSubs) {
+    const inId = coerceNumber(s.element_in, 0);
+    const outId = coerceNumber(s.element_out, 0);
+    const on = byId.get(inId);
+    const off = byId.get(outId);
+    if (!inId || !outId || !on || !off) continue;
+    events.push({
+      player_off_id: outId,
+      player_off_name: off.player_name,
+      player_on_id: inId,
+      player_on_name: on.player_name,
+    });
+  }
+
+  const next = lineup.map((p) => {
+    const pid = coerceNumber(p?.player_id, 0);
+    const subIn = officialSubs.find((s) => coerceNumber(s.element_in, 0) === pid);
+    const subOut = officialSubs.find((s) => coerceNumber(s.element_out, 0) === pid);
+    if (subIn) {
+      const off = byId.get(coerceNumber(subIn.element_out, 0));
+      return {
+        ...p,
+        is_bench: false,
+        is_auto_subbed_on: true,
+        subbed_off_for: coerceNumber(subIn.element_out, 0),
+        lineup_slot: off?.lineup_slot ?? p.lineup_slot,
+        multiplier: coerceNumber(p.multiplier, 1) || 1,
+        effective_points: coerceNumber(p.raw_points, 0),
+      };
+    }
+    if (subOut) {
+      return {
+        ...p,
+        is_bench: true,
+        is_auto_subbed_off: true,
+        subbed_on_by: coerceNumber(subOut.element_in, 0),
+      };
+    }
+    return p;
+  });
+
+  return { lineup: next, subs: events };
+}
+
+function resolveLeagueAutoSubs(
+  lineup: any[],
+  officialSubs: OfficialDraftSub[] | undefined,
+  currentGwForMatch: number,
+  fixturesByTeam: Record<number, { started: boolean; finished: boolean }>,
+  playerTeamMap: Record<number, number>,
+): AutoSubResult {
+  if (officialSubs && officialSubs.length > 0) {
+    return applyOfficialDraftSubs(lineup, officialSubs);
+  }
+  return applyLeagueAutoSubs(lineup, currentGwForMatch, fixturesByTeam, playerTeamMap);
+}
+
 function applyLeagueAutoSubs(
   lineup: any[],
   currentGwForMatch: number,
@@ -4226,10 +4384,14 @@ function applyLeagueAutoSubs(
     .filter((p) => p.is_bench)
     .sort((a, b) => (a.lineup_slot ?? 99) - (b.lineup_slot ?? 99));
 
+  const fixturesKnown = Object.keys(fixturesByTeam).length > 0;
   const gameFinished = (playerId: number) => {
     const teamId = playerTeamMap[playerId];
     if (!teamId) return false;
-    return fixturesByTeam[teamId]?.finished === true;
+    const fx = fixturesByTeam[teamId];
+    // Blank gameweek: no fixture for this club, so 0 minutes is confirmed.
+    if (!fx) return fixturesKnown;
+    return fx.finished === true;
   };
   const playedMinutes = (p: any) => Number(p.minutes ?? 0) > 0;
   const posType = (p: any) => coerceNumber(p.position, 3); // 1=GK,2=DEF,3=MID,4=FWD
@@ -4379,7 +4541,7 @@ function applyLeagueAutoSubs(
   };
 }
 
-/** Compute live points per entry for current GW only (starters only). */
+/** Compute live points per entry for current GW (starting XI after auto-subs). */
 async function computeLiveEntryPoints(currentGw: number): Promise<Record<string, number>> {
   if (isFresh(liveEntryPointsCache[currentGw], LIVE_TTL)) {
     return liveEntryPointsCache[currentGw]!.data;
@@ -4388,19 +4550,20 @@ async function computeLiveEntryPoints(currentGw: number): Promise<Record<string,
   const liveEntryPoints: Record<string, number> = {};
   try {
     const livePayload = await fetchLiveGW(currentGw);
-    const liveMap = extractLivePointsMap(livePayload);
-    // Build liveStatsMap from live payload if not already present
-    const liveStatsMap: Record<number, any> = {};
-    const liveElements = (livePayload && (livePayload as any).elements) || {};
-    Object.entries(liveElements as Record<string, any>).forEach(([key, val]) => {
-      const id = Number(key);
-      if (!id) return;
-      liveStatsMap[id] = (val as any)?.stats ?? val;
-    });
+    const liveStatsMap = extractLivePlayerStatsMap(livePayload);
 
-    const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
-    const entries = normalizeDraftList<any>(details?.league_entries ?? []);
-    const matches = normalizeDraftList<any>(details?.matches ?? []);
+    const [detailsOne, detailsTwo] = await Promise.all([
+      fetchLeagueDetails(DEFAULT_DRAFT_LEAGUE_ID),
+      fetchLeagueDetails(DEFAULT_DIVISION_TWO_LEAGUE_ID),
+    ]);
+    const entries = [
+      ...normalizeDraftList<any>(detailsOne?.league_entries ?? []),
+      ...normalizeDraftList<any>(detailsTwo?.league_entries ?? []),
+    ];
+    const matches = [
+      ...normalizeDraftList<any>(detailsOne?.matches ?? []),
+      ...normalizeDraftList<any>(detailsTwo?.matches ?? []),
+    ];
     const entryKeyToApiId = buildEntryKeyToApiId(entries);
     const currentGwEntryKeys = new Set<string>();
     matches.forEach((m: any) => {
@@ -4411,19 +4574,29 @@ async function computeLiveEntryPoints(currentGw: number): Promise<Record<string,
       if (e2) currentGwEntryKeys.add(e2);
     });
 
-    // Build a simple playerMap from bootstrap so we can derive team/position info
     const bootstrap = await fetchBootstrap();
+    const extractedPlayers = extractDraftPlayerMap(bootstrap);
     const playerMap: Record<number, any> = {};
-    normalizeDraftList<any>(
-      (bootstrap as any)?.elements?.data ??
-        (bootstrap as any)?.elements ??
-        (bootstrap as any)?.players ??
-        [],
-    ).forEach((el: any) => {
-      const id = parsePositiveInt(el?.id ?? el?.element ?? el?.element_id);
-      if (!id) return;
-      playerMap[id] = el;
+    Object.values(extractedPlayers).forEach((p) => {
+      playerMap[p.id] = p;
     });
+    try {
+      const fplBootstrap = await fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`);
+      normalizeDraftList<any>(fplBootstrap?.elements ?? []).forEach((el: any) => {
+        const id = parsePositiveInt(el?.id);
+        if (!id) return;
+        const teamId = parsePositiveInt(el?.team);
+        if (!playerMap[id]) {
+          playerMap[id] = el;
+          return;
+        }
+        if (!playerMap[id].team && teamId) {
+          playerMap[id] = { ...playerMap[id], team: teamId };
+        }
+      });
+    } catch {
+      // Draft bootstrap team ids are enough when classic FPL is unavailable.
+    }
 
     // Fetch FPL fixtures once to drive auto-sub logic
     const fixturesArr = await fetchFPLFixtures(currentGw);
@@ -4445,9 +4618,8 @@ async function computeLiveEntryPoints(currentGw: number): Promise<Record<string,
             );
             if (!elId) return;
             const el = playerMap[elId];
-            if (el && el.team) {
-              playerTeamMap[elId] = coerceNumber(el.team, 0);
-            }
+            const teamId = coerceNumber(el?.team, 0);
+            if (teamId) playerTeamMap[elId] = teamId;
           });
 
           // Build a simple lineup array for auto-sub processing
@@ -4475,15 +4647,16 @@ async function computeLiveEntryPoints(currentGw: number): Promise<Record<string,
 
           let total = 0;
           try {
-            // Apply auto-subs using the existing top-level applyLeagueAutoSubs
-            const { lineup: subbedLineup } = applyLeagueAutoSubs(
+            const officialSubs = normalizeOfficialDraftSubs(picksRes?.subs);
+            const { lineup: subbedLineup } = resolveLeagueAutoSubs(
               lineup,
+              officialSubs,
               currentGw,
               fixturesByTeam,
               playerTeamMap,
             );
 
-            // Sum only non-bench, non-subbed-off players
+            // Sum only the final XI (exclude remaining bench and players subbed off)
             total = subbedLineup
               .filter((p: any) => !p.is_bench && !p.is_auto_subbed_off)
               .reduce(
@@ -4501,13 +4674,23 @@ async function computeLiveEntryPoints(currentGw: number): Promise<Record<string,
               );
           }
 
-          return { matchKey, total };
+          return { matchKey, apiEntryId, total };
         } catch {
-          return { matchKey, total: 0 };
+          return { matchKey, apiEntryId, total: 0 };
         }
       }),
     );
-    picksResults.forEach((r) => { liveEntryPoints[r.matchKey] = r.total; });
+    picksResults.forEach((r) => {
+      liveEntryPoints[r.matchKey] = r.total;
+      if (r.apiEntryId) liveEntryPoints[String(r.apiEntryId)] = r.total;
+    });
+    entries.forEach((entry: any) => {
+      const apiId = String(entry?.entry_id ?? entry?.entry ?? "").trim();
+      if (!apiId || liveEntryPoints[apiId] == null) return;
+      [entry?.id, entry?.league_entry_id, entry?.entry_id, entry?.entry].forEach((k) => {
+        if (k != null && String(k).trim()) liveEntryPoints[String(k)] = liveEntryPoints[apiId];
+      });
+    });
   } catch {
     // non-fatal
   }
@@ -4528,53 +4711,19 @@ async function computeLeagueMatchupStyleScores(
   const result: Record<string, { total1: number; total2: number }> = {};
   if (currentGw < 1 || !currentGwMatches.length) return result;
 
-  let liveMap: Record<number, number> = {};
-  try {
-    const livePayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${currentGw}/live`);
-    liveMap = extractLivePointsMap(livePayload);
-  } catch {
-    return result;
-  }
+  const live = await computeLiveEntryPoints(currentGw);
+  const draftIdToApiId = buildEntryKeyToApiId(draftEntries);
 
-  const draftIdToApiId: Record<string, string> = {};
-  draftEntries.forEach((e: any) => {
-    const apiId = String(e?.entry_id ?? e?.entry ?? "").trim();
-    if (!apiId) return;
-    const keys = [e?.id, e?.league_entry_id, e?.entry_id, e?.entry]
-      .filter((v) => v != null && v !== "")
-      .map((v) => String(v));
-    keys.forEach((k) => { draftIdToApiId[k] = apiId; });
-  });
-
-  const sumNonBenchFromPicks = (picks: any[] | undefined, live: Record<number, number>): number => {
-    return (picks || [])
-      .filter((p: any) => {
-        const pos = coerceNumber(p.position, 0);
-        return pos >= 1 && pos <= 11;
-      })
-      .reduce(
-        (sum: number, p: any) =>
-          sum + coerceNumber(live[coerceNumber(p.element)] ?? (p as any).points ?? 0, 0),
-        0,
-      );
+  const lookup = (id: string): number => {
+    const apiId = draftIdToApiId[id] ?? id;
+    return coerceNumber(live[id] ?? live[apiId], 0);
   };
 
   for (const m of currentGwMatches) {
     const e1 = String(m.league_entry_1 ?? m.entry_1 ?? m.home ?? "");
     const e2 = String(m.league_entry_2 ?? m.entry_2 ?? m.away ?? "");
     if (!e1 || !e2) continue;
-    const apiId1 = draftIdToApiId[e1] ?? e1;
-    const apiId2 = draftIdToApiId[e2] ?? e2;
-
-    const [res1, res2] = await Promise.all([
-      fetchDraftPicksForEntries([apiId1], currentGw, true),
-      fetchDraftPicksForEntries([apiId2], currentGw, true),
-    ]);
-
-    const total1 = sumNonBenchFromPicks(res1?.picks, liveMap);
-    const total2 = sumNonBenchFromPicks(res2?.picks, liveMap);
-    const key = `${e1}_${e2}`;
-    result[key] = { total1, total2 };
+    result[`${e1}_${e2}`] = { total1: lookup(e1), total2: lookup(e2) };
   }
 
   return result;
@@ -4789,20 +4938,41 @@ gobletStandings.get("/", async (c) => {
 
       const teamIds = Object.keys(aggCurrent);
       if (teamIds.length > 0) {
-        const { data: teams } = await supabase
-          .from("teams")
-          .select("id, entry_name, manager_name")
-          .in("id", teamIds);
+        const [{ data: teams }, draftNames] = await Promise.all([
+          supabase
+            .from("teams")
+            .select("id, entry_id, entry_name, manager_name")
+            .in("id", teamIds),
+          loadDraftDisplayNamesForAllDivisions(supabase),
+        ]);
+        const nameUpdates: Array<{ id: string; entry_name: string }> = [];
         (teams || []).forEach((t: any) => {
+          const override = resolveDraftDisplayName(t, draftNames);
+          const entryName = override?.entry_name ?? t.entry_name;
+          if (override?.entry_name && override.entry_name !== t.entry_name) {
+            nameUpdates.push({ id: t.id, entry_name: override.entry_name });
+          }
           if (aggCurrent[t.id]) {
-            aggCurrent[t.id].entry_name = t.entry_name;
+            aggCurrent[t.id].entry_id = t.entry_id != null ? String(t.entry_id) : null;
+            aggCurrent[t.id].entry_name = entryName;
             aggCurrent[t.id].manager_name = t.manager_name;
           }
           if (aggBaseline[t.id]) {
-            aggBaseline[t.id].entry_name = t.entry_name;
+            aggBaseline[t.id].entry_id = t.entry_id != null ? String(t.entry_id) : null;
+            aggBaseline[t.id].entry_name = entryName;
             aggBaseline[t.id].manager_name = t.manager_name;
           }
         });
+        if (nameUpdates.length > 0) {
+          await Promise.all(
+            nameUpdates.map((u) =>
+              supabase
+                .from("teams")
+                .update({ entry_name: u.entry_name, updated_at: new Date().toISOString() })
+                .eq("id", u.id),
+            ),
+          );
+        }
       }
 
       const standings = Object.values(aggCurrent)
@@ -4858,6 +5028,17 @@ gobletStandings.get("/", async (c) => {
           coerceNumber(row.total_points, roundPoints),
         );
         agg[row.team_id].rounds += 1;
+      });
+
+      const draftNamesFallback = await loadDraftDisplayNamesForAllDivisions(supabase);
+      Object.values(agg).forEach((row: any) => {
+        const override = resolveDraftDisplayName(
+          { entry_id: row.entry_id, manager_name: row.manager_name },
+          draftNamesFallback,
+        );
+        if (override) {
+          row.entry_name = override.entry_name;
+        }
       });
 
       const standings = Object.values(agg)
@@ -6514,22 +6695,25 @@ h2hMatchups.get("/", async (c) => {
       const teamMap: Record<string, any> = {};
       (teams || []).forEach((t: any) => { teamMap[t.id] = t; });
 
-      // Attempt to overlay real names from Draft league entries using entry_id.
+      // Overlay live Draft names from both divisions (unscoped requests include D2).
       const draftNameByEntryId: Record<string, { entry_name: string; manager_name: string }> = {};
       try {
-        const leagueId = division
-          ? await resolveLeagueIdForDivision(supabase, division)
-          : await resolveLeagueId();
-        const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID, leagueId);
-        const draftEntries = normalizeDraftList<any>(details?.league_entries ?? []);
-        draftEntries.forEach((entry: any) => {
-          const fplId = String(entry.entry_id ?? entry.entry ?? "").trim();
-          if (!fplId) return;
-          draftNameByEntryId[fplId] = {
-            entry_name: formatDraftTeamName(entry),
-            manager_name: formatDraftManagerName(entry),
-          };
-        });
+        if (division) {
+          const leagueId = await resolveLeagueIdForDivision(supabase, division);
+          const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID, leagueId);
+          const draftEntries = normalizeDraftList<any>(details?.league_entries ?? []);
+          draftEntries.forEach((entry: any) => {
+            const fplId = String(entry.entry_id ?? entry.entry ?? "").trim();
+            if (!fplId) return;
+            draftNameByEntryId[fplId] = {
+              entry_name: formatDraftTeamName(entry),
+              manager_name: formatDraftManagerName(entry),
+            };
+          });
+        } else {
+          const draftNames = await loadDraftDisplayNamesForAllDivisions(supabase);
+          Object.assign(draftNameByEntryId, draftNames.byEntryId);
+        }
       } catch {
         // Non-fatal: fall back to teams table names when draft overlay is unavailable.
       }
@@ -8916,6 +9100,155 @@ adminRefresh.post("/recompute-all-time-standings", async (c) => {
   }
 });
 
+adminRefresh.post("/update-manager-division-stats", async (c) => {
+  if (!requireAdminToken(c)) {
+    return jsonError(c, 401, "Unauthorized");
+  }
+
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const managerName = toCanonicalManagerName(body?.manager_name);
+    if (!managerName) {
+      return jsonError(c, 400, "Invalid manager name");
+    }
+
+    const patch: Record<string, number | string> = { updated_at: new Date().toISOString() };
+    for (const key of ["promotions", "relegations", "seasons_in_div_one", "seasons_in_div_two"] as const) {
+      if (body[key] != null && body[key] !== "") {
+        const value = coerceNumber(body[key], NaN);
+        if (!Number.isFinite(value) || value < 0) {
+          return jsonError(c, 400, `Invalid ${key}`);
+        }
+        patch[key] = Math.round(value);
+      }
+    }
+    if (body.current_division === "division_one" || body.current_division === "division_two") {
+      patch.current_division = body.current_division;
+    }
+    if (Object.keys(patch).length <= 1) {
+      return jsonError(c, 400, "No division stats to update");
+    }
+
+    const supabase = getSupabaseAdmin();
+    const { data, error } = await supabase
+      .from("all_time_manager_stats")
+      .update(patch)
+      .eq("manager_name", managerName)
+      .select("manager_name, current_division, promotions, relegations, seasons_in_div_one, seasons_in_div_two")
+      .maybeSingle();
+
+    if (error) {
+      return jsonError(c, 500, "Failed to update manager division stats", error.message);
+    }
+    if (!data) {
+      return jsonError(c, 404, "Manager stats row not found");
+    }
+    return c.json({ updated: data });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to update manager division stats");
+  }
+});
+
+adminRefresh.post("/apply-season-end-division-stats", async (c) => {
+  if (!requireAdminToken(c)) {
+    return jsonError(c, 401, "Unauthorized");
+  }
+
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const incrementTenure = body.increment_tenure === true;
+    const dryRun = body.dry_run === true;
+    const promoted = (Array.isArray(body.promoted) ? body.promoted : [])
+      .map((name: unknown) => toCanonicalManagerName(name))
+      .filter(Boolean) as string[];
+    const relegated = (Array.isArray(body.relegated) ? body.relegated : [])
+      .map((name: unknown) => toCanonicalManagerName(name))
+      .filter(Boolean) as string[];
+
+    if (!incrementTenure && promoted.length === 0 && relegated.length === 0) {
+      return jsonError(c, 400, "Provide increment_tenure and/or promoted/relegated managers");
+    }
+
+    const supabase = getSupabaseAdmin();
+    const { data: rows, error } = await supabase
+      .from("all_time_manager_stats")
+      .select("manager_name, current_division, promotions, relegations, seasons_in_div_one, seasons_in_div_two");
+
+    if (error) {
+      return jsonError(c, 500, "Failed to load manager stats", error.message);
+    }
+
+    const byName = new Map((rows || []).map((row: any) => [toCanonicalManagerName(row.manager_name), row]));
+    const missing = [...promoted, ...relegated].filter((name) => !byName.has(name));
+    if (missing.length > 0) {
+      return jsonError(c, 400, `Unknown managers: ${missing.join(", ")}`);
+    }
+
+    const planned = (rows || []).flatMap((row: any) => {
+      const manager = toCanonicalManagerName(row.manager_name);
+      if (!manager) return [];
+      const next = {
+        manager_name: manager,
+        current_division: row.current_division,
+        promotions: coerceNumber(row.promotions, 0),
+        relegations: coerceNumber(row.relegations, 0),
+        seasons_in_div_one: coerceNumber(row.seasons_in_div_one, 0),
+        seasons_in_div_two: coerceNumber(row.seasons_in_div_two, 0),
+      };
+      if (incrementTenure) {
+        if (row.current_division === "division_one") next.seasons_in_div_one += 1;
+        if (row.current_division === "division_two") next.seasons_in_div_two += 1;
+      }
+      if (promoted.includes(manager)) {
+        next.promotions += 1;
+        next.current_division = "division_one";
+      }
+      if (relegated.includes(manager)) {
+        next.relegations += 1;
+        next.current_division = "division_two";
+      }
+      const prev = byName.get(manager);
+      const changed = !prev ||
+        prev.current_division !== next.current_division ||
+        coerceNumber(prev.promotions, 0) !== next.promotions ||
+        coerceNumber(prev.relegations, 0) !== next.relegations ||
+        coerceNumber(prev.seasons_in_div_one, 0) !== next.seasons_in_div_one ||
+        coerceNumber(prev.seasons_in_div_two, 0) !== next.seasons_in_div_two;
+      return changed ? [next] : [];
+    });
+
+    if (!dryRun) {
+      for (const row of planned) {
+        const { error: updateError } = await supabase
+          .from("all_time_manager_stats")
+          .update({
+            current_division: row.current_division,
+            promotions: row.promotions,
+            relegations: row.relegations,
+            seasons_in_div_one: row.seasons_in_div_one,
+            seasons_in_div_two: row.seasons_in_div_two,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("manager_name", row.manager_name);
+        if (updateError) {
+          return jsonError(c, 500, `Failed to update ${row.manager_name}`, updateError.message);
+        }
+      }
+    }
+
+    return c.json({
+      dry_run: dryRun,
+      increment_tenure: incrementTenure,
+      promoted,
+      relegated,
+      changes: planned,
+      note: "Tenure already includes 2026/27. At this season's end, apply promoted/relegated only. After movement, increment_tenure at the start of the next season.",
+    });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to apply season-end division stats");
+  }
+});
+
 // --------------------
 // Captain Auth + Captain Picks
 // --------------------
@@ -10830,22 +11163,6 @@ fixturesHub.get("/matchup", async (c) => {
     let lineup1 = mapLineup(picks1?.picks, lineupTeamKey1);
     let lineup2 = mapLineup(picks2?.picks, lineupTeamKey2);
 
-    // Apply Draft API subs directly — these are authoritative
-    // for completed GWs and don't rely on fixturesByTeam.finished
-    const applyDraftSubs = (lineup: any[], subs: Array<{ element_in: number; element_out: number }>) => {
-      if (!subs?.length) return lineup;
-      return lineup.map((p) => {
-        const subIn = subs.find((s) => s.element_in === p.player_id);
-        const subOut = subs.find((s) => s.element_out === p.player_id);
-        if (subIn) return { ...p, is_auto_subbed_on: true, subbed_off_for: subIn.element_out };
-        if (subOut) return { ...p, is_auto_subbed_off: true, subbed_on_by: subOut.element_in, is_bench: true };
-        return p;
-      });
-    };
-
-    if (picks1?.subs?.length) lineup1 = applyDraftSubs(lineup1, picks1.subs);
-    if (picks2?.subs?.length) lineup2 = applyDraftSubs(lineup2, picks2.subs);
-
     const fixturesByTeam = Number(gameweek) <= currentGw
       ? buildFixturesByTeam(await fetchFPLFixtures(gameweek).catch(() => []))
       : {};
@@ -10863,15 +11180,28 @@ fixturesHub.get("/matchup", async (c) => {
     let autoSubs2: SubEvent[] = [];
     const shouldApplyAutoSubs = Number(gameweek) <= currentGw;
     if (type === "league" && shouldApplyAutoSubs) {
-      const result1 = applyLeagueAutoSubs(lineup1, gameweek, fixturesByTeam, playerTeamMap);
-      const result2 = applyLeagueAutoSubs(lineup2, gameweek, fixturesByTeam, playerTeamMap);
+      const result1 = resolveLeagueAutoSubs(
+        lineup1,
+        picks1?.subs,
+        gameweek,
+        fixturesByTeam,
+        playerTeamMap,
+      );
+      const result2 = resolveLeagueAutoSubs(
+        lineup2,
+        picks2?.subs,
+        gameweek,
+        fixturesByTeam,
+        playerTeamMap,
+      );
       lineup1 = result1.lineup;
       lineup2 = result2.lineup;
       autoSubs1 = result1.subs;
       autoSubs2 = result2.subs;
     }
 
-    const includePlayerPoints = (player: any) => type === "cup" || !player?.is_bench;
+    const includePlayerPoints = (player: any) =>
+      type === "cup" || (!player?.is_bench && !player?.is_auto_subbed_off);
     const total1 = lineup1.reduce((sum, p) => sum + (includePlayerPoints(p) ? coerceNumber(p.effective_points) : 0), 0);
     const total2 = lineup2.reduce((sum, p) => sum + (includePlayerPoints(p) ? coerceNumber(p.effective_points) : 0), 0);
 
@@ -11169,7 +11499,7 @@ fixturesHub.get("/lineup", async (c) => {
         : 0;
     const activeCaptainId = promotedVice || captainPlayerId || viceCaptainPlayerId;
 
-    const lineup = (picks.picks || []).map((pick: any) => {
+    let lineup = (picks.picks || []).map((pick: any) => {
       const playerId = coerceNumber(pick.element);
       const lineupSlot = coerceNumber(pick.position, 0);
       const isBench = lineupSlot > 11;
@@ -11207,8 +11537,29 @@ fixturesHub.get("/lineup", async (c) => {
         minutes: coerceNumber(stats.minutes, 0),
         defensive_contributions: defensiveContributions,
         defensive_return: defensiveReturn,
+        team: playerMap[playerId]?.team ?? null,
       };
     });
+
+    let autoSubs: SubEvent[] = [];
+    if (type === "league" && hasStarted) {
+      const fixturesByTeam = buildFixturesByTeam(await fetchFPLFixtures(gameweek).catch(() => []));
+      const playerTeamMap: Record<number, number> = {};
+      lineup.forEach((p: any) => {
+        const pid = coerceNumber(p.player_id, 0);
+        const teamId = coerceNumber(p.team, 0);
+        if (pid && teamId) playerTeamMap[pid] = teamId;
+      });
+      const subbed = resolveLeagueAutoSubs(
+        lineup,
+        picks?.subs,
+        gameweek,
+        fixturesByTeam,
+        playerTeamMap,
+      );
+      lineup = subbed.lineup;
+      autoSubs = subbed.subs;
+    }
 
     let opponentsByGw: Record<number, string> = {};
     if (type === "cup") {
@@ -11237,7 +11588,11 @@ fixturesHub.get("/lineup", async (c) => {
       captain_player_id: captainPlayerId || null,
       vice_captain_player_id: viceCaptainPlayerId || null,
       total_points: lineup.reduce(
-        (sum: number, row: any) => sum + ((type === "cup" || !row?.is_bench) ? coerceNumber(row.effective_points) : 0),
+        (sum: number, row: any) => {
+          if (type === "cup") return sum + coerceNumber(row.effective_points);
+          if (row?.is_bench || row?.is_auto_subbed_off) return sum;
+          return sum + coerceNumber(row.effective_points);
+        },
         0,
       ),
       team: {
@@ -11247,6 +11602,7 @@ fixturesHub.get("/lineup", async (c) => {
         manager_name: team.manager_name,
       },
       lineup,
+      auto_subs: autoSubs,
       opponents_by_gw: opponentsByGw,
     });
   } catch (err: any) {

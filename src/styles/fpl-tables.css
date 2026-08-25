@@ -98,10 +98,33 @@
   color: rgb(55, 65, 81);
 }
 
-/* Champion Row Highlight */
-.fpl-table-body tr.champion {
-  background-color: rgb(239, 246, 255);
-  font-weight: 600;
+/* Promotion / relegation zones — color the cells so Safari/collapsed tables still paint */
+.fpl-table-body tr.promotion-zone,
+.fpl-table-body tr.promotion-zone > td {
+  background-color: #e6ffe6 !important;
+}
+
+.fpl-table-body tr.promotion-zone:hover,
+.fpl-table-body tr.promotion-zone:hover > td {
+  background-color: #d1f7d1 !important;
+}
+
+.fpl-table-body tr.promotion-zone > td:first-child {
+  box-shadow: inset 4px 0 0 #16a34a;
+}
+
+.fpl-table-body tr.relegation-zone,
+.fpl-table-body tr.relegation-zone > td {
+  background-color: #ffe6e6 !important;
+}
+
+.fpl-table-body tr.relegation-zone:hover,
+.fpl-table-body tr.relegation-zone:hover > td {
+  background-color: #ffd6d6 !important;
+}
+
+.fpl-table-body tr.relegation-zone > td:first-child {
+  box-shadow: inset 4px 0 0 #dc2626;
 }
 
 /* Compact Table Variant */

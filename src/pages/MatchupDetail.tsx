@@ -954,7 +954,9 @@ return (
         <p className="text-4xl font-bold">
           {team1Score} - {team2Score}
         </p>
-        <p className="text-[11px] text-muted-foreground mt-0.5">This gameweek (cup squad total)</p>
+        <p className="text-[11px] text-muted-foreground mt-0.5">
+          {data.type === "cup" ? "This gameweek (cup squad total)" : "This gameweek"}
+        </p>
         {data.type === "cup" && cupTie && cupTieHasAnyLeg && (
           <div className="mt-2 rounded-md border bg-muted/30 px-2 py-1.5 text-xs">
             <p className="font-medium text-foreground">
