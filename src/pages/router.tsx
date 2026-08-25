@@ -68,12 +68,8 @@ function Shell() {
     { label: "Legacy", path: "/legacy-home" },
     { label: "Legacy GW", path: "/legacy-gameweek-standings" },
     { label: "GW Standings", path: "/standings-by-gameweek" },
-    ...(showCupFeatures
-      ? [
-          { label: "FFA Cup", path: "/bracket" },
-          { label: "Pick Captain", path: "/pick-captain" },
-        ]
-      : []),
+    { label: "FFA Cup", path: "/bracket" },
+    ...(showCupFeatures ? [{ label: "Pick Captain", path: "/pick-captain" }] : []),
     { label: "My Page", path: "/my-page" },
   ];
 
@@ -257,11 +253,9 @@ function Shell() {
             <Link to="/goblet" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               Goblet
             </Link>
-            {showCupFeatures ? (
-              <Link to="/bracket" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-                FFA Cup
-              </Link>
-            ) : null}
+            <Link to="/bracket" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
+              FFA Cup
+            </Link>
             <Link to="/managers" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               Managers
             </Link>

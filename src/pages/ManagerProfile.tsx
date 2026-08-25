@@ -68,6 +68,14 @@ export default function ManagerProfile() {
   }>>([]);
   const [, setManagerTeamId] = useState<string | null>(null);
   const [nextFixtureName, setNextFixtureName] = useState<string>("—");
+  const [isAdmin] = useState(() => typeof localStorage !== "undefined" && localStorage.getItem("ffa_is_admin") === "true");
+  const [adminToken, setAdminToken] = useState(() => (typeof sessionStorage !== "undefined" ? sessionStorage.getItem("ffa_admin_token") || "" : ""));
+  const [adminPromotions, setAdminPromotions] = useState("0");
+  const [adminRelegations, setAdminRelegations] = useState("0");
+  const [adminSeasonsD1, setAdminSeasonsD1] = useState("0");
+  const [adminSeasonsD2, setAdminSeasonsD2] = useState("0");
+  const [adminSaving, setAdminSaving] = useState(false);
+  const [adminMessage, setAdminMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (!managerName) return;
@@ -90,15 +98,20 @@ export default function ManagerProfile() {
           throw new Error(payload?.error?.message || "Failed to load manager profile");
         }
 
+        const allTime = payload.all_time_stats || null;
         setData({
           manager_name: payload.manager_name || normalizedName,
-          all_time_stats: payload.all_time_stats || null,
+          all_time_stats: allTime,
           season_standings: payload.season_standings || [],
           h2h_all_time: payload.h2h_all_time || [],
           h2h_by_season: payload.h2h_by_season || [],
           trophies: payload.trophies || [],
           season_stats: payload.season_stats || [],
         });
+        setAdminPromotions(String(allTime?.promotions ?? 0));
+        setAdminRelegations(String(allTime?.relegations ?? 0));
+        setAdminSeasonsD1(String(allTime?.seasons_in_div_one ?? 0));
+        setAdminSeasonsD2(String(allTime?.seasons_in_div_two ?? 0));
       } catch (err: any) {
         setError(err.message || "Failed to load manager profile");
       } finally {
@@ -525,6 +538,105 @@ export default function ManagerProfile() {
                     <p className="text-zinc-500">{data.all_time_stats.division_two?.total_points ?? 0} pts</p>
                   </div>
                 </div>
+                <div className="mt-4 grid grid-cols-2 gap-3 text-center text-xs sm:grid-cols-4">
+                  <div className="rounded-xl border border-zinc-300 bg-white/60 p-2">
+                    <p className="font-semibold text-zinc-700">Promotions</p>
+                    <p className="mt-1 text-2xl font-bold">{data.all_time_stats.promotions ?? 0}</p>
+                  </div>
+                  <div className="rounded-xl border border-zinc-300 bg-white/60 p-2">
+                    <p className="font-semibold text-zinc-700">Relegations</p>
+                    <p className="mt-1 text-2xl font-bold">{data.all_time_stats.relegations ?? 0}</p>
+                  </div>
+                  <div className="rounded-xl border border-zinc-300 bg-white/60 p-2">
+                    <p className="font-semibold text-zinc-700">Seasons in D1</p>
+                    <p className="mt-1 text-2xl font-bold">{data.all_time_stats.seasons_in_div_one ?? 0}</p>
+                  </div>
+                  <div className="rounded-xl border border-zinc-300 bg-white/60 p-2">
+                    <p className="font-semibold text-zinc-700">Seasons in D2</p>
+                    <p className="mt-1 text-2xl font-bold">{data.all_time_stats.seasons_in_div_two ?? 0}</p>
+                  </div>
+                </div>
+                {isAdmin ? (
+                  <form
+                    className="mt-4 space-y-3 rounded-xl border border-dashed border-zinc-400 bg-white/80 p-3 text-left text-xs"
+                    onSubmit={async (event) => {
+                      event.preventDefault();
+                      setAdminSaving(true);
+                      setAdminMessage(null);
+                      try {
+                        if (adminToken) sessionStorage.setItem("ffa_admin_token", adminToken);
+                        const res = await fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/admin/update-manager-division-stats`, {
+                          method: "POST",
+                          headers: {
+                            ...getSupabaseFunctionHeaders(),
+                            "Content-Type": "application/json",
+                            "x-admin-token": adminToken,
+                          },
+                          body: JSON.stringify({
+                            manager_name: data.manager_name,
+                            promotions: Number(adminPromotions),
+                            relegations: Number(adminRelegations),
+                            seasons_in_div_one: Number(adminSeasonsD1),
+                            seasons_in_div_two: Number(adminSeasonsD2),
+                          }),
+                        });
+                        const payload = await res.json();
+                        if (!res.ok || payload?.error) {
+                          throw new Error(payload?.error?.message || "Failed to save division stats");
+                        }
+                        const updated = payload.updated || {};
+                        setData((prev) => prev ? {
+                          ...prev,
+                          all_time_stats: {
+                            ...prev.all_time_stats,
+                            promotions: updated.promotions,
+                            relegations: updated.relegations,
+                            seasons_in_div_one: updated.seasons_in_div_one,
+                            seasons_in_div_two: updated.seasons_in_div_two,
+                          },
+                        } : prev);
+                        setAdminMessage("Saved.");
+                      } catch (err: any) {
+                        setAdminMessage(err.message || "Failed to save");
+                      } finally {
+                        setAdminSaving(false);
+                      }
+                    }}
+                  >
+                    <p className="font-semibold text-zinc-700">Admin: division tenure</p>
+                    <label className="block">
+                      Admin token
+                      <input
+                        type="password"
+                        className="mt-1 w-full rounded border px-2 py-1"
+                        value={adminToken}
+                        onChange={(e) => setAdminToken(e.target.value)}
+                      />
+                    </label>
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      <label>
+                        Promotions
+                        <input className="mt-1 w-full rounded border px-2 py-1" type="number" min={0} value={adminPromotions} onChange={(e) => setAdminPromotions(e.target.value)} />
+                      </label>
+                      <label>
+                        Relegations
+                        <input className="mt-1 w-full rounded border px-2 py-1" type="number" min={0} value={adminRelegations} onChange={(e) => setAdminRelegations(e.target.value)} />
+                      </label>
+                      <label>
+                        Seasons D1
+                        <input className="mt-1 w-full rounded border px-2 py-1" type="number" min={0} value={adminSeasonsD1} onChange={(e) => setAdminSeasonsD1(e.target.value)} />
+                      </label>
+                      <label>
+                        Seasons D2
+                        <input className="mt-1 w-full rounded border px-2 py-1" type="number" min={0} value={adminSeasonsD2} onChange={(e) => setAdminSeasonsD2(e.target.value)} />
+                      </label>
+                    </div>
+                    <button type="submit" disabled={adminSaving} className="rounded bg-zinc-800 px-3 py-1 text-white disabled:opacity-50">
+                      {adminSaving ? "Saving…" : "Save stats"}
+                    </button>
+                    {adminMessage ? <p className="text-zinc-600">{adminMessage}</p> : null}
+                  </form>
+                ) : null}
               </Card>
 
               <div className="grid grid-cols-3 gap-3">

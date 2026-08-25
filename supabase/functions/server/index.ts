@@ -2122,6 +2122,10 @@ type AllTimeManagerStat = {
   longest_winless_streak_spans: string;
   division_one: DivisionStatBlock;
   division_two: DivisionStatBlock;
+  promotions: number;
+  relegations: number;
+  seasons_in_div_one: number;
+  seasons_in_div_two: number;
 };
 
 type GameweekRecordRow = {
@@ -3045,6 +3049,10 @@ async function computeAllTimeManagerStats(
       longest_winless_streak_spans: "",
       division_one: emptyDivisionBlock(),
       division_two: emptyDivisionBlock(),
+      promotions: 0,
+      relegations: 0,
+      seasons_in_div_one: 0,
+      seasons_in_div_two: 0,
       };
     }
     return agg[manager];
@@ -3227,7 +3235,7 @@ async function computeAllTimeManagerStats(
 
   const { data: persistedStats } = await supabase
     .from("all_time_manager_stats")
-    .select("manager_name, current_division, div_one_wins, div_two_wins, div_one_draws, div_two_draws, div_one_losses, div_two_losses, total_div_one_points, total_div_two_points, div_one_points_plus, div_two_points_plus, div_one_points_per_game, div_two_points_per_game, div_one_league_titles, div_two_league_titles");
+    .select("manager_name, current_division, promotions, relegations, seasons_in_div_one, seasons_in_div_two, div_one_wins, div_two_wins, div_one_draws, div_two_draws, div_one_losses, div_two_losses, total_div_one_points, total_div_two_points, div_one_points_plus, div_two_points_plus, div_one_points_per_game, div_two_points_per_game, div_one_league_titles, div_two_league_titles");
 
   (persistedStats || []).forEach((row: any) => {
     const manager = toCanonicalManagerName(row.manager_name);
@@ -3236,6 +3244,10 @@ async function computeAllTimeManagerStats(
     if (row.current_division === "division_one" || row.current_division === "division_two") {
       target.current_division = row.current_division;
     }
+    target.promotions = coerceNumber(row.promotions, 0);
+    target.relegations = coerceNumber(row.relegations, 0);
+    target.seasons_in_div_one = coerceNumber(row.seasons_in_div_one, 0);
+    target.seasons_in_div_two = coerceNumber(row.seasons_in_div_two, 0);
   });
 
   const rows = Object.values(agg).map((row) => {
@@ -9085,6 +9097,155 @@ adminRefresh.post("/recompute-all-time-standings", async (c) => {
     });
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to recompute all-time standings");
+  }
+});
+
+adminRefresh.post("/update-manager-division-stats", async (c) => {
+  if (!requireAdminToken(c)) {
+    return jsonError(c, 401, "Unauthorized");
+  }
+
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const managerName = toCanonicalManagerName(body?.manager_name);
+    if (!managerName) {
+      return jsonError(c, 400, "Invalid manager name");
+    }
+
+    const patch: Record<string, number | string> = { updated_at: new Date().toISOString() };
+    for (const key of ["promotions", "relegations", "seasons_in_div_one", "seasons_in_div_two"] as const) {
+      if (body[key] != null && body[key] !== "") {
+        const value = coerceNumber(body[key], NaN);
+        if (!Number.isFinite(value) || value < 0) {
+          return jsonError(c, 400, `Invalid ${key}`);
+        }
+        patch[key] = Math.round(value);
+      }
+    }
+    if (body.current_division === "division_one" || body.current_division === "division_two") {
+      patch.current_division = body.current_division;
+    }
+    if (Object.keys(patch).length <= 1) {
+      return jsonError(c, 400, "No division stats to update");
+    }
+
+    const supabase = getSupabaseAdmin();
+    const { data, error } = await supabase
+      .from("all_time_manager_stats")
+      .update(patch)
+      .eq("manager_name", managerName)
+      .select("manager_name, current_division, promotions, relegations, seasons_in_div_one, seasons_in_div_two")
+      .maybeSingle();
+
+    if (error) {
+      return jsonError(c, 500, "Failed to update manager division stats", error.message);
+    }
+    if (!data) {
+      return jsonError(c, 404, "Manager stats row not found");
+    }
+    return c.json({ updated: data });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to update manager division stats");
+  }
+});
+
+adminRefresh.post("/apply-season-end-division-stats", async (c) => {
+  if (!requireAdminToken(c)) {
+    return jsonError(c, 401, "Unauthorized");
+  }
+
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const incrementTenure = body.increment_tenure === true;
+    const dryRun = body.dry_run === true;
+    const promoted = (Array.isArray(body.promoted) ? body.promoted : [])
+      .map((name: unknown) => toCanonicalManagerName(name))
+      .filter(Boolean) as string[];
+    const relegated = (Array.isArray(body.relegated) ? body.relegated : [])
+      .map((name: unknown) => toCanonicalManagerName(name))
+      .filter(Boolean) as string[];
+
+    if (!incrementTenure && promoted.length === 0 && relegated.length === 0) {
+      return jsonError(c, 400, "Provide increment_tenure and/or promoted/relegated managers");
+    }
+
+    const supabase = getSupabaseAdmin();
+    const { data: rows, error } = await supabase
+      .from("all_time_manager_stats")
+      .select("manager_name, current_division, promotions, relegations, seasons_in_div_one, seasons_in_div_two");
+
+    if (error) {
+      return jsonError(c, 500, "Failed to load manager stats", error.message);
+    }
+
+    const byName = new Map((rows || []).map((row: any) => [toCanonicalManagerName(row.manager_name), row]));
+    const missing = [...promoted, ...relegated].filter((name) => !byName.has(name));
+    if (missing.length > 0) {
+      return jsonError(c, 400, `Unknown managers: ${missing.join(", ")}`);
+    }
+
+    const planned = (rows || []).flatMap((row: any) => {
+      const manager = toCanonicalManagerName(row.manager_name);
+      if (!manager) return [];
+      const next = {
+        manager_name: manager,
+        current_division: row.current_division,
+        promotions: coerceNumber(row.promotions, 0),
+        relegations: coerceNumber(row.relegations, 0),
+        seasons_in_div_one: coerceNumber(row.seasons_in_div_one, 0),
+        seasons_in_div_two: coerceNumber(row.seasons_in_div_two, 0),
+      };
+      if (incrementTenure) {
+        if (row.current_division === "division_one") next.seasons_in_div_one += 1;
+        if (row.current_division === "division_two") next.seasons_in_div_two += 1;
+      }
+      if (promoted.includes(manager)) {
+        next.promotions += 1;
+        next.current_division = "division_one";
+      }
+      if (relegated.includes(manager)) {
+        next.relegations += 1;
+        next.current_division = "division_two";
+      }
+      const prev = byName.get(manager);
+      const changed = !prev ||
+        prev.current_division !== next.current_division ||
+        coerceNumber(prev.promotions, 0) !== next.promotions ||
+        coerceNumber(prev.relegations, 0) !== next.relegations ||
+        coerceNumber(prev.seasons_in_div_one, 0) !== next.seasons_in_div_one ||
+        coerceNumber(prev.seasons_in_div_two, 0) !== next.seasons_in_div_two;
+      return changed ? [next] : [];
+    });
+
+    if (!dryRun) {
+      for (const row of planned) {
+        const { error: updateError } = await supabase
+          .from("all_time_manager_stats")
+          .update({
+            current_division: row.current_division,
+            promotions: row.promotions,
+            relegations: row.relegations,
+            seasons_in_div_one: row.seasons_in_div_one,
+            seasons_in_div_two: row.seasons_in_div_two,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("manager_name", row.manager_name);
+        if (updateError) {
+          return jsonError(c, 500, `Failed to update ${row.manager_name}`, updateError.message);
+        }
+      }
+    }
+
+    return c.json({
+      dry_run: dryRun,
+      increment_tenure: incrementTenure,
+      promoted,
+      relegated,
+      changes: planned,
+      note: "Tenure already includes 2026/27. At this season's end, apply promoted/relegated only. After movement, increment_tenure at the start of the next season.",
+    });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to apply season-end division stats");
   }
 });
 

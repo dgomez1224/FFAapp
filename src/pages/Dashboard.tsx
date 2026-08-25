@@ -16,6 +16,7 @@ import { BracketView } from "../components/BracketView";
 import { PreviousWeekResults } from "../components/PreviousWeekResults";
 import { CUP_START_GAMEWEEK } from "../lib/constants";
 import { useCurrentGameweek } from "../lib/useCurrentGameweek";
+import { FeatureLocked } from "../components/FeatureLocked";
 
 export default function DashboardPage() {
   const { currentGameweek } = useCurrentGameweek();
@@ -34,7 +35,15 @@ export default function DashboardPage() {
       <LeagueStandings />
       <PreviousWeekResults />
       <GobletStandings />
-      {showCup ? <BracketView showLegacySelector={false} /> : null}
+      {showCup ? (
+        <BracketView showLegacySelector={false} />
+      ) : (
+        <FeatureLocked
+          title="FFA Bench Boost Cup"
+          unlockGameweek={CUP_START_GAMEWEEK}
+          currentGameweek={currentGameweek}
+        />
+      )}
       
       <ThisWeekMatchups />
       <SeasonStatLeaders />
