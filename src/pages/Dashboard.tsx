@@ -14,8 +14,13 @@ import LivePlayerUpdates from "../components/LivePlayerUpdates";
 import { ThisWeeksWaivers } from "../components/ThisWeeksWaivers";
 import { BracketView } from "../components/BracketView";
 import { PreviousWeekResults } from "../components/PreviousWeekResults";
+import { CUP_START_GAMEWEEK } from "../lib/constants";
+import { useCurrentGameweek } from "../lib/useCurrentGameweek";
 
 export default function DashboardPage() {
+  const { currentGameweek } = useCurrentGameweek();
+  const showCup = currentGameweek >= CUP_START_GAMEWEEK;
+
   return (
     <div className="space-y-8">
       <div>
@@ -29,7 +34,7 @@ export default function DashboardPage() {
       <LeagueStandings />
       <PreviousWeekResults />
       <GobletStandings />
-      <BracketView showLegacySelector={false} />
+      {showCup ? <BracketView showLegacySelector={false} /> : null}
       
       <ThisWeekMatchups />
       <SeasonStatLeaders />

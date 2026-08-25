@@ -183,11 +183,13 @@ export function ThisWeekMatchups() {
               const detail = await detailRes.json();
               if (detail?.error) return null;
               const team1LeagueLive = (detail?.team_1?.lineup || []).reduce(
-                (sum: number, player: any) => sum + (player?.is_bench ? 0 : Number(player?.effective_points || 0)),
+                (sum: number, player: any) =>
+                  sum + (player?.is_bench || player?.is_auto_subbed_off ? 0 : Number(player?.effective_points || 0)),
                 0,
               );
               const team2LeagueLive = (detail?.team_2?.lineup || []).reduce(
-                (sum: number, player: any) => sum + (player?.is_bench ? 0 : Number(player?.effective_points || 0)),
+                (sum: number, player: any) =>
+                  sum + (player?.is_bench || player?.is_auto_subbed_off ? 0 : Number(player?.effective_points || 0)),
                 0,
               );
               const detailForHighlights = {

@@ -62,6 +62,9 @@ export const HISTORICAL_STATS_CUTOFF_SEASON = "2025/26";
  */
 export const CURRENT_SEASON = "2026/27";
 
+/** FFA Bench Boost Cup (and Pick Captain) unlock at this gameweek. */
+export const CUP_START_GAMEWEEK = 27;
+
 /**
  * Canonical manager list re-exported for convenience.
  * These are the only valid manager identifiers in the system.

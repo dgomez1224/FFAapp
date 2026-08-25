@@ -184,7 +184,9 @@ export function applyAutoSubs(
   const usedBench = new Set<number>();
 
   function gameFinished(element: number): boolean {
-    return fixtureStatusMap.get(element)?.status === "finished";
+    const st = fixtureStatusMap.get(element);
+    if (!st) return false;
+    return st.status === "finished" || st.elapsed >= 90;
   }
 
   function playedMinutes(element: number): boolean {

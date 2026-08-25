@@ -36,6 +36,9 @@ type Payload = {
     goals_scored?: number;
     assists?: number;
     minutes?: number;
+    is_bench?: boolean;
+    is_auto_subbed_on?: boolean;
+    is_auto_subbed_off?: boolean;
   }>;
 };
 
@@ -262,6 +265,8 @@ export default function LineupDetailPage() {
                 name: p.player_name,
                 image_url: p.player_image_url,
                 position: p.position,
+                is_auto_subbed_on: p.is_auto_subbed_on,
+                is_auto_subbed_off: p.is_auto_subbed_off,
               }))}
               livePoints={livePoints}
               liveStats={liveStats}
