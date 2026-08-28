@@ -21,14 +21,14 @@ export default function Home() {
         </p>
       </div>
 
+      <LivePlayerUpdates />
+      <ThisWeekMatchups />
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <LeagueStandings />
-        <LivePlayerUpdates />
         <GobletStandings />
         <SeasonStatLeaders />
       </div>
-
-      <ThisWeekMatchups />
     </div>
   );
 }
