@@ -29,8 +29,13 @@ export interface LeagueStandingsResponse {
 
 export type GwPhase = "pre" | "live" | "post" | "settled";
 
-function zeroedStandings(template: Standing[]): Standing[] {
-  return template.map((row) => ({
+type StandingAcc = Standing & {
+  margin_victory_sum: number;
+  margin_defeat_sum: number;
+};
+
+function blankStanding(row: Standing): StandingAcc {
+  return {
     ...row,
     played: 0,
     wins: 0,
@@ -39,9 +44,42 @@ function zeroedStandings(template: Standing[]): Standing[] {
     points: 0,
     points_for: 0,
     points_against: 0,
+    margin_victory_sum: 0,
+    margin_defeat_sum: 0,
     avg_margin_victory: null,
     avg_margin_defeat: null,
-  }));
+  };
+}
+
+function toAcc(row: Standing): StandingAcc {
+  const existing = row as StandingAcc;
+  const winSum = Number(existing.margin_victory_sum);
+  const lossSum = Number(existing.margin_defeat_sum);
+  return {
+    ...row,
+    margin_victory_sum: Number.isFinite(winSum)
+      ? winSum
+      : row.wins > 0 && row.avg_margin_victory != null
+        ? Number(row.avg_margin_victory) * row.wins
+        : 0,
+    margin_defeat_sum: Number.isFinite(lossSum)
+      ? lossSum
+      : row.losses > 0 && row.avg_margin_defeat != null
+        ? Number(row.avg_margin_defeat) * row.losses
+        : 0,
+  };
+}
+
+function withAverageMargins(row: StandingAcc): StandingAcc {
+  return {
+    ...row,
+    avg_margin_victory: row.wins > 0 ? Math.round((row.margin_victory_sum / row.wins) * 10) / 10 : null,
+    avg_margin_defeat: row.losses > 0 ? Math.round((row.margin_defeat_sum / row.losses) * 10) / 10 : null,
+  };
+}
+
+function zeroedStandings(template: Standing[]): Standing[] {
+  return template.map((row) => blankStanding(row));
 }
 
 function ranksByTeamId(rows: Standing[]): Record<string, number> {
@@ -66,9 +104,9 @@ function applyMatchesToStandings(
       .map((row, index) => ({ ...row, rank: index + 1 }));
   }
 
-  const byId: Record<string, Standing> = {};
+  const byId: Record<string, StandingAcc> = {};
   baseline.forEach((row) => {
-    byId[row.team_id] = { ...row };
+    byId[row.team_id] = toAcc(row);
   });
 
   const baselineIds = new Set(Object.keys(byId));
@@ -86,7 +124,7 @@ function applyMatchesToStandings(
     if (!baselineIds.has(key1) && !baselineIds.has(key2)) return;
 
     if (!byId[key1]) {
-      byId[key1] = {
+      byId[key1] = blankStanding({
         team_id: key1,
         rank: baseline.length + 1,
         manager_name: "",
@@ -98,12 +136,10 @@ function applyMatchesToStandings(
         points: 0,
         points_for: 0,
         points_against: 0,
-        avg_margin_victory: null,
-        avg_margin_defeat: null,
-      };
+      });
     }
     if (!byId[key2]) {
-      byId[key2] = {
+      byId[key2] = blankStanding({
         team_id: key2,
         rank: baseline.length + 1,
         manager_name: "",
@@ -115,9 +151,7 @@ function applyMatchesToStandings(
         points: 0,
         points_for: 0,
         points_against: 0,
-        avg_margin_victory: null,
-        avg_margin_defeat: null,
-      };
+      });
     }
 
     const row1 = byId[key1];
@@ -126,6 +160,7 @@ function applyMatchesToStandings(
     const rawP2 = m?.league_entry_2_points ?? m?.score_2 ?? m?.away_score ?? 0;
     const p1 = typeof rawP1 === "number" ? rawP1 : Number(rawP1) || 0;
     const p2 = typeof rawP2 === "number" ? rawP2 : Number(rawP2) || 0;
+    const margin = Math.abs(p1 - p2);
 
     row1.points_for += p1;
     row1.points_against += p2;
@@ -135,11 +170,15 @@ function applyMatchesToStandings(
     if (p1 > p2) {
       row1.wins += 1;
       row1.points += 3;
+      row1.margin_victory_sum += margin;
       row2.losses += 1;
+      row2.margin_defeat_sum += margin;
     } else if (p2 > p1) {
       row2.wins += 1;
       row2.points += 3;
+      row2.margin_victory_sum += margin;
       row1.losses += 1;
+      row1.margin_defeat_sum += margin;
     } else {
       row1.draws += 1;
       row2.draws += 1;
@@ -152,8 +191,30 @@ function applyMatchesToStandings(
   });
 
   return Object.values(byId)
+    .map(withAverageMargins)
     .sort((a, b) => (b.points !== a.points ? b.points - a.points : b.points_for - a.points_for))
     .map((row, index) => ({ ...row, rank: index + 1 }));
+}
+
+function overlayAverageMargins(
+  rows: Standing[],
+  matches: any[],
+  entryIdToTeamId: Record<string, string>,
+): Standing[] {
+  if (!rows.length || !matches.length) return rows;
+  const computed = applyMatchesToStandings(zeroedStandings(rows), matches, entryIdToTeamId);
+  const byId: Record<string, Standing> = {};
+  computed.forEach((row) => {
+    byId[row.team_id] = row;
+  });
+  return rows.map((row) => {
+    const next = byId[row.team_id];
+    return {
+      ...row,
+      avg_margin_victory: next?.avg_margin_victory ?? row.avg_margin_victory ?? null,
+      avg_margin_defeat: next?.avg_margin_defeat ?? row.avg_margin_defeat ?? null,
+    };
+  });
 }
 
 export function useDivisionStandings(division: Division) {
@@ -289,6 +350,21 @@ export function useDivisionStandings(division: Division) {
                 entryIdToTeamId[fplId] = String(teamRow.team_id);
               }
             });
+          }
+
+          const finishedMatches = matches.filter((m: any) => {
+            const event = Number(m?.event || 0);
+            if (event <= 0) return false;
+            if (currentGw > 0 && event < currentGw) return true;
+            return m?.finished === true;
+          });
+          if (finishedMatches.length && payload.standings?.length) {
+            payload.standings = overlayAverageMargins(
+              payload.standings,
+              finishedMatches,
+              entryIdToTeamId,
+            );
+            setData({ ...payload });
           }
 
           const gwMatches = matches.filter((m: any) => Number(m?.event) === currentGw);

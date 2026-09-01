@@ -34,6 +34,8 @@ import {
   type ScoutablePlayer,
 } from "./player-comms.ts";
 import { newsFeed } from "./news.ts";
+import { selectBestTotwLineup, type TotwPlayer } from "./team-of-the-week.ts";
+import { buildRivalryNewsItem, findRivalry, leagueMatchupPath } from "./rivalries.ts";
 
 // --------------------
 // Constants
@@ -1831,6 +1833,7 @@ function enrichPlayerMapWithFplPhotos(
       team: number | null;
       position: number | null;
       image_url: string | null;
+      total_points?: number;
     }
   >,
   fplBootstrap: any,
@@ -1839,10 +1842,13 @@ function enrichPlayerMapWithFplPhotos(
   const elements = normalizeDraftList<any>(fplBootstrap?.elements ?? []);
   elements.forEach((el: any) => {
     const id = parsePositiveInt(el?.id);
-    const photo = String(el?.photo ?? "").trim();
-    if (!id || !photo) return;
+    if (!id) return;
     const entry = map[id];
-    if (!entry || entry.image_url != null) return;
+    if (!entry) return;
+    const seasonPts = coerceNumber(el?.total_points, 0);
+    if (seasonPts > 0) entry.total_points = seasonPts;
+    const photo = String(el?.photo ?? "").trim();
+    if (!photo || entry.image_url != null) return;
     const url = buildImageUrlFromPhoto(photo);
     if (url) entry.image_url = url;
   });
@@ -1864,6 +1870,7 @@ function extractDraftPlayerMap(bootstrap: any) {
       team: number | null;
       position: number | null;
       image_url: string | null;
+      total_points?: number;
     }
   > = {};
   rawElements.forEach((p: any) => {
@@ -1884,6 +1891,7 @@ function extractDraftPlayerMap(bootstrap: any) {
       team: parsePositiveInt(p?.team),
       position: parsePositiveInt(p?.element_type ?? p?.position),
       image_url: imageUrl,
+      total_points: coerceNumber(p?.total_points, 0) || undefined,
     };
   });
   return map;
@@ -2101,6 +2109,7 @@ function extractLivePlayerStatsMap(payload: any) {
     yellow_cards: coerceNumber(stats?.yellow_cards, 0),
     red_cards: coerceNumber(stats?.red_cards, 0),
     penalties_saved: coerceNumber(stats?.penalties_saved, 0),
+    bps: coerceNumber(stats?.bps, 0),
   });
 
   if (elements && typeof elements === "object" && !Array.isArray(elements)) {
@@ -10121,6 +10130,7 @@ leagueActivity.get("/previous-week-results", async (c) => {
             defensive_return: defensiveReturn,
             penalties_saved: penaltiesSaved,
             saves,
+            minutes: coerceNumber(stats.minutes, 0),
             is_bench: isBench,
           };
         })
@@ -10209,6 +10219,15 @@ leagueActivity.get("/previous-week-results", async (c) => {
           defensive_return: !!p.defensive_return,
           penalties_saved: p.penalties_saved ?? 0,
           saves: p.saves ?? 0,
+        })),
+        starters: allPlayers.map((p) => ({
+          player_id: p.player_id,
+          player_name: p.player_name,
+          manager_name: p.manager_name,
+          total_points: p.total_points,
+          minutes: p.minutes ?? 0,
+          goals_scored: p.goals_scored ?? 0,
+          assists: p.assists ?? 0,
         })),
       });
     }
@@ -10929,6 +10948,484 @@ leagueActivity.get("/waivers", async (c) => {
     });
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to fetch waiver activity");
+  }
+});
+
+function resolveLatestCompletedGameweek(bootstrap: any, currentGw: number) {
+  const latestCompleted = extractLatestCompletedDraftEventId(bootstrap);
+  if (latestCompleted && latestCompleted === currentGw) return currentGw;
+  if (latestCompleted && latestCompleted > 0) return latestCompleted;
+  if (currentGw > 1) return currentGw - 1;
+  return currentGw || 1;
+}
+
+leagueActivity.get("/team-of-the-week", async (c) => {
+  try {
+    const supabase = getSupabaseAdmin();
+    const bootstrap = await fetchBootstrap();
+    const currentGw = extractDraftCurrentEventId(bootstrap) || 1;
+    const latestCompleted = resolveLatestCompletedGameweek(bootstrap, currentGw);
+    const requested = parsePositiveInt(c.req.query("gameweek"));
+    const targetGw = requested && requested >= 1 && requested <= latestCompleted ? requested : latestCompleted;
+
+    const leagues = await loadBothDivisionDraftLeagues(supabase);
+    const players = extractDraftPlayerMap(bootstrap);
+    try {
+      const fplBootstrap = await fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`);
+      enrichPlayerMapWithFplPhotos(players, fplBootstrap);
+    } catch {
+      // photos optional
+    }
+    const teamNameById: Record<number, string> = {};
+    normalizeDraftList<any>(bootstrap?.teams).forEach((t: any) => {
+      const id = parsePositiveInt(t?.id);
+      if (!id) return;
+      teamNameById[id] = String(t?.short_name || t?.name || `Team ${id}`);
+    });
+
+    const live = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${targetGw}/live`);
+    const livePointsMap = extractLivePointsMap(live);
+    const liveStatsMap = extractLivePlayerStatsMap(live);
+
+    const unique = new Map<number, TotwPlayer>();
+    const pickJobs: Array<Promise<{ managerName: string; picks: any[] }>> = [];
+    for (const league of leagues) {
+      for (const entry of league.entries || []) {
+        const managerName = toCanonicalManagerName(formatDraftManagerName(entry));
+        const entryId = entry?.entry_id ?? entry?.entry;
+        if (!managerName || !entryId) continue;
+        pickJobs.push(
+          fetchDraftPicksForEntries([String(entryId)], targetGw, true).then((picks) => ({
+            managerName,
+            picks: picks?.picks || [],
+          })),
+        );
+      }
+    }
+    const bundles = await Promise.all(pickJobs);
+    for (const { managerName, picks } of bundles) {
+      for (const pick of picks) {
+          const playerId = coerceNumber(pick.element);
+          if (!playerId) continue;
+          const meta = players[playerId];
+          const stats = liveStatsMap[playerId] || {};
+          const minutes = coerceNumber(stats.minutes, 0);
+          const hasLive = Object.prototype.hasOwnProperty.call(livePointsMap, playerId);
+          const points = hasLive
+            ? coerceNumber(livePointsMap[playerId], 0)
+            : coerceNumber(pick.points ?? pick.event_points, 0);
+          if (minutes <= 0 && points <= 0) continue;
+          const next: TotwPlayer = {
+            player_id: playerId,
+            player_name: meta?.name || `Player ${playerId}`,
+            web_name: meta?.web_name || null,
+            position: coerceNumber(meta?.position, 0),
+            points,
+            bonus: coerceNumber(stats.bonus, 0),
+            goals: coerceNumber(stats.goals_scored, 0),
+            assists: coerceNumber(stats.assists, 0),
+            clean_sheets: coerceNumber(stats.clean_sheets, 0),
+            bps: coerceNumber(stats.bps, 0),
+            minutes,
+            team: teamNameById[Number(meta?.team)] || "",
+            manager_name: managerName,
+            player_image_url: meta?.image_url || null,
+          };
+          const existing = unique.get(playerId);
+          if (!existing || next.points > existing.points) unique.set(playerId, next);
+        }
+    }
+
+    const selected = selectBestTotwLineup([...unique.values()]);
+    const xiCount = selected.lineup.GK.length + selected.lineup.DEF.length + selected.lineup.MID.length + selected.lineup.FWD.length;
+    return c.json({
+      gameweek: targetGw,
+      latest_completed: latestCompleted,
+      current_gameweek: currentGw,
+      formation: selected.formation,
+      total_points: selected.totalPoints,
+      xi_count: xiCount,
+      lineup: selected.lineup,
+      bench: selected.bench,
+    });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to build Team of the Week");
+  }
+});
+
+leagueActivity.get("/league-news", async (c) => {
+  try {
+    const supabase = getSupabaseAdmin();
+    const bootstrap = await fetchBootstrap();
+    const currentGw = extractDraftCurrentEventId(bootstrap) || 1;
+    const latestCompleted = resolveLatestCompletedGameweek(bootstrap, currentGw);
+    const now = new Date().toISOString();
+    const items: Array<{
+      id: string;
+      title: string;
+      summary: string;
+      url: string;
+      source: string;
+      category: "league";
+      kind: string;
+      rivalryType?: string;
+      publishedAt: string;
+    }> = [];
+
+    const { data: resultRows } = await supabase
+      .from("legacy_h2h_gameweek_results")
+      .select("manager_name, opponent_name, points_for, points_against, result, gameweek")
+      .eq("season", CURRENT_SEASON)
+      .order("gameweek", { ascending: false });
+
+    const byManager: Record<string, Array<{ gw: number; result: string; points: number; opponent: string }>> = {};
+    (resultRows || []).forEach((row: any) => {
+      const name = toCanonicalManagerName(row.manager_name);
+      if (!name) return;
+      if (!byManager[name]) byManager[name] = [];
+      byManager[name].push({
+        gw: coerceNumber(row.gameweek),
+        result: String(row.result || "").toUpperCase(),
+        points: coerceNumber(row.points_for),
+        opponent: toCanonicalManagerName(row.opponent_name) || String(row.opponent_name || ""),
+      });
+    });
+
+    Object.entries(byManager).forEach(([manager, rows]) => {
+      const ordered = [...rows].sort((a, b) => b.gw - a.gw);
+      if (!ordered.length) return;
+      const first = ordered[0].result;
+      if (!first || first === "D") return;
+      let length = 0;
+      for (const row of ordered) {
+        if (row.result !== first) break;
+        length += 1;
+      }
+      if (length < 3) return;
+      if (first === "W") {
+        items.push({
+          id: `streak-win-${manager}`,
+          title: `${manager} on a ${length}-game winning streak`,
+          summary: `${manager} has won ${length} league games in a row. Latest: GW ${ordered[0].gw} vs ${ordered[0].opponent}.`,
+          url: "/league-standings",
+          source: "League of Lads",
+          category: "league",
+          kind: "streak",
+          publishedAt: now,
+        });
+      } else if (first === "L") {
+        items.push({
+          id: `streak-loss-${manager}`,
+          title: `${manager} on a ${length}-game losing streak`,
+          summary: `${manager} has lost ${length} league games in a row and will be looking to stop the slide.`,
+          url: "/league-standings",
+          source: "League of Lads",
+          category: "league",
+          kind: "streak",
+          publishedAt: now,
+        });
+      }
+      const unbeaten = ordered[0].result !== "L";
+      if (unbeaten) {
+        let unbeatenLen = 0;
+        for (const row of ordered) {
+          if (row.result === "L") break;
+          unbeatenLen += 1;
+        }
+        if (unbeatenLen >= 4 && first !== "W") {
+          items.push({
+            id: `streak-unbeaten-${manager}`,
+            title: `${manager} unbeaten in ${unbeatenLen} games`,
+            summary: `${manager} has not lost in ${unbeatenLen} league fixtures.`,
+            url: "/league-standings",
+            source: "League of Lads",
+            category: "league",
+            kind: "streak",
+            publishedAt: now,
+          });
+        }
+      }
+    });
+
+    const tableFromResults = (names: Set<string>, label: string, extraKind?: string) => {
+      const rows = [...names]
+        .map((manager) => {
+          const results = byManager[manager] || [];
+          let points = 0;
+          let pf = 0;
+          results.forEach((r) => {
+            pf += r.points;
+            if (r.result === "W") points += 3;
+            else if (r.result === "D") points += 1;
+          });
+          return { manager_name: manager, points, points_for: pf };
+        })
+        .sort((a, b) => b.points - a.points || b.points_for - a.points_for);
+      if (!rows.length) return;
+      const top = rows[0];
+      const second = rows[1];
+      const gap = top.points - (second?.points ?? 0);
+      items.push({
+        id: `race-${label}`,
+        title: `${top.manager_name} leads ${label}`,
+        summary: second
+          ? `${top.manager_name} sits on ${top.points} league points, ${gap} ahead of ${second.manager_name}.`
+          : `${top.manager_name} sits top of ${label}.`,
+        url: "/league-standings",
+        source: "League of Lads",
+        category: "league",
+        kind: "race",
+        publishedAt: now,
+      });
+      if (rows.length >= 2 && extraKind === "relegation") {
+        const bottom = rows.slice(-2);
+        items.push({
+          id: `relegation-${label}`,
+          title: `Relegation watch in ${label}`,
+          summary: `${bottom.map((r) => r.manager_name).join(" and ")} occupy the bottom two places.`,
+          url: "/league-standings",
+          source: "League of Lads",
+          category: "league",
+          kind: "relegation",
+          publishedAt: now,
+        });
+      }
+      if (rows.length >= 2 && extraKind === "promotion") {
+        items.push({
+          id: `promotion-${label}`,
+          title: `Promotion race in ${label}`,
+          summary: `${rows[0].manager_name} and ${rows[1].manager_name} hold the top two places.`,
+          url: "/league-standings",
+          source: "League of Lads",
+          category: "league",
+          kind: "promotion",
+          publishedAt: now,
+        });
+      }
+    };
+
+    tableFromResults(DIVISION_ONE_MANAGERS, "Division One", "relegation");
+    tableFromResults(DIVISION_TWO_MANAGERS, "Division Two", "promotion");
+
+    try {
+      const { data: gobletRows } = await supabase
+        .from("goblet_standings")
+        .select("team_id, round, points, total_points, teams ( entry_name, manager_name )")
+        .order("round", { ascending: false });
+      const agg: Record<string, { manager_name: string; points_for: number }> = {};
+      (gobletRows || []).forEach((row: any) => {
+        const manager = toCanonicalManagerName(row.teams?.manager_name) || row.teams?.manager_name;
+        if (!manager) return;
+        if (!agg[row.team_id]) agg[row.team_id] = { manager_name: manager, points_for: 0 };
+        agg[row.team_id].points_for += coerceNumber(row.points);
+      });
+      const gobletLeaders = Object.values(agg).sort((a, b) => b.points_for - a.points_for);
+      if (gobletLeaders[0]) {
+        const lead = gobletLeaders[0];
+        const chase = gobletLeaders[1];
+        items.push({
+          id: "goblet-race",
+          title: `${lead.manager_name} tops the Goblet`,
+          summary: chase
+            ? `${lead.manager_name} leads the Goblet on ${lead.points_for} points for, with ${chase.manager_name} next.`
+            : `${lead.manager_name} leads the Goblet standings.`,
+          url: "/goblet",
+          source: "League of Lads",
+          category: "league",
+          kind: "goblet",
+          publishedAt: now,
+        });
+      }
+    } catch {
+      // goblet table optional
+    }
+
+    if (currentGw >= CUP_START_GAMEWEEK) {
+      items.push({
+        id: `ffa-cup-${currentGw}`,
+        title: `FFA Cup is live · GW ${currentGw}`,
+        summary: "The Bench Boost Cup is underway. Bracket, captains, and matchups are on the FFA Cup page.",
+        url: "/bracket",
+        source: "League of Lads",
+        category: "league",
+        kind: "cup",
+        publishedAt: now,
+      });
+    } else {
+      items.push({
+        id: "ffa-cup-upcoming",
+        title: `FFA Cup unlocks in GW ${CUP_START_GAMEWEEK}`,
+        summary: `${Math.max(0, CUP_START_GAMEWEEK - currentGw)} gameweek${CUP_START_GAMEWEEK - currentGw === 1 ? "" : "s"} remaining until the Bench Boost Cup starts.`,
+        url: "/bracket",
+        source: "League of Lads",
+        category: "league",
+        kind: "cup",
+        publishedAt: now,
+      });
+    }
+
+    try {
+      const [divOneId, divTwoId] = await Promise.all([
+        resolveLeagueIdForDivision(supabase, "division_one"),
+        resolveLeagueIdForDivision(supabase, "division_two"),
+      ]);
+      const txPayloads = await Promise.all(
+        [divOneId, divTwoId].map((leagueId) =>
+          fetchJSON<any>(`${DRAFT_BASE_URL}/draft/league/${leagueId}/transactions`).catch(() => null),
+        ),
+      );
+      const players = extractDraftPlayerMap(bootstrap);
+      const displayGw = resolveDisplayGameweek(currentGw, extractLatestCompletedDraftEventId(bootstrap));
+      let waiverCount = 0;
+      txPayloads.forEach((txPayload) => {
+        normalizeDraftList<any>(txPayload?.transactions).forEach((tx: any) => {
+          if (waiverCount >= 6) return;
+          const event = coerceNumber(tx?.event);
+          const kind = String(tx?.kind || "").toLowerCase();
+          const result = String(tx?.result || "").toLowerCase();
+          if (event !== displayGw) return;
+          if (kind !== "w" && kind !== "f") return;
+          if (result && result !== "a") return;
+          const inId = parsePositiveInt(tx?.element_in);
+          const outId = parsePositiveInt(tx?.element_out);
+          if (!inId) return;
+          waiverCount += 1;
+          const inName = players[inId]?.name || `Player ${inId}`;
+          const outName = outId ? players[outId]?.name : null;
+          const typeLabel = kind === "w" ? "Waiver" : "Free agent";
+          items.push({
+            id: `waiver-${event}-${inId}-${tx?.entry || waiverCount}`,
+            title: `${typeLabel}: ${inName}`,
+            summary: outName ? `${inName} in, ${outName} out.` : `${inName} joined a squad.`,
+            url: "/dashboard",
+            source: "League of Lads",
+            category: "league",
+            kind: "waiver",
+            publishedAt: now,
+          });
+        });
+      });
+    } catch {
+      // waivers optional
+    }
+
+    try {
+      const { data: liveH2h } = await supabase
+        .from("h2h_matchups")
+        .select("team_1_id, team_2_id, team_1_points, team_2_points, winner_id")
+        .eq("gameweek", latestCompleted);
+      const { data: teams } = await supabase.from("teams").select("id, entry_id, manager_name");
+      const teamById: Record<string, { manager: string; matchupKey: string }> = {};
+      (teams || []).forEach((t: any) => {
+        teamById[String(t.id)] = {
+          manager: toCanonicalManagerName(t.manager_name) || t.manager_name,
+          matchupKey: String(t.entry_id || t.id || ""),
+        };
+      });
+      (liveH2h || []).slice(0, 4).forEach((m: any, idx: number) => {
+        const a = teamById[String(m.team_1_id)];
+        const b = teamById[String(m.team_2_id)];
+        if (!a?.manager || !b?.manager) return;
+        const rivalry = findRivalry(a.manager, b.manager);
+        items.push({
+          id: `result-${latestCompleted}-${idx}`,
+          title: `GW ${latestCompleted}: ${a.manager} ${Math.round(coerceNumber(m.team_1_points))}–${Math.round(coerceNumber(m.team_2_points))} ${b.manager}`,
+          summary: rivalry
+            ? `${rivalry.name}: full scores and Player of the Match are on the matchup page.`
+            : "Full scores and Player of the Match are on the matchup page.",
+          url: leagueMatchupPath(latestCompleted, a.matchupKey, b.matchupKey),
+          source: "League of Lads",
+          category: "league",
+          kind: "result",
+          publishedAt: now,
+        });
+      });
+    } catch {
+      // results optional
+    }
+
+    const topScorer = Object.entries(byManager)
+      .map(([manager, rows]) => {
+        const latest = rows.find((r) => r.gw === latestCompleted);
+        return { manager, points: latest?.points ?? 0 };
+      })
+      .sort((a, b) => b.points - a.points)[0];
+    if (topScorer?.points) {
+      items.push({
+        id: `top-manager-${latestCompleted}`,
+        title: `${topScorer.manager} led the scoring in GW ${latestCompleted}`,
+        summary: `${topScorer.manager} posted ${Math.round(topScorer.points)} points in the latest completed gameweek.`,
+        url: "/team-rosters",
+        source: "League of Lads",
+        category: "league",
+        kind: "player",
+        publishedAt: now,
+      });
+    }
+
+    try {
+      const eventFinished = currentGw === latestCompleted;
+      const weeks = Array.from(new Set([currentGw, latestCompleted].filter((gw) => gw > 0)));
+      const { data: rivalryMatchups } = await supabase
+        .from("h2h_matchups")
+        .select("team_1_id, team_2_id, team_1_points, team_2_points, gameweek")
+        .in("gameweek", weeks);
+      const { data: rivalryTeams } = await supabase.from("teams").select("id, entry_id, manager_name");
+      const teamById: Record<string, { manager: string; matchupKey: string }> = {};
+      (rivalryTeams || []).forEach((t: any) => {
+        teamById[String(t.id)] = {
+          manager: toCanonicalManagerName(t.manager_name) || t.manager_name,
+          matchupKey: String(t.entry_id || t.id || ""),
+        };
+      });
+      const allTimeRows = await fetchUnifiedAllTimeH2H(supabase);
+      const h2hLookup = (a: string, b: string) => {
+        const row = (allTimeRows || []).find(
+          (r: any) =>
+            toCanonicalManagerName(r.manager_name) === a && toCanonicalManagerName(r.opponent_name) === b,
+        );
+        if (!row) return null;
+        return {
+          aWins: coerceNumber(row.wins),
+          draws: coerceNumber(row.draws),
+          bWins: coerceNumber(row.losses),
+        };
+      };
+      (rivalryMatchups || []).forEach((m: any) => {
+        const a = teamById[String(m.team_1_id)];
+        const b = teamById[String(m.team_2_id)];
+        if (!a?.manager || !b?.manager) return;
+        const rivalry = findRivalry(a.manager, b.manager);
+        if (!rivalry) return;
+        const gw = coerceNumber(m.gameweek);
+        const scoreA = coerceNumber(m.team_1_points);
+        const scoreB = coerceNumber(m.team_2_points);
+        let status: "upcoming" | "live" | "completed" = "completed";
+        if (gw === currentGw && !eventFinished) {
+          status = scoreA > 0 || scoreB > 0 ? "live" : "upcoming";
+        }
+        items.unshift(
+          buildRivalryNewsItem({
+            rivalry,
+            managerA: a.manager,
+            managerB: b.manager,
+            status,
+            gameweek: gw,
+            scoreA,
+            scoreB,
+            h2h: h2hLookup(a.manager, b.manager),
+            publishedAt: now,
+            matchupUrl: leagueMatchupPath(gw, a.matchupKey, b.matchupKey),
+          }),
+        );
+      });
+    } catch {
+      // rivalry headlines optional
+    }
+
+    return c.json({ items, generated_at: now, gameweek: currentGw });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to load league news");
   }
 });
 
@@ -11773,6 +12270,7 @@ fixturesHub.get("/lineup", async (c) => {
         defensive_contributions: defensiveContributions,
         defensive_return: defensiveReturn,
         team: playerMap[playerId]?.team ?? null,
+        season_points: coerceNumber(playerMap[playerId]?.total_points, 0),
       };
     });
 
@@ -12122,12 +12620,18 @@ async function generateInboxForManager(
       const isDerby = derbyPairs.has(`${teamShortById[teamId]}:${teamShortById[oppId]}`);
       let fixtureNote = "Some interesting games ahead.";
       let priority = 11;
+      let trigger: MessageTrigger = "UPCOMING_FIXTURES";
       if (avg <= 2.4) {
-        fixtureNote = "These look like games I can really hurt them in.";
+        fixtureNote =
+          player.position === "MID"
+            ? "Their shape leaves gaps. I can rack up contributions and chances."
+            : "These look like games I can really hurt them in.";
         priority = 6;
+        trigger = "FAVORABLE_FIXTURE";
       } else if (avg >= 3.6) {
         fixtureNote = "Tough run coming — I'll need to be at my best.";
         priority = 8;
+        trigger = "TOUGH_FIXTURE";
       } else if (isDerby) {
         fixtureNote = "Derby week. I live for these nights.";
         priority = 5;
@@ -12135,13 +12639,48 @@ async function generateInboxForManager(
       pushCandidate(
         candidates,
         { ...player, opponent, fixtureNote } as typeof player,
-        "UPCOMING_FIXTURES",
+        trigger,
         "fixture",
         priority,
       );
     }
   } catch {
     // upcoming fixtures optional
+  }
+
+  try {
+    const { data: recentResults } = await supabase
+      .from("legacy_h2h_gameweek_results")
+      .select("gameweek, result, opponent_name")
+      .eq("season", CURRENT_SEASON)
+      .eq("manager_name", managerName)
+      .order("gameweek", { ascending: false })
+      .limit(8);
+    const ordered = (recentResults || []).map((row: any) => String(row.result || "").toUpperCase());
+    if (ordered.length) {
+      const first = ordered[0];
+      let length = 0;
+      for (const result of ordered) {
+        if (result !== first) break;
+        length += 1;
+      }
+      const voice = [...ranked].sort((a, b) => b.points - a.points)[0] || ranked[0];
+      if (voice && length >= 3 && (first === "W" || first === "L")) {
+        const fixtureNote =
+          first === "W"
+            ? `We're on a ${length}-game winning streak. Let's make it ${length + 1}.`
+            : `${length} losses in a row isn't us. I'll lead from the front.`;
+        pushCandidate(
+          candidates,
+          { ...voice, fixtureNote } as typeof voice,
+          "TEAM_STREAK",
+          "team",
+          first === "W" ? 4 : 5,
+        );
+      }
+    }
+  } catch {
+    // team streak optional
   }
 
   const { data: todayRows } = await supabase

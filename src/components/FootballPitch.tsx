@@ -37,6 +37,10 @@ assists?: number;
 minutes?: number;
 is_auto_subbed_on?: boolean;
 is_auto_subbed_off?: boolean;
+/** Owning manager(s), shown under the points pill when set */
+manager_name?: string | null;
+/** Season points for this manager, shown under last-week/GW points */
+season_points?: number | null;
 }
 
 interface FootballPitchProps {
@@ -47,6 +51,12 @@ orientation?: "portrait" | "landscape";
 side?: "left" | "right";
 /** When true, renders no background (used inside SharedPitch which handles its own bg) */
 noBackground?: boolean;
+/** Solid fill instead of the FPL pitch photo */
+plainBackground?: boolean;
+/** Smaller cards and a shorter pitch — used by Team of the Week */
+size?: "md" | "sm";
+/** Fill the parent height instead of a fixed aspect ratio */
+fillHeight?: boolean;
 }
 
 // Portrait: Y positions (GK at bottom=82, FWD at top=18)
@@ -55,6 +65,13 @@ const PORTRAIT_Y: Record<number, number> = {
 2: 64,
 3: 46,
 4: 22,
+};
+
+const PORTRAIT_Y_SM: Record<number, number> = {
+1: 86,
+2: 66,
+3: 44,
+4: 16,
 };
 
 // Landscape left half: X positions as % of FULL pitch width
@@ -92,6 +109,8 @@ showCaptain,
 onPlayerClick,
 orientation,
 compact = false,
+plainBackground = false,
+size = "md",
 }: {
 player: PitchPlayer;
 imageUrl: string | null;
@@ -102,6 +121,8 @@ onPlayerClick?: (p: PitchPlayer) => void;
 orientation: "portrait" | "landscape";
 /** Tighter tiles when many players share one half (e.g. cup full squad). */
 compact?: boolean;
+plainBackground?: boolean;
+size?: "md" | "sm";
 }) {
 const pitchLabel = pitchPlayerDisplayName(player);
 const pts = player.raw_points ?? 0;
@@ -117,7 +138,14 @@ const cardSize =
     ? compact
       ? "w-6 h-8 sm:w-7 sm:h-10"
       : "w-7 h-9 sm:w-8 sm:h-11"
-    : "w-7 h-10 sm:w-9 sm:h-12 md:w-10 md:h-14";
+    : size === "sm"
+      ? "w-6 h-8 sm:w-7 sm:h-10"
+      : "w-7 h-10 sm:w-9 sm:h-12 md:w-10 md:h-14";
+const nameClass = plainBackground
+  ? "text-foreground"
+  : "text-white";
+const nameShadow = plainBackground ? undefined : { textShadow: "0 1px 3px rgba(0,0,0,1)" };
+const nameMax = size === "sm" ? "max-w-[42px]" : "max-w-[38px]";
 
 return (
 <button
@@ -126,7 +154,7 @@ onClick={() => onPlayerClick?.(player)}
 className={`flex flex-col items-center group ${
   onPlayerClick ? "cursor-pointer pointer-events-auto" : "cursor-default pointer-events-none"
 }`}
-title={player.player_name}
+title={player.manager_name ? `${player.player_name} (${player.manager_name})` : player.player_name}
 >
 <div className="relative">
 {/* Image card */}
@@ -169,16 +197,36 @@ fallbackClassName: "absolute inset-0 flex items-center justify-center bg-gray-70
 
   {/* Surname */}
   <span
-    className="mt-0.5 text-[8px] font-semibold text-white leading-none text-center max-w-[38px] truncate"
-    style={{ textShadow: "0 1px 3px rgba(0,0,0,1)" }}
+    className={`mt-0.5 text-[8px] font-semibold leading-none text-center ${nameMax} truncate ${nameClass}`}
+    style={nameShadow}
   >
     {pitchLabel}
   </span>
 
-  {/* Points pill */}
+  {/* Points pill — last week / this GW */}
   <span className={`mt-0.5 text-[8px] font-bold px-1 py-0.5 rounded-full leading-none shadow-sm ${ptsColor}`}>
     {pts}
   </span>
+  {player.season_points != null ? (
+    <span
+      className={`mt-0.5 text-[7px] font-medium leading-none text-center ${nameMax} truncate ${
+        plainBackground ? "text-muted-foreground" : "text-white/90"
+      }`}
+      style={nameShadow}
+    >
+      {Math.round(player.season_points)} season
+    </span>
+  ) : null}
+  {player.manager_name ? (
+    <span
+      className={`mt-0.5 text-[7px] font-medium leading-none text-center ${nameMax} truncate ${
+        plainBackground ? "text-muted-foreground" : "text-white/90"
+      }`}
+      style={nameShadow}
+    >
+      {player.manager_name}
+    </span>
+  ) : null}
 </button>
 
 );
@@ -191,6 +239,9 @@ showCaptain = true,
 orientation = "portrait",
 side = "left",
 noBackground = false,
+plainBackground = false,
+size = "md",
+fillHeight = false,
 }: FootballPitchProps) {
 const [playerImages, setPlayerImages] = useState<Record<number, string | null>>({});
 
@@ -220,7 +271,7 @@ return acc;
 const getPortraitPos = (position: number, idx: number) => {
 const posPlayers = playersByPosition[position] || [];
 const count = Math.max(1, posPlayers.length);
-const y = PORTRAIT_Y[position] || 50;
+const y = (size === "sm" ? PORTRAIT_Y_SM : PORTRAIT_Y)[position] || 50;
 if (position === 1) {
 if (count === 1) return { x: 50, y };
 const startX = 40, endX = 60;
@@ -256,14 +307,21 @@ const sharedHalfCoordinateLayer =
   noBackground && orientation === "landscape";
 
 const compactCards = orientation === "landscape" && players.length > 11;
+const usePhoto = !noBackground && !plainBackground;
 
 return (
 <div
-className="relative w-full h-full rounded-lg overflow-hidden pointer-events-none"
-style={orientation === "portrait" ? { aspectRatio: "9/16" } : undefined}
+className={`relative w-full rounded-lg overflow-hidden pointer-events-none ${
+  plainBackground ? "bg-muted" : ""
+} ${fillHeight ? "h-full max-lg:aspect-[4/5] lg:min-h-0" : "h-full"}`}
+style={
+  orientation === "portrait" && !fillHeight
+    ? { aspectRatio: size === "sm" ? "4 / 5" : "9 / 16" }
+    : undefined
+}
 >
 {/* Pitch background — only when not delegated to parent */}
-{!noBackground && (
+{usePhoto && (
 orientation === "portrait" ? (
 <img
 src={pitchBgPortrait}
@@ -311,6 +369,8 @@ className="absolute inset-0 w-full h-full object-cover pointer-events-none selec
               onPlayerClick={onPlayerClick}
               orientation={orientation}
               compact={compactCards}
+              plainBackground={plainBackground}
+              size={size}
             />
           </div>
         );

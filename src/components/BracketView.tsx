@@ -11,12 +11,13 @@ import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { Card } from "./ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { useTournamentContext } from "../lib/tournamentContext";
-import { EDGE_FUNCTIONS_BASE, CURRENT_SEASON } from "../lib/constants";
+import { EDGE_FUNCTIONS_BASE, CURRENT_SEASON, CUP_START_GAMEWEEK } from "../lib/constants";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { useManagerCrestMap } from "../lib/useManagerCrestMap";
 import cupTrophy from "../assets/trophies/FFA Cup Icon + Year.png";
 import { DivisionBadge } from "./DivisionBadge";
 import { getManagerDivision } from "../lib/divisions";
+import { FeatureLocked } from "./FeatureLocked";
 
 /** Cup knockout starts at GW 29; use for lineup links from bracket. */
 const CUP_LINEUP_GAMEWEEK = 29;
@@ -322,7 +323,7 @@ function cupKnockoutMatchupPath(m: Matchup): string | null {
   return `/matchup/cup/${leg1}/${tid1}/${tid2}?${q.toString()}`;
 }
 
-const LEGACY_BRACKETS: Array<{ season: string; src: string }> = [
+const LEGACY_BRACKETS: Array<{ season: string; src: string; champion?: string }> = [
   {
     season: "2021/22",
     src: "https://brackethq.com/b/i1kz/embed/",
@@ -338,6 +339,11 @@ const LEGACY_BRACKETS: Array<{ season: string; src: string }> = [
   {
     season: "2024/25",
     src: "https://brackethq.com/b/5ucnc/embed/",
+  },
+  {
+    season: "2025/26",
+    src: "",
+    champion: "DAVID",
   },
 ];
 
@@ -384,6 +390,37 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
   const [selectedSeason, setSelectedSeason] = useState<string>("current");
   const [refreshBracketTrigger, setRefreshBracketTrigger] = useState(0);
   const pollingIntervalRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const defaultedSeasonRef = useRef(false);
+  const cupUnlocked = currentGw >= CUP_START_GAMEWEEK;
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadGw() {
+      try {
+        const gwRes = await fetch(
+          `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/current-gameweek`,
+          { headers: getSupabaseFunctionHeaders() as HeadersInit },
+        );
+        const gwData = gwRes.ok ? await gwRes.json() : null;
+        const gw = Number(gwData?.current_gameweek || 0);
+        if (!cancelled && gw > 0) setCurrentGw(gw);
+      } catch {
+        // keep default
+      }
+    }
+    loadGw();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (defaultedSeasonRef.current || currentGw <= 0) return;
+    defaultedSeasonRef.current = true;
+    if (currentGw < CUP_START_GAMEWEEK) {
+      setSelectedSeason(LEGACY_BRACKETS[LEGACY_BRACKETS.length - 1].season);
+    }
+  }, [currentGw]);
 
   const handleRefresh = () => {
     if (pollingIntervalRef.current) {
@@ -413,6 +450,11 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
           setCurrentGw(gwData.current_gameweek);
         }
         eventFinished = gwData?.event_finished === true || gwData?.current_event_finished === true;
+        const gwNow = Number(gwData?.current_gameweek || 0);
+        if (gwNow > 0 && gwNow < CUP_START_GAMEWEEK) {
+          if (!cancelled) setLoading(false);
+          return true;
+        }
       } catch {
         // default eventFinished stays true (no polling)
       }
@@ -579,6 +621,18 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
   const renderLegacyEmbed = () => {
     const legacy = LEGACY_BRACKETS.find((b) => b.season === selectedSeason);
     if (!legacy) return null;
+    if (!legacy.src) {
+      return (
+        <Card className="p-6">
+          <h2 className="text-lg font-semibold">{legacy.season} FFA Cup</h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {legacy.champion
+              ? `${legacy.champion} won the ${legacy.season} Bench Boost Cup.`
+              : `The ${legacy.season} knockout bracket is not available as an embed.`}
+          </p>
+        </Card>
+      );
+    }
     const publicBracketUrl = legacy.src.replace("/embed/", "/");
 
     return (
@@ -612,7 +666,7 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
 
   const renderLegacyActions = () => {
     const legacy = LEGACY_BRACKETS.find((b) => b.season === selectedSeason);
-    if (!legacy) return null;
+    if (!legacy?.src) return null;
     const publicBracketUrl = legacy.src.replace("/embed/", "/");
 
     return (
@@ -670,14 +724,14 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
       </div>
 
       {/* Show loading state only for current season */}
-      {(!showLegacySelector || selectedSeason === "current") && (contextLoading || loading) && (
+      {cupUnlocked && (!showLegacySelector || selectedSeason === "current") && (contextLoading || loading) && (
         <Card className="p-6">
           <p className="text-sm text-muted-foreground">Loading bracket...</p>
         </Card>
       )}
 
       {/* Show error message if there's an error (but still show dropdown) */}
-      {error && (!showLegacySelector || selectedSeason === "current") && (
+      {cupUnlocked && error && (!showLegacySelector || selectedSeason === "current") && (
         <Card className="p-4">
           <p className="text-sm text-destructive">{error}</p>
         </Card>
@@ -691,8 +745,16 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
         </>
       )}
 
+      {selectedSeason === "current" && currentGw > 0 && !cupUnlocked ? (
+        <FeatureLocked
+          title="FFA Bench Boost Cup"
+          unlockGameweek={CUP_START_GAMEWEEK}
+          currentGameweek={currentGw}
+        />
+      ) : null}
+
       {/* Current season view: group stage + bracket (or skeleton) */}
-      {(!showLegacySelector || selectedSeason === "current") && !contextLoading && !loading && group && (
+      {cupUnlocked && (!showLegacySelector || selectedSeason === "current") && !contextLoading && !loading && group && (
         <>
           {group.standings.length > 0 ? (
             <Card className="p-4">
@@ -831,7 +893,7 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
         </>
       )}
 
-      {(!showLegacySelector || selectedSeason === "current") && !contextLoading && !loading && (
+      {cupUnlocked && (!showLegacySelector || selectedSeason === "current") && !contextLoading && !loading && (
         displayRounds.length === 0 ? (
           <Card className="p-4">
             <p className="text-sm text-muted-foreground mb-2">

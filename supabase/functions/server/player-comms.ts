@@ -10,6 +10,9 @@ export type MessageTrigger =
   | "BIG_WIN"
   | "BIG_LOSS"
   | "UPCOMING_FIXTURES"
+  | "FAVORABLE_FIXTURE"
+  | "TOUGH_FIXTURE"
+  | "TEAM_STREAK"
   | "PLAYER_REPLY";
 
 export type MessageContext = {
@@ -240,6 +243,9 @@ export function triggerLabel(trigger: string): string {
     BIG_WIN: "Big win",
     BIG_LOSS: "Tough result",
     UPCOMING_FIXTURES: "Upcoming fixtures",
+    FAVORABLE_FIXTURE: "Good fixture",
+    TOUGH_FIXTURE: "Tough fixture",
+    TEAM_STREAK: "Team form",
     PLAYER_REPLY: "Reply",
   };
   return labels[trigger] || trigger;
@@ -420,6 +426,57 @@ const TEMPLATES: Record<MessageTrigger, Record<MessageLanguage, string[]>> = {
       "Pensando en {opponent}. {fixtureNote}",
     ],
   },
+  FAVORABLE_FIXTURE: {
+    English: [
+      "This looks tasty against {opponent}. {fixtureNote}",
+      "I fancy my chances here, {manager}. {fixtureNote}",
+      "Good fixture for us vs {opponent}. {fixtureNote}",
+    ],
+    French: [
+      "Beau match contre {opponent}. {fixtureNote}",
+      "Je sens le coup, {manager}. {fixtureNote}",
+      "Calendrier favorable face à {opponent}. {fixtureNote}",
+    ],
+    Spanish: [
+      "Buen partido contra {opponent}. {fixtureNote}",
+      "Me gustan estas, {manager}. {fixtureNote}",
+      "Calendario a favor frente a {opponent}. {fixtureNote}",
+    ],
+  },
+  TOUGH_FIXTURE: {
+    English: [
+      "Tough one vs {opponent}, {manager}. {fixtureNote}",
+      "We'll need to be at it against {opponent}. {fixtureNote}",
+      "Big test coming. {fixtureNote}",
+    ],
+    French: [
+      "Match dur contre {opponent}. {fixtureNote}",
+      "Il va falloir être au niveau, {manager}. {fixtureNote}",
+      "Gros test à venir. {fixtureNote}",
+    ],
+    Spanish: [
+      "Partido duro contra {opponent}. {fixtureNote}",
+      "Hay que estar a tope, {manager}. {fixtureNote}",
+      "Examen grande. {fixtureNote}",
+    ],
+  },
+  TEAM_STREAK: {
+    English: [
+      "{fixtureNote}",
+      "The dressing room's talking about this run, {manager}. {fixtureNote}",
+      "Squad's feeling it. {fixtureNote}",
+    ],
+    French: [
+      "{fixtureNote}",
+      "Le vestiaire en parle, {manager}. {fixtureNote}",
+      "L'équipe le sent. {fixtureNote}",
+    ],
+    Spanish: [
+      "{fixtureNote}",
+      "El vestuario está en esto, {manager}. {fixtureNote}",
+      "El grupo lo siente. {fixtureNote}",
+    ],
+  },
   PLAYER_REPLY: {
     English: [
       "Got your message, {manager}. I'll keep working.",
@@ -450,6 +507,9 @@ const ENGLISH_GLOSS: Record<MessageTrigger, string[]> = {
   BIG_WIN: ["Huge win. The squad is buzzing."],
   BIG_LOSS: ["That loss hurts. We'll bounce back."],
   UPCOMING_FIXTURES: ["I've been looking at the fixtures ahead."],
+  FAVORABLE_FIXTURE: ["This fixture looks good for me."],
+  TOUGH_FIXTURE: ["Tough fixture — I'll need to be at my best."],
+  TEAM_STREAK: ["The team's current run is on my mind."],
   PLAYER_REPLY: ["Got your message. I'll keep working."],
 };
 

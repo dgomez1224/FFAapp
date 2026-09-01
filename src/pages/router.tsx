@@ -24,6 +24,7 @@ import MessagesPage from "./Messages";
 import ScoutingPage from "./Scouting";
 import FixturesPage from "./Fixtures";
 import TeamRostersPage from "./TeamRosters";
+import TeamOfTheWeekPage from "./TeamOfTheWeek";
 import NewsPage from "./News";
 import MatchupDetailPage from "./MatchupDetail";
 import LineupDetailPage from "./LineupDetail";
@@ -240,6 +241,7 @@ function Shell() {
             <Route path="/goblet" element={<GobletStandings />} />
             <Route path="/managers" element={<ManagersPage />} />
             <Route path="/team-rosters" element={<TeamRostersPage />} />
+            <Route path="/team-of-the-week" element={<TeamOfTheWeekPage />} />
             <Route path="/players" element={<PlayerInsights />} />
             <Route path="/fixtures" element={<FixturesPage />} />
             <Route path="/news" element={<NewsPage />} />
@@ -261,7 +263,7 @@ function Shell() {
             />
             <Route path="/legacy-gameweek-standings" element={<LegacyGameweekStandings />} />
             <Route path="/standings-by-gameweek" element={<StandingsByGameweek />} />
-            <Route path="/bracket" element={<RequireCupUnlocked title="FFA Bench Boost Cup"><BracketView /></RequireCupUnlocked>} />
+            <Route path="/bracket" element={<BracketView />} />
             <Route path="/set-entry" element={<Navigate to="/sign-in" replace />} />
             <Route path="/sign-in" element={<SignIn />} />
             <Route

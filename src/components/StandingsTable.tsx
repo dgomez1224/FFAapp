@@ -4,6 +4,12 @@ import { useManagerCrestMap } from "../lib/useManagerCrestMap";
 import type { Standing } from "../lib/useDivisionStandings";
 import type { Division } from "../lib/divisions";
 
+function formatMargin(value: number | string | null | undefined) {
+  if (value == null || value === "") return "—";
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(1) : "—";
+}
+
 type StandingsTableProps = {
   rows: Standing[];
   division?: Division;
@@ -159,10 +165,10 @@ export function StandingsTable({
                   {standing.points_against}
                 </ZoneCell>
                 <ZoneCell className="fpl-numeric" zoneBg={zoneBg}>
-                  {standing.avg_margin_victory != null ? standing.avg_margin_victory.toFixed(1) : "—"}
+                  {formatMargin(standing.avg_margin_victory)}
                 </ZoneCell>
                 <ZoneCell className="fpl-numeric" zoneBg={zoneBg}>
-                  {standing.avg_margin_defeat != null ? standing.avg_margin_defeat.toFixed(1) : "—"}
+                  {formatMargin(standing.avg_margin_defeat)}
                 </ZoneCell>
               </TableRow>
             );

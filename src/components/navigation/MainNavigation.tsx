@@ -51,6 +51,7 @@ function buildGroups(token: string | null, showCupFeatures: boolean, onSignOut: 
       items: [
         { label: "Managers", path: "/managers" },
         { label: "Team Rosters", path: "/team-rosters" },
+        { label: "Team of the Week", path: "/team-of-the-week" },
         { label: "Players", path: "/players" },
         { label: "Fixtures", path: "/fixtures" },
         { label: "News", path: "/news" },

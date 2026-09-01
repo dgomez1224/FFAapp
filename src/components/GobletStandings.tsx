@@ -251,7 +251,7 @@ export default function GobletStandings({ compact = false }: { compact?: boolean
     .map((s, i) => ({ ...s, rank: i + 1 }));
 
   return (
-    <div className="space-y-3">
+    <div className={compact ? "flex h-full min-h-0 flex-col space-y-3" : "space-y-3"}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-3">
           <img
@@ -280,7 +280,7 @@ export default function GobletStandings({ compact = false }: { compact?: boolean
         </button>
       </div>
 
-      <Card className="min-w-0 overflow-x-auto p-4">
+      <Card className={`min-w-0 overflow-x-auto p-4 ${compact ? "flex-1" : ""}`}>
         <div className="fpl-table-container">
           <Table>
             <TableHeader>
