@@ -1,3 +1,8 @@
 @import './fonts.css';
 @import './tailwind.css';
 @import './theme.css';
+
+/* Host-injected Zorya widget is replaced by the unified This Week's Matchups card. */
+#zfw-root {
+  display: none !important;
+}

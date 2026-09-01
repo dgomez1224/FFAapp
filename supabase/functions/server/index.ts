@@ -33,6 +33,7 @@ import {
   type MessageTrigger,
   type ScoutablePlayer,
 } from "./player-comms.ts";
+import { newsFeed } from "./news.ts";
 
 // --------------------
 // Constants
@@ -12872,6 +12873,7 @@ app.get("/api/bootstrap", async (c) => {
 app.route("/captain-auth", captainAuth);
 app.route("/captain", captainPicks);
 app.route("/fixtures", fixturesHub);
+app.route("/news", newsFeed);
 
 // Compatibility: allow routes with "/server" prefix if Supabase passes full path
 app.route("/server/league-standings", leagueStandings);
@@ -12904,6 +12906,7 @@ app.route("/server/api/h2h", liveH2H);
 app.route("/server/captain-auth", captainAuth);
 app.route("/server/captain", captainPicks);
 app.route("/server/fixtures", fixturesHub);
+app.route("/server/news", newsFeed);
 app.route("/server/league-activity", leagueActivity);
 
 app.get("/player-image", async (c) => {

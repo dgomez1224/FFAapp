@@ -24,6 +24,15 @@ import {
 } from "../lib/playerImage";
 import { summarizeMatchupHighlights } from "./LivePlayerUpdates";
 import { getDivisionLabel, getManagerDivision, type Division } from "../lib/divisions";
+import {
+  breakdownProjected,
+  computeMatchupOdds,
+  nextOddsModel,
+  oddsModelMeta,
+  type OddsModelId,
+  type PlayerOddsInput,
+  type WinProbs,
+} from "../lib/matchupOdds";
 
 type ViewMode = "all" | Division;
 
@@ -49,14 +58,9 @@ type BreakdownPlayer = {
   name: string;
   points: number;
   projected: number;
+  remaining: number;
   status: "done" | "live" | "upcoming";
   is_captain: boolean;
-};
-
-type WinProbs = {
-  team1: number;
-  draw: number;
-  team2: number;
 };
 
 interface MatchupRow {
@@ -80,6 +84,8 @@ interface MatchupRow {
   win_probability?: WinProbs;
   breakdown_1?: BreakdownPlayer[];
   breakdown_2?: BreakdownPlayer[];
+  odds_players_1?: PlayerOddsInput[];
+  odds_players_2?: PlayerOddsInput[];
   live_highlights?: Array<{
     player_id: number;
     player_name: string;
@@ -173,7 +179,15 @@ function remainingProjected(player: LineupPlayerLite, epThisById: Record<number,
   return Math.max(0, ep * ((90 - elapsed) / 90));
 }
 
-function buildBreakdown(lineup: LineupPlayerLite[] | undefined, epThisById: Record<number, number>): BreakdownPlayer[] {
+function remainingFrac(player: LineupPlayerLite): number {
+  const status = playerStatus(player);
+  if (status === "done") return 0;
+  if (status === "upcoming") return 1;
+  const elapsed = Math.min(90, Math.max(Number(player.fixture_elapsed ?? 0), Number(player.minutes ?? 0)));
+  return Math.max(0, (90 - elapsed) / 90);
+}
+
+function buildOddsPlayers(lineup: LineupPlayerLite[] | undefined, epThisById: Record<number, number>): PlayerOddsInput[] {
   return contributingPlayers(lineup)
     .slice()
     .sort((a, b) => (a.lineup_slot ?? 99) - (b.lineup_slot ?? 99))
@@ -185,34 +199,24 @@ function buildBreakdown(lineup: LineupPlayerLite[] | undefined, epThisById: Reco
         player_id: player.player_id,
         name: shortName || `Player ${player.player_id}`,
         points,
-        projected: points + remaining,
+        remaining,
+        frac: remainingFrac(player),
         status: playerStatus(player),
         is_captain: !!player.is_captain,
       };
     });
 }
 
-function projectedFromBreakdown(rows: BreakdownPlayer[]): number {
-  return rows.reduce((sum, row) => sum + Number(row.projected || 0), 0);
-}
-
-function winProbabilities(proj1: number, proj2: number): WinProbs {
-  const diff = proj1 - proj2;
-  const p1Raw = 1 / (1 + Math.exp(-0.16 * diff));
-  const closeness = Math.exp(-Math.abs(diff) / 7);
-  const draw = Math.min(0.28, 0.06 + 0.22 * closeness);
-  const rest = 1 - draw;
-  return {
-    team1: p1Raw * rest,
-    draw,
-    team2: (1 - p1Raw) * rest,
-  };
-}
-
-function percentParts(probs: WinProbs): WinProbs {
-  const raw = [probs.team1, probs.draw, probs.team2].map((value) => Math.round(value * 100));
-  raw[0] += 100 - raw.reduce((sum, value) => sum + value, 0);
-  return { team1: raw[0], draw: raw[1], team2: raw[2] };
+function toBreakdown(players: PlayerOddsInput[], model: OddsModelId): BreakdownPlayer[] {
+  return players.map((player) => ({
+    player_id: player.player_id,
+    name: player.name,
+    points: player.points,
+    remaining: player.remaining,
+    projected: breakdownProjected(player, model),
+    status: player.status,
+    is_captain: player.is_captain,
+  }));
 }
 
 function dedupeMatchupsByPair<T extends { team_1_id: string; team_2_id: string }>(rows: T[]): T[] {
@@ -227,6 +231,7 @@ function dedupeMatchupsByPair<T extends { team_1_id: string; team_2_id: string }
 export function ThisWeekMatchups() {
   const [divisionsData, setDivisionsData] = useState<DivisionMatchups[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>("all");
+  const [oddsModel, setOddsModel] = useState<OddsModelId>("heuristic");
   const [openBreakdowns, setOpenBreakdowns] = useState<Record<string, boolean>>({});
   const [gameweek, setGameweek] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -348,10 +353,9 @@ export function ThisWeekMatchups() {
                 (sum, player) => sum + Number(player?.effective_points || 0),
                 0,
               );
-              const breakdown_1 = buildBreakdown(lineup1, epThisById);
-              const breakdown_2 = buildBreakdown(lineup2, epThisById);
-              const projected_team_1_points = projectedFromBreakdown(breakdown_1);
-              const projected_team_2_points = projectedFromBreakdown(breakdown_2);
+              const odds_players_1 = buildOddsPlayers(lineup1, epThisById);
+              const odds_players_2 = buildOddsPlayers(lineup2, epThisById);
+              const baseline = computeMatchupOdds(odds_players_1, odds_players_2, "heuristic");
               const detailForHighlights = {
                 ...detail,
                 matchup: {
@@ -364,11 +368,13 @@ export function ThisWeekMatchups() {
                 key: `${m.team_1_id}__${m.team_2_id}`,
                 live_team_1_points: team1LeagueLive,
                 live_team_2_points: team2LeagueLive,
-                projected_team_1_points,
-                projected_team_2_points,
-                win_probability: winProbabilities(projected_team_1_points, projected_team_2_points),
-                breakdown_1,
-                breakdown_2,
+                projected_team_1_points: baseline.proj1,
+                projected_team_2_points: baseline.proj2,
+                win_probability: baseline.probs,
+                odds_players_1,
+                odds_players_2,
+                breakdown_1: toBreakdown(odds_players_1, "heuristic"),
+                breakdown_2: toBreakdown(odds_players_2, "heuristic"),
                 live_highlights: summarizeMatchupHighlights(detailForHighlights, startsByPlayerId, 8),
               };
             }),
@@ -406,7 +412,9 @@ export function ThisWeekMatchups() {
               live_team_2_points: live2,
               projected_team_1_points: proj1,
               projected_team_2_points: proj2,
-              win_probability: detail?.win_probability ?? winProbabilities(proj1, proj2),
+              win_probability: detail?.win_probability,
+              odds_players_1: detail?.odds_players_1 || [],
+              odds_players_2: detail?.odds_players_2 || [],
               breakdown_1: detail?.breakdown_1 || [],
               breakdown_2: detail?.breakdown_2 || [],
               live_highlights: detail?.live_highlights || [],
@@ -485,7 +493,9 @@ export function ThisWeekMatchups() {
               {player.is_captain ? " (C)" : ""}
             </span>
             <span className="shrink-0 tabular-nums text-muted-foreground">
-              {player.status === "upcoming" ? `${player.projected.toFixed(1)} exp` : `${Math.round(player.points)} pts`}
+              {player.status === "upcoming" || oddsModel === "gaussian-excl"
+                ? `${player.projected.toFixed(1)} exp`
+                : `${Math.round(player.points)} pts`}
               {player.status === "live" ? " · live" : ""}
             </span>
           </div>
@@ -507,12 +517,13 @@ export function ThisWeekMatchups() {
     const allTime2Wins = rivalry?.all_time_record_2?.wins ?? "—";
     const score1 = Math.round(Number(m.live_team_1_points ?? m.team_1_points ?? 0));
     const score2 = Math.round(Number(m.live_team_2_points ?? m.team_2_points ?? 0));
-    const proj1 = Number(m.projected_team_1_points ?? score1);
-    const proj2 = Number(m.projected_team_2_points ?? score2);
-    const probs = percentParts(m.win_probability ?? winProbabilities(proj1, proj2));
+    const computed = computeMatchupOdds(m.odds_players_1 || [], m.odds_players_2 || [], oddsModel);
+    const proj1 = computed.proj1;
+    const proj2 = computed.proj2;
+    const probs: WinProbs = computed.probs;
     const highlights = m.live_highlights || [];
-    const breakdown1 = m.breakdown_1 || [];
-    const breakdown2 = m.breakdown_2 || [];
+    const breakdown1 = toBreakdown(m.odds_players_1 || [], oddsModel);
+    const breakdown2 = toBreakdown(m.odds_players_2 || [], oddsModel);
     const matchupKey = `${m.team_1_id}-${m.team_2_id}`;
     const breakdownOpen = !!openBreakdowns[matchupKey];
 
@@ -598,17 +609,45 @@ export function ThisWeekMatchups() {
               <div className="flex items-center justify-between text-[11px] font-medium text-muted-foreground">
                 <span>Win probability</span>
                 <span>
-                  {probs.team1}% · {probs.draw}% draw · {probs.team2}%
+                  {computed.twoWay
+                    ? `${probs.team1}% · ${probs.team2}%`
+                    : `${probs.team1}% · ${probs.draw}% draw · ${probs.team2}%`}
                 </span>
               </div>
-              <div className="flex h-2 overflow-hidden rounded-full bg-muted">
-                <div className="bg-emerald-500" style={{ width: `${probs.team1}%` }} title={`${m.team_1?.entry_name || "Home"} ${probs.team1}%`} />
-                <div className="bg-zinc-400" style={{ width: `${probs.draw}%` }} title={`Draw ${probs.draw}%`} />
-                <div className="bg-sky-500" style={{ width: `${probs.team2}%` }} title={`${m.team_2?.entry_name || "Away"} ${probs.team2}%`} />
+              <div className="flex h-6 overflow-hidden rounded-full bg-muted">
+                {probs.team1 > 0 ? (
+                  <div
+                    className="flex items-center justify-center bg-emerald-500 px-0.5 text-[10px] font-bold leading-none text-white tabular-nums"
+                    style={{ width: `${probs.team1}%` }}
+                    title={`${m.team_1?.entry_name || "Home"} ${probs.team1}%`}
+                  >
+                    {probs.team1}%
+                  </div>
+                ) : null}
+                {!computed.twoWay && probs.draw > 0 ? (
+                  <div
+                    className="flex items-center justify-center bg-zinc-400 px-0.5 text-[10px] font-bold leading-none text-white tabular-nums"
+                    style={{ width: `${probs.draw}%` }}
+                    title={`Draw ${probs.draw}%`}
+                  >
+                    {probs.draw}%
+                  </div>
+                ) : null}
+                {probs.team2 > 0 ? (
+                  <div
+                    className="flex items-center justify-center bg-sky-500 px-0.5 text-[10px] font-bold leading-none text-white tabular-nums"
+                    style={{ width: `${probs.team2}%` }}
+                    title={`${m.team_2?.entry_name || "Away"} ${probs.team2}%`}
+                  >
+                    {probs.team2}%
+                  </div>
+                ) : null}
               </div>
               <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-xs">
                 <div className="text-center font-medium tabular-nums">{proj1.toFixed(1)}</div>
-                <div className="text-[11px] text-muted-foreground">Projected pts</div>
+                <div className="text-[11px] text-muted-foreground">
+                  {oddsModel === "gaussian-excl" ? "Remaining exp." : "Projected pts"}
+                </div>
                 <div className="text-center font-medium tabular-nums">{proj2.toFixed(1)}</div>
               </div>
             </div>
@@ -713,10 +752,12 @@ export function ThisWeekMatchups() {
     <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
       <div>
         <h2 className="text-lg font-semibold">This Week&apos;s Matchups</h2>
-        <p className="text-sm text-muted-foreground">Gameweek {gameweek ?? "—"}</p>
+        <p className="text-sm text-muted-foreground">
+          Gameweek {gameweek ?? "—"} · {oddsModelMeta(oddsModel).short}
+        </p>
       </div>
       <div className="flex flex-col items-start gap-2 sm:items-end">
-        <div className="flex flex-wrap gap-1">
+        <div className="flex flex-wrap items-center gap-1">
           {VIEW_OPTIONS.map((option) => (
             <Button
               key={option.id}
@@ -728,6 +769,15 @@ export function ThisWeekMatchups() {
               {option.label}
             </Button>
           ))}
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            aria-label="Toggle win-probability model"
+            onClick={() => setOddsModel((current) => nextOddsModel(current))}
+          >
+            {oddsModelMeta(oddsModel).label}
+          </Button>
         </div>
         <div className="text-right">
           {refreshing ? <p className="text-xs text-muted-foreground">Updating...</p> : null}

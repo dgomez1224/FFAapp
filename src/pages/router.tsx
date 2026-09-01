@@ -23,6 +23,8 @@ import MyPage from "./MyPage";
 import MessagesPage from "./Messages";
 import ScoutingPage from "./Scouting";
 import FixturesPage from "./Fixtures";
+import TeamRostersPage from "./TeamRosters";
+import NewsPage from "./News";
 import MatchupDetailPage from "./MatchupDetail";
 import LineupDetailPage from "./LineupDetail";
 import {
@@ -66,8 +68,10 @@ function Shell() {
     { label: "League", path: "/league-standings" },
     { label: "Goblet", path: "/goblet" },
     { label: "Managers", path: "/managers" },
+    { label: "Team Rosters", path: "/team-rosters" },
     { label: "Players", path: "/players" },
     { label: "Fixtures", path: "/fixtures" },
+    { label: "News", path: "/news" },
     { label: "Legacy", path: "/legacy-home" },
     { label: "Legacy GW", path: "/legacy-gameweek-standings" },
     { label: "GW Standings", path: "/standings-by-gameweek" },
@@ -277,11 +281,17 @@ function Shell() {
             <Link to="/managers" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               Managers
             </Link>
+            <Link to="/team-rosters" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
+              Team Rosters
+            </Link>
             <Link to="/players" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               Players
             </Link>
             <Link to="/fixtures" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               Fixtures
+            </Link>
+            <Link to="/news" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
+              News
             </Link>
             <Link to="/legacy-home" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               Legacy
@@ -387,8 +397,10 @@ function Shell() {
             <Route path="/league-standings" element={<LeagueStandings />} />
             <Route path="/goblet" element={<GobletStandings />} />
             <Route path="/managers" element={<ManagersPage />} />
+            <Route path="/team-rosters" element={<TeamRostersPage />} />
             <Route path="/players" element={<PlayerInsights />} />
             <Route path="/fixtures" element={<FixturesPage />} />
+            <Route path="/news" element={<NewsPage />} />
             <Route
               path="/matchup/:type/:gameweek/:team1/:team2"
               element={
