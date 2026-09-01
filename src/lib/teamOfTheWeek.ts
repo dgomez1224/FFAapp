@@ -1,4 +1,7 @@
-import { getManagerDivision, type Division } from "./divisions";
+import { getManagerDivision, getManagerEntryId, type Division } from "./divisions";
+import { EDGE_FUNCTIONS_BASE } from "./constants";
+import { getSupabaseFunctionHeaders, supabaseUrl } from "./supabaseClient";
+import type { Standing } from "./useDivisionStandings";
 
 export type TotwPlayer = {
   player_id: number;
@@ -59,12 +62,9 @@ export function compareTotwPlayers(a: TotwPlayer, b: TotwPlayer) {
     b.goals - a.goals ||
     b.assists - a.assists ||
     b.bps - a.bps ||
-    b.minutes - a.minutes
+    b.minutes - a.minutes ||
+    String(a.manager_name || "").localeCompare(String(b.manager_name || ""))
   );
-}
-
-function topNPoints(players: TotwPlayer[], n: number) {
-  return players.slice(0, n).reduce((sum, p) => sum + p.points, 0);
 }
 
 export function selectBestTotwLineup(players: TotwPlayer[]): {
@@ -85,16 +85,28 @@ export function selectBestTotwLineup(players: TotwPlayer[]): {
 
   let best = FORMATIONS[0];
   let bestPoints = -1;
+  let bestBonus = -1;
+  let bestBps = -1;
   for (const formation of FORMATIONS) {
     if (byPosition.DEF.length < formation.def) continue;
     if (byPosition.MID.length < formation.mid) continue;
     if (byPosition.FWD.length < formation.fwd) continue;
-    const total =
-      topNPoints(byPosition.DEF, formation.def) +
-      topNPoints(byPosition.MID, formation.mid) +
-      topNPoints(byPosition.FWD, formation.fwd);
-    if (total > bestPoints) {
+    const xi = [
+      ...byPosition.DEF.slice(0, formation.def),
+      ...byPosition.MID.slice(0, formation.mid),
+      ...byPosition.FWD.slice(0, formation.fwd),
+    ];
+    const total = xi.reduce((sum, p) => sum + p.points, 0);
+    const bonus = xi.reduce((sum, p) => sum + p.bonus, 0);
+    const bps = xi.reduce((sum, p) => sum + p.bps, 0);
+    if (
+      total > bestPoints ||
+      (total === bestPoints && bonus > bestBonus) ||
+      (total === bestPoints && bonus === bestBonus && bps > bestBps)
+    ) {
       bestPoints = total;
+      bestBonus = bonus;
+      bestBps = bps;
       best = formation;
     }
   }
@@ -145,4 +157,108 @@ export function totwFromPool(pool: TotwPool, scope: TotwScope): TotwResponse {
     lineup: selected.lineup,
     bench: selected.bench,
   };
+}
+
+const totwCache = new Map<string, TotwPool>();
+const totwInflight = new Map<string, Promise<TotwPool>>();
+
+async function loadTotwPool(gameweek?: number): Promise<TotwPool> {
+  const gwRes = await fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/current-gameweek`, {
+    headers: getSupabaseFunctionHeaders(),
+  });
+  const gwPayload = await gwRes.json();
+  const current = Number(gwPayload?.current_gameweek || 1);
+  const previous = Number(gwPayload?.previous_gameweek || Math.max(1, current - 1));
+  const finished = gwPayload?.event_finished === true || gwPayload?.current_event_finished === true;
+  const latestCompleted = finished ? current : previous;
+  const targetGw = gameweek && gameweek >= 1 && gameweek <= latestCompleted ? gameweek : latestCompleted;
+
+  const standings = (
+    await Promise.all(
+      (["division_one", "division_two"] as const).map(async (division) => {
+        const res = await fetch(
+          `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-standings?division=${division}`,
+          { headers: getSupabaseFunctionHeaders() },
+        );
+        const payload = await res.json();
+        return (Array.isArray(payload?.standings) ? payload.standings : []) as Standing[];
+      }),
+    )
+  ).flat();
+  standings.sort((a, b) =>
+    String(a.manager_name || "").localeCompare(String(b.manager_name || "")),
+  );
+
+  const unique = new Map<number, TotwPlayer>();
+  await Promise.allSettled(
+    standings.map(async (standing) => {
+      const teamKey =
+        standing.team_id || standing.entry_id || getManagerEntryId(standing.manager_name || "") || "";
+      if (!teamKey) return;
+      const params = new URLSearchParams({
+        team: String(teamKey),
+        gameweek: String(targetGw),
+        type: "league",
+      });
+      const res = await fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/fixtures/lineup?${params}`, {
+        headers: getSupabaseFunctionHeaders(),
+      });
+      const payload = await res.json();
+      const lineup = Array.isArray(payload?.lineup) ? payload.lineup : [];
+      lineup.forEach((p: any) => {
+        const playerId = Number(p.player_id);
+        if (!playerId) return;
+        const points = Number(p.effective_points ?? p.raw_points ?? p.total_points ?? 0);
+        const minutes = Number(p.minutes || 0);
+        if (minutes <= 0 && points <= 0) return;
+        const next: TotwPlayer = {
+          player_id: playerId,
+          player_name: p.player_name,
+          web_name: p.web_name || null,
+          position: Number(p.position || 0),
+          points,
+          bonus: Number(p.bonus || 0),
+          goals: Number(p.goals_scored || 0),
+          assists: Number(p.assists || 0),
+          clean_sheets: Number(p.clean_sheets || 0),
+          bps: Number(p.bps || 0),
+          minutes,
+          team: String(p.team_name || p.team || ""),
+          manager_name: String(standing.manager_name || ""),
+          player_image_url: p.player_image_url || null,
+        };
+        const existing = unique.get(playerId);
+        if (!existing || compareTotwPlayers(next, existing) < 0) unique.set(playerId, next);
+      });
+    }),
+  );
+
+  return {
+    gameweek: targetGw,
+    latest_completed: latestCompleted,
+    current_gameweek: current,
+    players: [...unique.values()],
+  };
+}
+
+/** Shared fetch so dashboard and /team-of-the-week show the same XI for the same gameweek. */
+export function fetchTotwPool(gameweek?: number): Promise<TotwPool> {
+  const key = String(gameweek || "latest");
+  const cached = totwCache.get(key);
+  if (cached) return Promise.resolve(cached);
+  const pending = totwInflight.get(key);
+  if (pending) return pending;
+  const request = loadTotwPool(gameweek)
+    .then((pool) => {
+      totwCache.set(key, pool);
+      totwCache.set(String(pool.gameweek), pool);
+      totwInflight.delete(key);
+      return pool;
+    })
+    .catch((err) => {
+      totwInflight.delete(key);
+      throw err;
+    });
+  totwInflight.set(key, request);
+  return request;
 }

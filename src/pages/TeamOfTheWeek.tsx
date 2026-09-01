@@ -10,9 +10,7 @@ import { PlayerStats, PlayerStatsModal } from "../components/PlayerStatsModal";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import type { TotwPlayer, TotwPool, TotwScope, TotwResponse } from "../lib/teamOfTheWeek";
-import { totwFromPool } from "../lib/teamOfTheWeek";
-import type { Standing } from "../lib/useDivisionStandings";
-import { getManagerEntryId } from "../lib/divisions";
+import { totwFromPool, fetchTotwPool } from "../lib/teamOfTheWeek";
 
 function toPitchPlayers(players: TotwPlayer[]): PitchPlayer[] {
   return players.map((p) => ({
@@ -32,82 +30,6 @@ function toPitchPlayers(players: TotwPlayer[]): PitchPlayer[] {
     minutes: p.minutes,
     manager_name: p.manager_name || undefined,
   }));
-}
-
-async function fetchTotwFromLineups(gameweek?: number): Promise<TotwPool> {
-  const gwRes = await fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/current-gameweek`, {
-    headers: getSupabaseFunctionHeaders(),
-  });
-  const gwPayload = await gwRes.json();
-  const current = Number(gwPayload?.current_gameweek || 1);
-  const previous = Number(gwPayload?.previous_gameweek || Math.max(1, current - 1));
-  const finished = gwPayload?.event_finished === true || gwPayload?.current_event_finished === true;
-  const latestCompleted = finished ? current : previous;
-  const targetGw = gameweek && gameweek >= 1 && gameweek <= latestCompleted ? gameweek : latestCompleted;
-
-  const standings = (
-    await Promise.all(
-      (["division_one", "division_two"] as const).map(async (division) => {
-        const res = await fetch(
-          `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/h2h-standings?division=${division}`,
-          { headers: getSupabaseFunctionHeaders() },
-        );
-        const payload = await res.json();
-        return (Array.isArray(payload?.standings) ? payload.standings : []) as Standing[];
-      }),
-    )
-  ).flat();
-
-  const unique = new Map<number, TotwPlayer>();
-  await Promise.allSettled(
-    standings.map(async (standing) => {
-      const teamKey =
-        standing.team_id || standing.entry_id || getManagerEntryId(standing.manager_name || "") || "";
-      if (!teamKey) return;
-      const params = new URLSearchParams({
-        team: String(teamKey),
-        gameweek: String(targetGw),
-        type: "league",
-      });
-      const res = await fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/fixtures/lineup?${params}`, {
-        headers: getSupabaseFunctionHeaders(),
-      });
-      const payload = await res.json();
-      const lineup = Array.isArray(payload?.lineup) ? payload.lineup : [];
-      lineup.forEach((p: any) => {
-        const playerId = Number(p.player_id);
-        if (!playerId) return;
-        const points = Number(p.effective_points ?? p.raw_points ?? p.total_points ?? 0);
-        const minutes = Number(p.minutes || 0);
-        if (minutes <= 0 && points <= 0) return;
-        const next: TotwPlayer = {
-          player_id: playerId,
-          player_name: p.player_name,
-          web_name: p.web_name || null,
-          position: Number(p.position || 0),
-          points,
-          bonus: Number(p.bonus || 0),
-          goals: Number(p.goals_scored || 0),
-          assists: Number(p.assists || 0),
-          clean_sheets: Number(p.clean_sheets || 0),
-          bps: Number(p.bps || 0),
-          minutes,
-          team: String(p.team_name || p.team || ""),
-          manager_name: String(standing.manager_name || ""),
-          player_image_url: p.player_image_url || null,
-        };
-        const existing = unique.get(playerId);
-        if (!existing || next.points > existing.points) unique.set(playerId, next);
-      });
-    }),
-  );
-
-  return {
-    gameweek: targetGw,
-    latest_completed: latestCompleted,
-    current_gameweek: current,
-    players: [...unique.values()],
-  };
 }
 
 const SCOPE_OPTIONS: Array<{ id: TotwScope; label: string }> = [
@@ -136,7 +58,7 @@ export function TeamOfTheWeekPanel({
       try {
         setLoading(true);
         setError(null);
-        const payload = await fetchTotwFromLineups(selectedGw || undefined);
+        const payload = await fetchTotwPool(selectedGw || undefined);
         if (!cancelled) setPool(payload);
       } catch (err: any) {
         if (!cancelled) setError(err?.message || "Failed to load Team of the Week");

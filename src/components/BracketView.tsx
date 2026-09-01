@@ -18,6 +18,8 @@ import cupTrophy from "../assets/trophies/FFA Cup Icon + Year.png";
 import { DivisionBadge } from "./DivisionBadge";
 import { getManagerDivision } from "../lib/divisions";
 import { FeatureLocked } from "./FeatureLocked";
+import { LegacyFfaCupResults } from "./LegacyFfaCupResults";
+import { LEGACY_FFA_CUP_2025_EMBED } from "../lib/legacyFfaCup2025";
 
 /** Cup knockout starts at GW 29; use for lineup links from bracket. */
 const CUP_LINEUP_GAMEWEEK = 29;
@@ -342,7 +344,7 @@ const LEGACY_BRACKETS: Array<{ season: string; src: string; champion?: string }>
   },
   {
     season: "2025/26",
-    src: "",
+    src: LEGACY_FFA_CUP_2025_EMBED,
     champion: "DAVID",
   },
 ];
@@ -742,6 +744,7 @@ export function BracketView({ showLegacySelector = true }: BracketViewProps) {
         <>
           {renderLegacyActions()}
           {renderLegacyEmbed()}
+          {selectedSeason === "2025/26" ? <LegacyFfaCupResults /> : null}
         </>
       )}
 

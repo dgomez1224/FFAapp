@@ -104,6 +104,28 @@ function Carousel({
     };
   }, [api, onSelect]);
 
+  React.useEffect(() => {
+    if (!api) return;
+    const viewport = api.rootNode();
+    if (!viewport) return;
+    let accumulated = 0;
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || event.metaKey) return;
+      const shiftVertical = event.shiftKey && Math.abs(event.deltaY) >= Math.abs(event.deltaX);
+      const delta = shiftVertical ? event.deltaY : event.deltaX;
+      if (!delta) return;
+      if (!shiftVertical && Math.abs(event.deltaX) < Math.abs(event.deltaY)) return;
+      event.preventDefault();
+      accumulated += delta;
+      if (Math.abs(accumulated) < 36) return;
+      if (accumulated > 0) api.scrollNext();
+      else api.scrollPrev();
+      accumulated = 0;
+    };
+    viewport.addEventListener("wheel", onWheel, { passive: false });
+    return () => viewport.removeEventListener("wheel", onWheel);
+  }, [api]);
+
   return (
     <CarouselContext.Provider
       value={{

@@ -27,6 +27,7 @@ export type NewsItem = {
   id: string;
   title: string;
   summary: string;
+  detail?: string;
   url: string;
   source: string;
   category: NewsCategory;
@@ -58,46 +59,96 @@ function formatWhen(value: string | null) {
   return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
-function NewsCard({ item, featured = false }: { item: NewsItem; featured?: boolean }) {
-  const inner = (
-    <>
-      <div className="mb-2 flex flex-wrap items-center gap-2">
-        <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${categoryChip(item.category)}`}>
-          {item.category === "epl" ? "EPL" : item.category}
-        </span>
-        {item.kind ? (
-          <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-            {item.rivalryType ? rivalryChipLabel(item.rivalryType) : item.kind}
-          </span>
-        ) : null}
-        <span className="text-[11px] text-muted-foreground">{item.source}</span>
-        {item.publishedAt ? (
-          <span className="text-[11px] text-muted-foreground">{formatWhen(item.publishedAt)}</span>
-        ) : null}
-      </div>
-      <h3 className={`font-semibold leading-snug ${featured ? "text-lg" : "text-base"}`}>{item.title}</h3>
-      {item.summary ? (
-        <p className="mt-2 line-clamp-3 text-sm text-muted-foreground">{item.summary}</p>
-      ) : null}
-    </>
-  );
-
-  const className = `block h-full rounded-xl border bg-card p-4 text-left transition-colors hover:bg-accent/40 ${
-    featured ? "min-h-[180px]" : ""
-  }`;
-
-  if (item.url.startsWith("/")) {
-    return (
-      <Link to={item.url} className={className}>
-        {inner}
-      </Link>
-    );
+function splitStory(summary: string, detail?: string) {
+  const full = String(detail || "").trim();
+  const blurb = String(summary || "").trim();
+  if (full && full !== blurb) return { blurb, detail: full };
+  const match = blurb.match(/^(.+?[.!?])\s+([\s\S]+)$/);
+  if (match && match[1].length <= 180 && match[2].trim()) {
+    return { blurb: match[1], detail: match[2].trim() };
   }
+  return { blurb, detail: "" };
+}
+
+function NewsCard({ item, featured = false }: { item: NewsItem; featured?: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const { blurb, detail } = splitStory(item.summary, item.detail);
+  const canExpand = Boolean(detail);
 
   return (
-    <a href={item.url} target="_blank" rel="noopener noreferrer" className={className}>
-      {inner}
-    </a>
+    <article
+      className={`h-full rounded-xl border bg-card text-left transition-all duration-300 ${
+        featured ? "min-h-[180px]" : ""
+      } ${expanded ? "p-5 shadow-md ring-1 ring-primary/15" : "p-4"} ${
+        canExpand ? "hover:bg-accent/30" : "hover:bg-accent/40"
+      }`}
+    >
+      <button
+        type="button"
+        className="w-full text-left"
+        onClick={() => (canExpand ? setExpanded((open) => !open) : undefined)}
+        aria-expanded={canExpand ? expanded : undefined}
+      >
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${categoryChip(item.category)}`}>
+            {item.category === "epl" ? "EPL" : item.category}
+          </span>
+          {item.kind ? (
+            <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              {item.rivalryType ? rivalryChipLabel(item.rivalryType) : item.kind}
+            </span>
+          ) : null}
+          <span className="text-[11px] text-muted-foreground">{item.source}</span>
+          {item.publishedAt ? (
+            <span className="text-[11px] text-muted-foreground">{formatWhen(item.publishedAt)}</span>
+          ) : null}
+          {canExpand ? (
+            <span className="ml-auto text-[11px] text-muted-foreground">{expanded ? "▲" : "▼"}</span>
+          ) : null}
+        </div>
+        <h3 className={`font-semibold leading-snug ${featured ? "text-lg" : "text-base"}`}>{item.title}</h3>
+        {blurb ? (
+          <p className={`mt-2 text-sm text-muted-foreground ${expanded || !canExpand ? "" : "line-clamp-3"}`}>
+            {blurb}
+          </p>
+        ) : null}
+      </button>
+      {canExpand ? (
+        <div
+          className={`grid transition-[grid-template-rows] duration-300 ease-in-out ${
+            expanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+          }`}
+        >
+          <div className="overflow-hidden">
+            <div className="mt-3 rounded-lg border bg-muted/40 p-3 text-sm leading-relaxed text-foreground/80">
+              {detail}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      <div className="mt-3 flex items-center justify-between gap-2">
+        {canExpand ? (
+          <button
+            type="button"
+            className="text-xs font-medium text-primary hover:underline"
+            onClick={() => setExpanded((open) => !open)}
+          >
+            {expanded ? "Show less" : "Read full story"}
+          </button>
+        ) : (
+          <span />
+        )}
+        {item.url.startsWith("/") ? (
+          <Link to={item.url} className="text-xs text-primary hover:underline">
+            Open →
+          </Link>
+        ) : (
+          <a href={item.url} target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline">
+            Open →
+          </a>
+        )}
+      </div>
+    </article>
   );
 }
 

@@ -35,7 +35,6 @@ const FORMATIONS = [
   { def: 4, mid: 5, fwd: 1 },
   { def: 5, mid: 3, fwd: 2 },
   { def: 5, mid: 4, fwd: 1 },
-  { def: 3, mid: 5, fwd: 2 },
 ];
 
 export function compareTotwPlayers(a: TotwPlayer, b: TotwPlayer) {
@@ -45,12 +44,9 @@ export function compareTotwPlayers(a: TotwPlayer, b: TotwPlayer) {
     b.goals - a.goals ||
     b.assists - a.assists ||
     b.bps - a.bps ||
-    b.minutes - a.minutes
+    b.minutes - a.minutes ||
+    String(a.manager_name || "").localeCompare(String(b.manager_name || ""))
   );
-}
-
-function topNPoints(players: TotwPlayer[], n: number) {
-  return players.slice(0, n).reduce((sum, p) => sum + p.points, 0);
 }
 
 export function selectBestTotwLineup(players: TotwPlayer[]): {
@@ -71,16 +67,28 @@ export function selectBestTotwLineup(players: TotwPlayer[]): {
 
   let best = FORMATIONS[0];
   let bestPoints = -1;
+  let bestBonus = -1;
+  let bestBps = -1;
   for (const formation of FORMATIONS) {
     if (byPosition.DEF.length < formation.def) continue;
     if (byPosition.MID.length < formation.mid) continue;
     if (byPosition.FWD.length < formation.fwd) continue;
-    const total =
-      topNPoints(byPosition.DEF, formation.def) +
-      topNPoints(byPosition.MID, formation.mid) +
-      topNPoints(byPosition.FWD, formation.fwd);
-    if (total > bestPoints) {
+    const xi = [
+      ...byPosition.DEF.slice(0, formation.def),
+      ...byPosition.MID.slice(0, formation.mid),
+      ...byPosition.FWD.slice(0, formation.fwd),
+    ];
+    const total = xi.reduce((sum, p) => sum + p.points, 0);
+    const bonus = xi.reduce((sum, p) => sum + p.bonus, 0);
+    const bps = xi.reduce((sum, p) => sum + p.bps, 0);
+    if (
+      total > bestPoints ||
+      (total === bestPoints && bonus > bestBonus) ||
+      (total === bestPoints && bonus === bestBonus && bps > bestBps)
+    ) {
       bestPoints = total;
+      bestBonus = bonus;
+      bestBps = bps;
       best = formation;
     }
   }

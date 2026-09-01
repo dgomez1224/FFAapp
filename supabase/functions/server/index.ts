@@ -34,7 +34,7 @@ import {
   type ScoutablePlayer,
 } from "./player-comms.ts";
 import { newsFeed } from "./news.ts";
-import { selectBestTotwLineup, type TotwPlayer } from "./team-of-the-week.ts";
+import { compareTotwPlayers, selectBestTotwLineup, type TotwPlayer } from "./team-of-the-week.ts";
 import { buildRivalryNewsItem, findRivalry, leagueMatchupPath } from "./rivalries.ts";
 
 // --------------------
@@ -11032,7 +11032,7 @@ leagueActivity.get("/team-of-the-week", async (c) => {
             player_image_url: meta?.image_url || null,
           };
           const existing = unique.get(playerId);
-          if (!existing || next.points > existing.points) unique.set(playerId, next);
+          if (!existing || compareTotwPlayers(next, existing) < 0) unique.set(playerId, next);
         }
     }
 
