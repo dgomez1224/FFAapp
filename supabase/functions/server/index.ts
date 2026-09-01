@@ -12,6 +12,27 @@ export const config = {
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
 import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
+import {
+  assignDailyMessageTimes,
+  buildRecommendationText,
+  composePlayerMessage,
+  composePlayerReply,
+  dailyMessageQuota,
+  fixtureDifficultyBand,
+  hashSeed,
+  normalizeStatFocus,
+  nyDayBounds,
+  playerNativeLanguage,
+  POSITION_LABEL,
+  presentInboxMessage,
+  scoreScoutPlayer,
+  scoutDisplayName,
+  seededShuffle,
+  todayKeyInZone,
+  type FixtureDifficultyPref,
+  type MessageTrigger,
+  type ScoutablePlayer,
+} from "./player-comms.ts";
 
 // --------------------
 // Constants
@@ -101,7 +122,7 @@ let fixturesCache:          Record<number, CacheEntry<any[]>> = {};
 let liveEntryPointsCache:   Record<number, CacheEntry<Record<string, number>>> = {};
 let lastSyncedGw:           number = 0;
 let lastGobletSyncGw:       number = 0;
-let h2hMatchupsCache:       Record<number, CacheEntry<any>> = {};
+let h2hMatchupsCache:       Record<string, CacheEntry<any>> = {};
 
 // ── Timeout Wrapper ───────────────────────────────────────────────────────────
 
@@ -1437,6 +1458,65 @@ async function loadDraftDisplayNamesForAllDivisions(
   return { byEntryId, byManager };
 }
 
+type DivisionDraftLeague = {
+  division: DivisionKey;
+  leagueId: number;
+  details: any;
+  entries: any[];
+  matches: any[];
+};
+
+async function loadBothDivisionDraftLeagues(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+): Promise<DivisionDraftLeague[]> {
+  const [divOneId, divTwoId] = await Promise.all([
+    resolveLeagueIdForDivision(supabase, "division_one"),
+    resolveLeagueIdForDivision(supabase, "division_two"),
+  ]);
+  const specs: Array<{ division: DivisionKey; leagueId: number }> = [
+    { division: "division_one", leagueId: divOneId },
+    { division: "division_two", leagueId: divTwoId },
+  ];
+  const unique: Array<{ division: DivisionKey; leagueId: number }> = [];
+  const seen = new Set<number>();
+  specs.forEach((spec) => {
+    if (seen.has(spec.leagueId)) return;
+    seen.add(spec.leagueId);
+    unique.push(spec);
+  });
+  const detailsList = await Promise.all(unique.map((spec) => fetchLeagueDetails(spec.leagueId)));
+  return unique.map((spec, index) => {
+    const details = detailsList[index];
+    return {
+      ...spec,
+      details,
+      entries: normalizeDraftList<any>(details?.league_entries ?? []),
+      matches: normalizeDraftList<any>(details?.matches ?? []),
+    };
+  });
+}
+
+function divisionFromManagerName(managerName: string | null | undefined): DivisionKey | null {
+  const canonical = toCanonicalManagerName(managerName);
+  if (!canonical) return null;
+  if (DIVISION_TWO_MANAGERS.has(canonical)) return "division_two";
+  if (DIVISION_ONE_MANAGERS.has(canonical)) return "division_one";
+  return null;
+}
+
+function matchupBelongsToDivision(
+  team1Name: string | null | undefined,
+  team2Name: string | null | undefined,
+  division: DivisionKey,
+): boolean {
+  const a = divisionFromManagerName(team1Name);
+  const b = divisionFromManagerName(team2Name);
+  if (a && b) return a === division && b === division;
+  if (a) return a === division;
+  if (b) return b === division;
+  return false;
+}
+
 function resolveDraftDisplayName(
   team: { entry_id?: unknown; manager_name?: unknown },
   draftNames: {
@@ -2316,6 +2396,7 @@ function computeManagerDerivedStats(rows: GameweekRecordRow[]): ManagerDerivedGw
 async function fetchDerivedGameweekStats(
   supabase: ReturnType<typeof getSupabaseAdmin>,
   season?: string,
+  division?: DivisionKey | null,
 ) {
   const data: any[] = [];
   const pageSize = 1000;
@@ -2386,12 +2467,14 @@ async function fetchDerivedGameweekStats(
       }
     });
     try {
-      const { details } = await resolveDraftLeagueDetails(await resolveLeagueId());
-      normalizeDraftList<any>(details?.league_entries).forEach((entry: any) => {
-        const manager = toCanonicalManagerName(formatDraftManagerName(entry));
-        if (!manager) return;
-        const id = entry.id ?? entry.league_entry_id ?? entry.entry_id ?? entry.entry;
-        if (id !== null && id !== undefined) managerByKey[String(id)] = manager;
+      const leagues = await loadBothDivisionDraftLeagues(supabase);
+      leagues.forEach((league) => {
+        league.entries.forEach((entry: any) => {
+          const manager = toCanonicalManagerName(formatDraftManagerName(entry));
+          if (!manager) return;
+          const id = entry.id ?? entry.league_entry_id ?? entry.entry_id ?? entry.entry;
+          if (id !== null && id !== undefined) managerByKey[String(id)] = manager;
+        });
       });
     } catch {
       // Ignore draft fallback failures.
@@ -2431,9 +2514,9 @@ async function fetchDerivedGameweekStats(
       try {
         const bootstrap = await fetchBootstrap();
         const latestCompletedEvent = extractLatestCompletedDraftEventId(bootstrap);
-        const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
-        const entries = normalizeDraftList<any>(details?.league_entries);
-        const matches = normalizeDraftList<any>(details?.matches);
+        const leagues = await loadBothDivisionDraftLeagues(supabase);
+        const entries = leagues.flatMap((league) => league.entries);
+        const matches = leagues.flatMap((league) => league.matches);
         const managerByEntry: Record<string, string> = {};
         entries.forEach((entry: any) => {
           const manager = toCanonicalManagerName(formatDraftManagerName(entry));
@@ -2477,7 +2560,10 @@ async function fetchDerivedGameweekStats(
     }
   }
 
-  const managers = Object.keys(byManager).length > 0 ? Object.keys(byManager) : [...VALID_MANAGERS];
+  let managers = Object.keys(byManager).length > 0 ? Object.keys(byManager) : [...VALID_MANAGERS];
+  if (division) {
+    managers = managers.filter((manager) => managerBelongsToDivision(manager, division));
+  }
   const managerStats: Record<string, ManagerDerivedGwStats> = {};
   managers.forEach((manager) => {
     managerStats[manager] = computeManagerDerivedStats(byManager[manager] || []);
@@ -2730,27 +2816,40 @@ async function syncCurrentSeasonLegacyStats(
     return { latestCompletedEvent: null, synced: false };
   }
 
-  // Only sync once per completed GW — skip if already synced for this GW
+  // Only skip when this GW is already synced AND both divisions are present.
   if (lastSyncedGw >= latestCompletedEvent) {
-    return { latestCompletedEvent, synced: false };
+    try {
+      const { count } = await supabase
+        .from("legacy_h2h_gameweek_results")
+        .select("manager_name", { count: "exact", head: true })
+        .eq("season", CURRENT_SEASON)
+        .eq("gameweek", latestCompletedEvent);
+      if ((count || 0) >= 18) {
+        return { latestCompletedEvent, synced: false };
+      }
+    } catch {
+      // Re-sync below if the coverage check fails.
+    }
   }
 
   const managerByKey: Record<string, string> = {};
-  const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
-  const entries = normalizeDraftList<any>(details?.league_entries);
-  entries.forEach((entry: any) => {
-    const id = entry.id ?? entry.league_entry_id ?? entry.entry_id ?? entry.entry;
-    if (!id) return;
-    const manager = toCanonicalManagerName(formatDraftManagerName(entry));
-    if (!manager) return;
-    managerByKey[String(id)] = manager;
-    const rawEntryId = entry.entry_id ?? entry.entry;
-    if (rawEntryId !== null && rawEntryId !== undefined) {
-      managerByKey[String(rawEntryId)] = manager;
-    }
+  const leagues = await loadBothDivisionDraftLeagues(supabase);
+  leagues.forEach((league) => {
+    league.entries.forEach((entry: any) => {
+      const id = entry.id ?? entry.league_entry_id ?? entry.entry_id ?? entry.entry;
+      if (!id) return;
+      const manager = toCanonicalManagerName(formatDraftManagerName(entry));
+      if (!manager) return;
+      managerByKey[String(id)] = manager;
+      const rawEntryId = entry.entry_id ?? entry.entry;
+      if (rawEntryId !== null && rawEntryId !== undefined) {
+        managerByKey[String(rawEntryId)] = manager;
+      }
+    });
   });
 
-  const completedMatchups = normalizeDraftList<any>(details?.matches)
+  const completedMatchups = leagues
+    .flatMap((league) => league.matches)
     .filter((m: any) => {
       const gw = coerceNumber(m.event);
       return gw >= 1 && gw <= latestCompletedEvent;
@@ -6683,10 +6782,12 @@ h2hMatchups.get("/", async (c) => {
         divisionTeamIds = await getTeamIdSetForDivision(supabase, division);
       }
       const scopedMatchups = dedupeH2hMatchups((dbMatchups || []).filter((m: any) => {
-        if (!divisionTeamIds || divisionTeamIds.size === 0) return true;
+        if (!division) return true;
+        if (!divisionTeamIds || divisionTeamIds.size === 0) return false;
         return divisionTeamIds.has(String(m.team_1_id)) && divisionTeamIds.has(String(m.team_2_id));
       }));
 
+      if (scopedMatchups.length > 0) {
       const teamIds = Array.from(new Set(scopedMatchups.flatMap((m: any) => [m.team_1_id, m.team_2_id])));
       const { data: teams } = await supabase
         .from("teams")
@@ -6771,14 +6872,24 @@ h2hMatchups.get("/", async (c) => {
         }
       }
 
+      if (division) {
+        formatted = formatted.filter((m: any) =>
+          matchupBelongsToDivision(m.team_1?.manager_name, m.team_2?.manager_name, division),
+        );
+      }
+
       const resultDb = { gameweek, division: division ?? "all", matchups: formatted, source: "database" };
       h2hMatchupsCache[cacheKey] = { data: resultDb, ts: Date.now() };
       return c.json(resultDb);
+      }
     }
 
     const entryId = c.req.query("entryId") || STATIC_ENTRY_ID;
     const leagueIdOverride = c.req.query("leagueId");
-    const leagueIdValue = leagueIdOverride ? Number.parseInt(leagueIdOverride, 10) : null;
+    const parsedOverride = leagueIdOverride ? Number.parseInt(leagueIdOverride, 10) : NaN;
+    const leagueIdValue = Number.isFinite(parsedOverride)
+      ? parsedOverride
+      : (division ? await resolveLeagueIdForDivision(supabase, division) : null);
     try {
       const { details } = await resolveDraftLeagueDetails(entryId, leagueIdValue);
       const entries = details?.league_entries || [];
@@ -6857,8 +6968,14 @@ h2hMatchups.get("/", async (c) => {
         }
       }
 
-      const resultDraft = { gameweek, matchups: formatted, source: "draft" };
-      h2hMatchupsCache[gameweek] = { data: resultDraft, ts: Date.now() };
+      if (division) {
+        formatted = formatted.filter((m: any) =>
+          matchupBelongsToDivision(m.team_1?.manager_name, m.team_2?.manager_name, division),
+        );
+      }
+
+      const resultDraft = { gameweek, division: division ?? "all", matchups: formatted, source: "draft" };
+      h2hMatchupsCache[cacheKey] = { data: resultDraft, ts: Date.now() };
       return c.json(resultDraft);
     } catch (_draftErr: any) {
       // Classic fallback: derive gameweek points from each entry history.
@@ -6906,8 +7023,17 @@ h2hMatchups.get("/", async (c) => {
         });
       }
 
-      const resultClassic = { gameweek, matchups: formatted, source: "classic-derived" };
-      h2hMatchupsCache[gameweek] = { data: resultClassic, ts: Date.now() };
+      const resultClassic = {
+        gameweek,
+        division: division ?? "all",
+        matchups: division
+          ? formatted.filter((m: any) =>
+              matchupBelongsToDivision(m.team_1?.manager_name, m.team_2?.manager_name, division),
+            )
+          : formatted,
+        source: "classic-derived",
+      };
+      h2hMatchupsCache[cacheKey] = { data: resultClassic, ts: Date.now() };
       return c.json(resultClassic);
     }
   } catch (err: any) {
@@ -7413,6 +7539,10 @@ currentGameweek.get("/", async (c) => {
     const events = extractDraftEvents(bootstrap);
     const currentEventId = game?.current_event ?? extractDraftCurrentEventId(bootstrap) ?? 1;
     const currentEvent = events.find((e: any) => parsePositiveInt(e?.id) === currentEventId) || null;
+    const previousEventId = currentEventId > 1 ? currentEventId - 1 : null;
+    const previousEvent = previousEventId
+      ? events.find((e: any) => parsePositiveInt(e?.id) === previousEventId) || null
+      : null;
 
     return c.json({
       current_gameweek:       currentEventId,
@@ -7421,6 +7551,13 @@ currentGameweek.get("/", async (c) => {
       next_event:             game?.next_event ?? null,
       waivers_processed:      game?.waivers_processed ?? false,
       deadline_time:          currentEvent?.deadline_time || null,
+      trades_time:            currentEvent?.trades_time || null,
+      waivers_time:           currentEvent?.waivers_time || null,
+      new_gameweek_started_at: currentEvent?.trades_time || currentEvent?.waivers_time || currentEvent?.deadline_time || null,
+      previous_gameweek:      previousEventId,
+      previous_event_finished: previousEvent?.finished ?? false,
+      previous_deadline_time: previousEvent?.deadline_time || null,
+      previous_trades_time:   previousEvent?.trades_time || null,
       hasSeasonState:         false,
       source:                 "draft",
     });
@@ -9816,21 +9953,22 @@ leagueActivity.get("/previous-week-results", async (c) => {
       return jsonError(c, 500, "Failed to fetch previous week results", h2hError.message);
     }
 
-    const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
-    const draftEntries = normalizeDraftList<any>(details?.league_entries);
+    const leagues = await loadBothDivisionDraftLeagues(supabase);
     const teamByManager: Record<string, { id: string | null; entry_id: string | null; entry_name: string | null }> = {};
-    draftEntries.forEach((entry: any) => {
-      const managerName = formatDraftManagerName(entry);
-      const canonical = toCanonicalManagerName(managerName);
-      if (!canonical) return;
-      const entryId = entry.entry_id ?? entry.entry;
-      const entry_id = entryId != null ? String(entryId) : null;
-      const teamName = formatDraftTeamName(entry);
-      teamByManager[canonical] = {
-        id: entry.id != null ? String(entry.id) : null,
-        entry_id,
-        entry_name: teamName,
-      };
+    leagues.forEach((league) => {
+      league.entries.forEach((entry: any) => {
+        const managerName = formatDraftManagerName(entry);
+        const canonical = toCanonicalManagerName(managerName);
+        if (!canonical) return;
+        const entryId = entry.entry_id ?? entry.entry;
+        const entry_id = entryId != null ? String(entryId) : null;
+        const teamName = formatDraftTeamName(entry);
+        teamByManager[canonical] = {
+          id: entry.id != null ? String(entry.id) : null,
+          entry_id,
+          entry_name: teamName,
+        };
+      });
     });
 
     type FixtureKey = string;
@@ -9870,6 +10008,60 @@ leagueActivity.get("/previous-week-results", async (c) => {
         result: String(row.result || "").toUpperCase(),
       });
     });
+
+    try {
+      const { data: liveH2h } = await supabase
+        .from("h2h_matchups")
+        .select("team_1_id, team_2_id, team_1_points, team_2_points, winner_id")
+        .eq("gameweek", targetGw);
+      const { data: teamRows } = await supabase
+        .from("teams")
+        .select("id, entry_id, manager_name, entry_name");
+      const teamById: Record<string, any> = {};
+      (teamRows || []).forEach((t: any) => {
+        teamById[String(t.id)] = t;
+        const canonical = toCanonicalManagerName(t.manager_name);
+        if (canonical && !teamByManager[canonical]) {
+          teamByManager[canonical] = {
+            id: String(t.id),
+            entry_id: t.entry_id != null ? String(t.entry_id) : null,
+            entry_name: t.entry_name || null,
+          };
+        }
+      });
+      (liveH2h || []).forEach((m: any) => {
+        const t1 = teamById[String(m.team_1_id)];
+        const t2 = teamById[String(m.team_2_id)];
+        const a = toCanonicalManagerName(t1?.manager_name);
+        const b = toCanonicalManagerName(t2?.manager_name);
+        if (!a || !b) return;
+        const key = [a, b].sort().join("_vs_");
+        if (fixtures[key] && fixtures[key].sides.length >= 2) return;
+        const p1 = coerceNumber(m.team_1_points);
+        const p2 = coerceNumber(m.team_2_points);
+        fixtures[key] = {
+          key,
+          season: CURRENT_SEASON,
+          gameweek: targetGw,
+          sides: [
+            {
+              manager_name: a,
+              points_for: p1,
+              points_against: p2,
+              result: p1 > p2 ? "W" : p2 > p1 ? "L" : "D",
+            },
+            {
+              manager_name: b,
+              points_for: p2,
+              points_against: p1,
+              result: p2 > p1 ? "W" : p1 > p2 ? "L" : "D",
+            },
+          ],
+        };
+      });
+    } catch {
+      // Keep legacy-table fixtures if live H2H overlay fails.
+    }
 
     const live = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${targetGw}/live`);
     const livePointsMap = extractLivePointsMap(live);
@@ -10109,10 +10301,14 @@ fixturesHub.get("/", async (c) => {
     const draftEntryMap: Record<string, { id: string; entry_name: string | null; manager_name: string | null; club_crest_url?: string | null }> = {};
     const draftEntryByEntryId: Record<string, { entry_name: string | null; manager_name: string | null; club_crest_url?: string | null }> = {};
     const draftNameByDbTeamId: Record<string, { entry_name: string | null; manager_name: string | null; club_crest_url?: string | null }> = {};
+    let divisionMatches: Array<{ division: DivisionKey; matches: any[] }> = [];
     try {
-      const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID);
-      draftEntries = normalizeDraftList<any>(details?.league_entries);
-      draftMatches = normalizeDraftList<any>(details?.matches);
+      const leagues = await loadBothDivisionDraftLeagues(supabase);
+      draftEntries = leagues.flatMap((league) => league.entries);
+      draftMatches = leagues.flatMap((league) =>
+        league.matches.map((m: any) => ({ ...m, _division: league.division })),
+      );
+      divisionMatches = leagues.map((league) => ({ division: league.division, matches: league.matches }));
       try {
         const bootstrap = await fetchBootstrap();
         currentGw = extractDraftCurrentEventId(bootstrap) || currentGw;
@@ -10229,7 +10425,13 @@ fixturesHub.get("/", async (c) => {
           })()
         : fixturesLiveEntryPoints;
 
-    if (draftMatches.length > 0) {
+    if (divisionMatches.length > 0) {
+      rankMap = {};
+      divisionMatches.forEach(({ matches }) => {
+        const part = buildDraftRankMapWithLive(matches, currentGw, liveEntryPointsForRank);
+        Object.assign(rankMap, part);
+      });
+    } else if (draftMatches.length > 0) {
       rankMap = buildDraftRankMapWithLive(draftMatches, currentGw, liveEntryPointsForRank);
     }
 
@@ -10257,18 +10459,25 @@ fixturesHub.get("/", async (c) => {
       const p2 = useLive
         ? (matchupScores != null ? matchupScores.total2 : coerceNumber(fixturesLiveEntryPoints[team2Id], coerceNumber(m.league_entry_2_points ?? m.score_2 ?? m.away_score, 0)))
         : coerceNumber(m.league_entry_2_points ?? m.score_2 ?? m.away_score, 0);
+      const team1 = draftEntryMap[team1Id] || null;
+      const team2 = draftEntryMap[team2Id] || null;
+      const division =
+        (m._division as DivisionKey | undefined) ||
+        divisionFromManagerName(team1?.manager_name) ||
+        divisionFromManagerName(team2?.manager_name);
       leagueByGw[key].push({
         fixture_id: `league-${gw}-${team1Id}-${team2Id}`,
         type: "league",
         gameweek: gw,
+        division: division || null,
         team_1_id: team1Id,
         team_2_id: team2Id,
         team_1_points: p1,
         team_2_points: p2,
         team_1_rank: gw === currentGw ? rankMap[team1Id] || null : null,
         team_2_rank: gw === currentGw ? rankMap[team2Id] || null : null,
-        team_1: draftEntryMap[team1Id] || null,
-        team_2: draftEntryMap[team2Id] || null,
+        team_1: team1,
+        team_2: team2,
         is_ongoing: gw === currentGw,
       });
     });
@@ -10538,6 +10747,12 @@ leagueActivity.get("/waivers", async (c) => {
       extractLatestCompletedDraftEventId(bootstrap) || (currentGameweek > 1 ? currentGameweek - 1 : null);
     const targetEvent = resolveDisplayGameweek(currentGameweek, latestCompletedGameweek);
     const playersById = extractDraftPlayerMap(bootstrap);
+    try {
+      const fplBootstrap = await fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`);
+      enrichPlayerMapWithFplPhotos(playersById, fplBootstrap);
+    } catch {
+      // photos optional
+    }
     const entries = [
       ...normalizeDraftList<any>(detailsOne?.league_entries),
       ...normalizeDraftList<any>(detailsTwo?.league_entries),
@@ -10567,8 +10782,10 @@ leagueActivity.get("/waivers", async (c) => {
       transaction_type: string;
       player_in_id: number | null;
       player_in_name: string | null;
+      player_in_image_url: string | null;
       player_out_id: number | null;
       player_out_name: string | null;
+      player_out_image_url: string | null;
       sort_key: number;
     }> = [];
 
@@ -10606,8 +10823,10 @@ leagueActivity.get("/waivers", async (c) => {
               transaction_type: String(tx?.kind || "").toLowerCase() === "w" ? "Waiver" : "Free Agent",
               player_in_id: inId,
               player_in_name: inId ? (playersById[inId]?.name || `Player ${inId}`) : null,
+              player_in_image_url: inId ? (playersById[inId]?.image_url || null) : null,
               player_out_id: outId,
               player_out_name: outId ? (playersById[outId]?.name || `Player ${outId}`) : null,
+              player_out_image_url: outId ? (playersById[outId]?.image_url || null) : null,
               sort_key: coerceNumber(tx?.id ?? tx?.event),
             });
           });
@@ -10685,8 +10904,10 @@ leagueActivity.get("/waivers", async (c) => {
           transaction_type: "Completed Waiver/Free Agent",
           player_in_id: inId,
           player_in_name: inId ? (playersById[inId]?.name || `Player ${inId}`) : null,
+          player_in_image_url: inId ? (playersById[inId]?.image_url || null) : null,
           player_out_id: outId,
           player_out_name: outId ? (playersById[outId]?.name || `Player ${outId}`) : null,
+          player_out_image_url: outId ? (playersById[outId]?.image_url || null) : null,
           sort_key: i,
         });
       }
@@ -11059,12 +11280,20 @@ fixturesHub.get("/matchup", async (c) => {
     ]);
 
     const playerMap = extractDraftPlayerMap(bootstrap || {});
+    let fplBootstrap: any = null;
     try {
-      const fplBootstrap = await fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`);
+      fplBootstrap = await fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`);
       enrichPlayerMapWithFplPhotos(playerMap, fplBootstrap);
     } catch {
       // keep existing image_url when FPL unavailable
     }
+    const epThisById: Record<number, number> = {};
+    normalizeDraftList<any>(fplBootstrap?.elements ?? []).forEach((el: any) => {
+      const id = parsePositiveInt(el?.id);
+      if (!id) return;
+      const ep = Number.parseFloat(String(el?.ep_this ?? el?.ep_next ?? "0"));
+      epThisById[id] = Number.isFinite(ep) ? ep : 0;
+    });
 
     let liveMap: Record<number, number> = {};
     let liveStatsMap: Record<number, any> = {};
@@ -11075,14 +11304,16 @@ fixturesHub.get("/matchup", async (c) => {
       liveFixtures = normalizeDraftList<any>(livePayload?.fixtures ?? []);
     }
 
-    const fixtureByTeamId: Record<number, { kickoff_time: string | null; elapsed: number }> = {};
+    const fixtureByTeamId: Record<number, { kickoff_time: string | null; elapsed: number; started: boolean; finished: boolean }> = {};
     liveFixtures.forEach((f: any) => {
       const kickoff = f?.kickoff_time ?? null;
       const elapsed = coerceNumber(f?.minutes ?? f?.elapsed, 0);
+      const started = Boolean(f?.started) || elapsed > 0;
+      const finished = Boolean(f?.finished) || elapsed >= 90;
       const th = coerceNumber(f?.team_h, 0);
       const ta = coerceNumber(f?.team_a, 0);
-      if (th > 0) fixtureByTeamId[th] = { kickoff_time: kickoff, elapsed };
-      if (ta > 0) fixtureByTeamId[ta] = { kickoff_time: kickoff, elapsed };
+      if (th > 0) fixtureByTeamId[th] = { kickoff_time: kickoff, elapsed, started, finished };
+      if (ta > 0) fixtureByTeamId[ta] = { kickoff_time: kickoff, elapsed, started, finished };
     });
 
     const mapLineup = (rows: any[] | undefined, teamId: string) =>
@@ -11154,6 +11385,9 @@ fixturesHub.get("/matchup", async (c) => {
           penalties_saved: coerceNumber(stats.penalties_saved, 0),
           fixture_kickoff_time: fixtureTiming?.kickoff_time ?? null,
           fixture_elapsed: fixtureTiming?.elapsed ?? 0,
+          fixture_started: fixtureTiming?.started ?? false,
+          fixture_finished: fixtureTiming?.finished ?? false,
+          ep_this: epThisById[playerId] ?? 0,
           team: playerTeamId,
         };
       });
@@ -11638,6 +11872,968 @@ app.notFound((c) => {
   return c.json({ error: { message: "Not found", path: c.req.path } }, 404);
 });
 
+function captainTokenFromRequest(c: any): string {
+  return String(c.req.query("token") || c.req.header("x-captain-token") || "").trim();
+}
+
+function isUniqueViolation(err: any): boolean {
+  return err?.code === "23505" || /duplicate key/i.test(String(err?.message || err?.details || ""));
+}
+
+function parseLiveStats(payload: any): Record<number, { points: number; minutes: number; goals: number; assists: number }> {
+  const out: Record<number, { points: number; minutes: number; goals: number; assists: number }> = {};
+  const raw = payload?.elements ?? payload?.players ?? [];
+  const elements = Array.isArray(raw) ? raw : Object.values(raw || {});
+  elements.forEach((el: any) => {
+    const id = parsePositiveInt(el?.id ?? el?.element ?? el?.element_id);
+    if (!id) return;
+    const stats = el?.stats || el;
+    out[id] = {
+      points: coerceNumber(stats?.total_points, 0),
+      minutes: coerceNumber(stats?.minutes, 0),
+      goals: coerceNumber(stats?.goals_scored, 0),
+      assists: coerceNumber(stats?.assists, 0),
+    };
+  });
+  return out;
+}
+
+async function requireCaptain(c: any) {
+  const token = captainTokenFromRequest(c);
+  if (!token) return { error: jsonError(c, 401, "Missing session token") };
+  const supabase = getSupabaseAdmin();
+  const session = await resolveCaptainSession(supabase, token);
+  if (!session) return { error: jsonError(c, 401, "Invalid or expired session") };
+  return { supabase, session };
+}
+
+async function insertPlayerMessage(supabase: ReturnType<typeof getSupabaseAdmin>, row: Record<string, unknown>) {
+  const { error } = await supabase.from("player_messages").insert(row);
+  if (error && !isUniqueViolation(error)) throw error;
+}
+
+async function generateInboxForManager(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  session: CaptainSession,
+) {
+  const managerName = toCanonicalManagerName(session.manager_name) || session.manager_name;
+  const dateKey = todayKeyInZone();
+  const dayBounds = nyDayBounds(dateKey);
+  const dailyQuota = dailyMessageQuota(managerName, dateKey);
+  const bootstrap = await fetchBootstrap().catch(() => null);
+  const currentGw = extractDraftCurrentEventId(bootstrap) || 1;
+  const playersById = extractDraftPlayerMap(bootstrap);
+  try {
+    const fplBootstrap = await fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`);
+    enrichPlayerMapWithFplPhotos(playersById, fplBootstrap);
+  } catch {
+    // photos optional
+  }
+
+  const [divOneId, divTwoId] = await Promise.all([
+    resolveLeagueIdForDivision(supabase, "division_one"),
+    resolveLeagueIdForDivision(supabase, "division_two"),
+  ]);
+  const extraIds: string[] = [];
+  for (const leagueId of [divOneId, divTwoId]) {
+    try {
+      const { details } = await resolveDraftLeagueDetails(STATIC_ENTRY_ID, leagueId);
+      normalizeDraftList<any>(details?.league_entries).forEach((entry: any) => {
+        const canonical = toCanonicalManagerName(formatDraftManagerName(entry));
+        if (canonical !== managerName) return;
+        const parsed = parsePositiveInt(entry?.entry_id ?? entry?.entry);
+        if (parsed) extraIds.push(String(parsed));
+      });
+    } catch {
+      // ignore
+    }
+  }
+  const entryCandidates = await resolveDraftEntryCandidatesForManager(managerName, session.entry_id);
+  const squad = await fetchDraftSquadForEntries([...entryCandidates, ...extraIds], currentGw);
+  const pickIds = (squad?.picks || []).map((p: any) => Number(p.element)).filter((id: number) => Number.isInteger(id));
+
+  let pickPositions: Record<number, number> = {};
+  if (squad?.entryId) {
+    try {
+      const picksPayload = await fetchJSON<any>(`${DRAFT_BASE_URL}/entry/${squad.entryId}/event/${currentGw}`);
+      normalizeDraftList<any>(picksPayload?.picks).forEach((p: any) => {
+        const id = parsePositiveInt(p?.element);
+        const pos = coerceNumber(p?.position, 0);
+        if (id) pickPositions[id] = pos;
+      });
+    } catch {
+      pickPositions = {};
+    }
+  }
+
+  let liveById: Record<number, { points: number; minutes: number; goals: number; assists: number }> = {};
+  try {
+    const live = await fetchJSON<any>(`${DRAFT_BASE_URL}/event/${currentGw}/live`);
+    liveById = parseLiveStats(live);
+  } catch {
+    try {
+      const live = await fetchJSON<any>(`${FPL_BASE_URL}/event/${currentGw}/live/`);
+      liveById = parseLiveStats(live);
+    } catch {
+      liveById = {};
+    }
+  }
+
+  const ranked = pickIds.map((id: number, index: number) => {
+    const player = playersById[id];
+    const stats = liveById[id] || { points: 0, minutes: 0, goals: 0, assists: 0 };
+    const slot = pickPositions[id] || index + 1;
+    return {
+      id,
+      name: player?.name || `Player ${id}`,
+      position: POSITION_LABEL[Number(player?.position || 0)] || "OUT",
+      image_url: player?.image_url || null,
+      slot,
+      isStarter: slot > 0 && slot <= 11,
+      ...stats,
+    };
+  });
+
+  const starters = ranked.filter((p) => p.isStarter);
+  const bench = ranked.filter((p) => !p.isStarter);
+  const high = [...starters].sort((a, b) => b.points - a.points).filter((p) => p.points >= 8).slice(0, 2);
+  const low = starters.filter((p) => p.minutes >= 45 && p.points <= 2).slice(0, 2);
+  const superSubs = bench.filter((p) => p.points >= 6).slice(0, 2);
+  const regular = starters.filter((p) => p.minutes >= 60).slice(0, 1);
+  const unusedStarters = starters.filter((p) => p.minutes === 0).slice(0, 1);
+  const unusedBench = bench.filter((p) => p.minutes === 0 && p.points < 6).slice(0, 1);
+
+  type RankedPlayer = (typeof ranked)[number];
+  type Candidate = { player: RankedPlayer; trigger: MessageTrigger; messageType: string; priority: number };
+
+  function pushCandidate(list: Candidate[], player: RankedPlayer | undefined, trigger: MessageTrigger, messageType: string, priority: number) {
+    if (!player) return;
+    list.push({ player, trigger, messageType, priority });
+  }
+
+  const candidates: Candidate[] = [];
+  for (const player of high) pushCandidate(candidates, player, "HIGH_PERFORMANCE", "performance", 2);
+  for (const player of superSubs) pushCandidate(candidates, player, "SUPER_SUB", "performance", 3);
+  for (const player of low) pushCandidate(candidates, player, "LOW_PERFORMANCE", "performance", 6);
+  for (const player of unusedStarters) pushCandidate(candidates, player, "NO_GAME_TIME", "playing_time", 8);
+  for (const player of unusedBench) pushCandidate(candidates, player, "NOT_STARTING_ENOUGH", "playing_time", 7);
+  for (const player of regular) pushCandidate(candidates, player, "STARTING_REGULARLY", "playing_time", 9);
+
+  const signings: RankedPlayer[] = [];
+  try {
+    const txPayloads = await Promise.all(
+      [divOneId, divTwoId].map((leagueId) =>
+        fetchJSON<any>(`${DRAFT_BASE_URL}/draft/league/${leagueId}/transactions`).catch(() => null),
+      ),
+    );
+    const ownerIds = new Set((squad?.entryId ? [Number(squad.entryId)] : []).concat(extraIds.map(Number)).filter(Boolean));
+    txPayloads.forEach((txPayload) => {
+      normalizeDraftList<any>(txPayload?.transactions).forEach((tx: any) => {
+        const event = coerceNumber(tx?.event);
+        const kind = String(tx?.kind || "").toLowerCase();
+        const result = String(tx?.result || "").toLowerCase();
+        if (event !== currentGw) return;
+        if (kind !== "w" && kind !== "f") return;
+        if (result && result !== "a") return;
+        const entryId = parsePositiveInt(tx?.entry);
+        if (!entryId || !ownerIds.has(entryId)) return;
+        const inId = parsePositiveInt(tx?.element_in);
+        if (!inId) return;
+        const player = playersById[inId];
+        signings.push({
+          id: inId,
+          name: player?.name || `Player ${inId}`,
+          position: POSITION_LABEL[Number(player?.position || 0)] || "OUT",
+          image_url: player?.image_url || null,
+          slot: 15,
+          isStarter: false,
+          points: 0,
+          minutes: 0,
+          goals: 0,
+          assists: 0,
+        });
+      });
+    });
+  } catch {
+    // waivers optional
+  }
+  for (const player of signings.slice(0, 5)) pushCandidate(candidates, player, "NEW_SIGNING", "transfer", 1);
+
+  try {
+    const { data: match } = await supabase
+      .from("h2h_matchups")
+      .select("team_1_id, team_2_id, team_1_points, team_2_points, winner_id")
+      .eq("gameweek", currentGw)
+      .or(`team_1_id.eq.${session.team_id},team_2_id.eq.${session.team_id}`)
+      .maybeSingle();
+    if (match) {
+      const myPoints = match.team_1_id === session.team_id ? match.team_1_points : match.team_2_points;
+      const oppPoints = match.team_1_id === session.team_id ? match.team_2_points : match.team_1_points;
+      const voice = [...ranked].sort((a, b) => b.points - a.points)[0];
+      if (voice && myPoints != null && oppPoints != null) {
+        if (Number(myPoints) > Number(oppPoints) + 8) pushCandidate(candidates, voice, "BIG_WIN", "fixture", 4);
+        if (Number(oppPoints) > Number(myPoints) + 8) pushCandidate(candidates, voice, "BIG_LOSS", "fixture", 5);
+      }
+    }
+  } catch {
+    // matchup optional
+  }
+
+  try {
+    const classic = await fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`);
+    const allFixtures = normalizeDraftList<any>(await fetchJSON<any>(`${FPL_BASE_URL}/fixtures/`));
+    const teamShortById: Record<number, string> = {};
+    const teamNameById: Record<number, string> = {};
+    normalizeDraftList<any>(classic?.teams || []).forEach((t: any) => {
+      const id = parsePositiveInt(t?.id);
+      if (!id) return;
+      teamShortById[id] = String(t?.short_name || "").toUpperCase();
+      teamNameById[id] = String(t?.name || t?.short_name || `Team ${id}`);
+    });
+    const derbyPairs = new Set([
+      "ARS:TOT", "TOT:ARS", "LIV:EVE", "EVE:LIV", "MCI:MUN", "MUN:MCI",
+      "CHE:FUL", "FUL:CHE", "NEW:SUN", "SUN:NEW", "WHU:CHE", "CHE:WHU",
+    ]);
+    const voices = ranked.filter((p) => p.isStarter).slice(0, 5);
+    for (const player of voices) {
+      const teamId = coerceNumber(playersById[player.id]?.team, 0);
+      if (!teamId) continue;
+      const upcoming = allFixtures
+        .filter((fx: any) => {
+          const event = coerceNumber(fx?.event, 0);
+          const home = coerceNumber(fx?.team_h, 0);
+          const away = coerceNumber(fx?.team_a, 0);
+          return event >= currentGw && !fx?.finished && (home === teamId || away === teamId);
+        })
+        .sort((a: any, b: any) => coerceNumber(a.event, 99) - coerceNumber(b.event, 99))
+        .slice(0, 3);
+      if (!upcoming.length) continue;
+      const diffs = upcoming.map((fx: any) => {
+        const home = coerceNumber(fx?.team_h, 0);
+        return home === teamId
+          ? coerceNumber(fx?.team_h_difficulty ?? fx?.difficulty, 3)
+          : coerceNumber(fx?.team_a_difficulty ?? fx?.difficulty, 3);
+      });
+      const avg = diffs.reduce((a: number, b: number) => a + b, 0) / diffs.length;
+      const next = upcoming[0];
+      const oppId = coerceNumber(next.team_h, 0) === teamId ? coerceNumber(next.team_a, 0) : coerceNumber(next.team_h, 0);
+      const opponent = teamNameById[oppId] || "the next lot";
+      const isDerby = derbyPairs.has(`${teamShortById[teamId]}:${teamShortById[oppId]}`);
+      let fixtureNote = "Some interesting games ahead.";
+      let priority = 11;
+      if (avg <= 2.4) {
+        fixtureNote = "These look like games I can really hurt them in.";
+        priority = 6;
+      } else if (avg >= 3.6) {
+        fixtureNote = "Tough run coming — I'll need to be at my best.";
+        priority = 8;
+      } else if (isDerby) {
+        fixtureNote = "Derby week. I live for these nights.";
+        priority = 5;
+      }
+      pushCandidate(
+        candidates,
+        { ...player, opponent, fixtureNote } as typeof player,
+        "UPCOMING_FIXTURES",
+        "fixture",
+        priority,
+      );
+    }
+  } catch {
+    // upcoming fixtures optional
+  }
+
+  const { data: todayRows } = await supabase
+    .from("player_messages")
+    .select("id, player_id, created_at")
+    .eq("manager_name", managerName)
+    .gte("created_at", dayBounds.start.toISOString())
+    .lt("created_at", dayBounds.end.toISOString());
+  const alreadyToday = todayRows || [];
+  const remaining = Math.max(0, dailyQuota - alreadyToday.length);
+  if (remaining === 0) return currentGw;
+
+  const usedPlayerIds = new Set(alreadyToday.map((row: any) => Number(row.player_id)));
+  const bestByPlayer = new Map<number, Candidate>();
+  candidates.forEach((candidate) => {
+    const existing = bestByPlayer.get(candidate.player.id);
+    if (!existing || candidate.priority < existing.priority) bestByPlayer.set(candidate.player.id, candidate);
+  });
+  const unique = [...bestByPlayer.values()].filter((candidate) => !usedPlayerIds.has(candidate.player.id));
+  const selected = seededShuffle(unique, hashSeed(`${managerName}:${dateKey}:players`)).slice(0, remaining);
+  const times = assignDailyMessageTimes(selected.length, hashSeed(`${managerName}:${dateKey}:times`), dateKey);
+
+  for (let i = 0; i < selected.length; i += 1) {
+    const { player, trigger, messageType } = selected[i];
+    const spoken = playerNativeLanguage(player.name);
+    const composed = composePlayerMessage(trigger, spoken, {
+      playerName: player.name,
+      position: player.position,
+      points: player.points,
+      goals: player.goals,
+      assists: player.assists,
+      minutes: player.minutes,
+      managerName,
+      opponent: (player as any).opponent,
+      fixtureNote: (player as any).fixtureNote,
+    }, player.id + currentGw);
+    const createdAt = times[i] || new Date();
+    await insertPlayerMessage(supabase, {
+      manager_name: managerName,
+      player_id: player.id,
+      player_name: player.name,
+      player_position: player.position,
+      player_image_url: player.image_url,
+      native_language: composed.nativeLanguage,
+      message_type: messageType,
+      trigger_event: trigger,
+      content: composed.content,
+      content_translation: composed.translation,
+      source_gameweek: currentGw,
+      created_at: createdAt.toISOString(),
+      scheduled: true,
+      scheduled_time: createdAt.toISOString(),
+      metadata: {
+        points: player.points,
+        minutes: player.minutes,
+        goals: player.goals,
+        assists: player.assists,
+        spoken_language: spoken,
+        scheduled_date: dateKey,
+      },
+    });
+    await supabase.from("player_message_tracking").upsert({
+      manager_name: managerName,
+      player_id: player.id,
+      player_name: player.name,
+      message_date: dateKey,
+      message_count: 1,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "manager_name,player_id,message_date" }).then(() => undefined).catch(() => undefined);
+  }
+
+  return currentGw;
+}
+
+async function loadScoutUniverse(): Promise<ScoutablePlayer[]> {
+  const [classic, bootstrap] = await Promise.all([
+    fetchJSON<any>(`${FPL_BASE_URL}/bootstrap-static/`).catch(() => null),
+    fetchBootstrap().catch(() => null),
+  ]);
+  const elements = normalizeDraftList<any>(classic?.elements || []);
+  const draftMap = extractDraftPlayerMap(bootstrap);
+  try {
+    if (classic) enrichPlayerMapWithFplPhotos(draftMap, classic);
+  } catch {
+    // ignore
+  }
+
+  const supabase = getSupabaseAdmin();
+  const [divOneId, divTwoId] = await Promise.all([
+    resolveLeagueIdForDivision(supabase, "division_one"),
+    resolveLeagueIdForDivision(supabase, "division_two"),
+  ]);
+  const leagueIds = Array.from(new Set([divOneId, divTwoId]));
+  const detailsList = await Promise.all(leagueIds.map((id) => fetchLeagueDetails(id)));
+  const leagueEntries = detailsList.flatMap((leagueDetails) => normalizeDraftList<any>(leagueDetails?.league_entries || []));
+  const ownerLabelByOwnerId: Record<number, string> = {};
+  leagueEntries.forEach((entry: any) => {
+    const managerName = formatDraftManagerName(entry);
+    const key = parsePositiveInt(entry?.entry_id ?? entry?.entry);
+    if (!key || !managerName) return;
+    ownerLabelByOwnerId[key] = managerName;
+  });
+  const statusPayloads = await Promise.all(leagueIds.map((id) => fetchElementStatus(id)));
+  const owners: Record<number, string | null> = {};
+  statusPayloads.flatMap((payload) =>
+    normalizeDraftList<any>(payload?.element_status ?? payload?.elements ?? []),
+  ).forEach((row: any) => {
+    const playerId = parsePositiveInt(row?.element ?? row?.element_id);
+    const ownerKey = parsePositiveInt(row?.owner);
+    if (!playerId) return;
+    owners[playerId] = ownerKey ? ownerLabelByOwnerId[ownerKey] || null : null;
+  });
+
+  const nextDifficulties: Record<number, number[]> = {};
+  try {
+    const fixtures = normalizeDraftList<any>(await fetchJSON<any>(`${FPL_BASE_URL}/fixtures/`));
+    fixtures
+      .filter((fx: any) => !fx?.finished && coerceNumber(fx?.event, 0) > 0)
+      .sort((a: any, b: any) => coerceNumber(a.event, 99) - coerceNumber(b.event, 99))
+      .forEach((fx: any) => {
+        const home = coerceNumber(fx?.team_h, 0);
+        const away = coerceNumber(fx?.team_a, 0);
+        if (home) (nextDifficulties[home] ||= []).push(coerceNumber(fx?.team_h_difficulty ?? fx?.difficulty, 3));
+        if (away) (nextDifficulties[away] ||= []).push(coerceNumber(fx?.team_a_difficulty ?? fx?.difficulty, 3));
+      });
+  } catch {
+    // fixtures optional
+  }
+
+  const teamNameById: Record<number, string> = {};
+  normalizeDraftList<any>(classic?.teams || []).forEach((t: any) => {
+    const id = parsePositiveInt(t?.id);
+    if (!id) return;
+    teamNameById[id] = String(t?.short_name || t?.name || "");
+  });
+
+  return elements.map((el: any) => {
+    const id = parsePositiveInt(el?.id);
+    if (!id) return null;
+    const draft = draftMap[id];
+    const pos = POSITION_LABEL[Number(el?.element_type || draft?.position || 0)] || "OUT";
+    const team = coerceNumber(el?.team, 0);
+    const diffs = (nextDifficulties[team] || []).slice(0, 5);
+    const nextThree = diffs.slice(0, 3);
+    const fixtureDifficulty = nextThree.length ? nextThree.reduce((a, b) => a + b, 0) / nextThree.length : null;
+    const fullName = `${el?.first_name ?? ""} ${el?.second_name ?? ""}`.trim();
+    return {
+      player_id: id,
+      player_name: fullName || draft?.name || el?.web_name || `Player ${id}`,
+      position: pos,
+      image_url: draft?.image_url || resolvePlayerImageUrl(el),
+      total_points: coerceNumber(el?.total_points, 0),
+      points_per_game: coerceNumber(el?.points_per_game, 0),
+      goals: coerceNumber(el?.goals_scored, 0),
+      assists: coerceNumber(el?.assists, 0),
+      expected_goals: coerceNumber(el?.expected_goals, 0),
+      expected_assists: coerceNumber(el?.expected_assists, 0),
+      expected_goal_involvements: coerceNumber(el?.expected_goal_involvements, 0),
+      expected_goals_conceded: coerceNumber(el?.expected_goals_conceded, 0),
+      clean_sheets: coerceNumber(el?.clean_sheets, 0),
+      minutes: coerceNumber(el?.minutes, 0),
+      bonus: coerceNumber(el?.bonus, 0),
+      bps: coerceNumber(el?.bps, 0),
+      creativity: coerceNumber(el?.creativity, 0),
+      influence: coerceNumber(el?.influence, 0),
+      threat: coerceNumber(el?.threat, 0),
+      ict_index: coerceNumber(el?.ict_index, 0),
+      goals_conceded: coerceNumber(el?.goals_conceded, 0),
+      penalties_saved: coerceNumber(el?.penalties_saved, 0),
+      red_cards: coerceNumber(el?.red_cards, 0),
+      saves: coerceNumber(el?.saves, 0),
+      starts: coerceNumber(el?.starts, 0),
+      form: coerceNumber(el?.form, 0),
+      chance_of_playing_next_round: coerceNumber(el?.chance_of_playing_next_round ?? 100, 100),
+      ep_next: coerceNumber(el?.ep_next, 0),
+      tackles: coerceNumber(el?.tackles, 0),
+      recoveries: coerceNumber(el?.recoveries, 0),
+      clearances_blocks_interceptions: coerceNumber(el?.clearances_blocks_interceptions, 0),
+      defensive_contribution: coerceNumber(el?.defensive_contribution ?? el?.defensive_contributions, 0),
+      fixture_difficulty: fixtureDifficulty,
+      fixture_difficulties: diffs,
+      owned_by: owners[id] || null,
+      status: el?.status || null,
+      team_name: teamNameById[team] || null,
+      now_cost: coerceNumber(el?.now_cost, 0) || null,
+    } as ScoutablePlayer;
+  }).filter(Boolean) as ScoutablePlayer[];
+}
+
+async function generateScoutRecommendations(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  scout: {
+    id: string;
+    manager_name: string;
+    position_focus: string[];
+    stat_focus: Record<string, boolean>;
+  },
+) {
+  const universe = await loadScoutUniverse();
+  const positions = (scout.position_focus || []).map((p) => String(p).toUpperCase()).filter(Boolean);
+  const fixtureMeta = (scout.stat_focus || {}) as Record<string, unknown>;
+  const fixturePref = (["Easy", "Medium", "Hard"].includes(String(fixtureMeta._fixture_difficulty || ""))
+    ? String(fixtureMeta._fixture_difficulty)
+    : "Any") as FixtureDifficultyPref;
+  const checkNextGw = Math.min(5, Math.max(1, coerceNumber(fixtureMeta._check_next_gw, 3)));
+  let filtered = universe.filter((p) => (positions.length ? positions.includes(p.position) : true));
+  if (fixturePref !== "Any") {
+    filtered = filtered.filter((p) => {
+      const diffs = (p.fixture_difficulties || []).slice(0, checkNextGw);
+      const avg = diffs.length ? diffs.reduce((a, b) => a + b, 0) / diffs.length : p.fixture_difficulty;
+      return fixtureDifficultyBand(avg) === fixturePref;
+    });
+  }
+  const unowned = filtered.filter((p) => !p.owned_by);
+  if (unowned.length >= 5) filtered = unowned;
+  const ranked = filtered
+    .map((player) => ({
+      player,
+      score: scoreScoutPlayer(player, scout.stat_focus || {}, fixturePref),
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+
+  await supabase.from("scout_recommendations").delete().eq("scout_id", scout.id).eq("status", "pending");
+  if (!ranked.length) return [];
+  const rows = ranked.map(({ player, score }) => ({
+    scout_id: scout.id,
+    manager_name: scout.manager_name,
+    player_id: player.player_id,
+    player_name: player.player_name,
+    player_position: player.position,
+    player_image_url: player.image_url,
+    recommendation_text: buildRecommendationText(player, scout.manager_name),
+    statistics: {
+      PPG: player.points_per_game,
+      Points: player.total_points,
+      Form: player.form,
+      xG: player.expected_goals,
+      xA: player.expected_assists,
+      xGI: player.expected_goal_involvements,
+      Goals: player.goals,
+      Assists: player.assists,
+      Bonus: player.bonus,
+      BPS: player.bps,
+      "Clean Sheets": player.clean_sheets,
+      Minutes: player.minutes,
+      "Defensive Contribution": player.defensive_contribution,
+      "EP Next": player.ep_next,
+      owned_by: player.owned_by,
+      fixture_difficulty: player.fixture_difficulty,
+      fixture_run: (player.fixture_difficulties || []).slice(0, 3),
+      team_name: player.team_name,
+      now_cost: player.now_cost,
+    },
+    recommendation_score: score,
+    status: "pending",
+  }));
+  const { error } = await supabase.from("scout_recommendations").insert(rows);
+  if (error) throw error;
+  return rows;
+}
+
+async function upsertTransferTarget(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  managerName: string,
+  player: {
+    player_id: number;
+    player_name: string;
+    player_position?: string | null;
+    player_image_url?: string | null;
+    team_name?: string | null;
+    now_cost?: number | null;
+    points_per_game?: number | null;
+    form?: number | string | null;
+  },
+) {
+  const { data, error } = await supabase
+    .from("transfer_targets")
+    .upsert({
+      manager_name: managerName,
+      player_id: player.player_id,
+      player_name: player.player_name,
+      player_position: player.player_position || null,
+      player_team: player.team_name || null,
+      player_image_url: player.player_image_url || null,
+      price: player.now_cost != null ? Number(player.now_cost) / 10 : null,
+      points_per_game: player.points_per_game ?? null,
+      form: player.form != null ? String(player.form) : null,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "manager_name,player_id" })
+    .select("*")
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+const playerMessages = new Hono();
+const scouting = new Hono();
+
+playerMessages.get("/", async (c) => {
+  try {
+    const auth = await requireCaptain(c);
+    if ("error" in auth && auth.error) return auth.error;
+    const { supabase, session } = auth as { supabase: ReturnType<typeof getSupabaseAdmin>; session: CaptainSession };
+    const managerName = toCanonicalManagerName(session.manager_name) || session.manager_name;
+    await generateInboxForManager(supabase, session);
+    const nowIso = new Date().toISOString();
+    const { data, error } = await supabase
+      .from("player_messages")
+      .select("*")
+      .eq("manager_name", managerName)
+      .lte("created_at", nowIso)
+      .order("created_at", { ascending: false })
+      .limit(80);
+    if (error) return jsonError(c, 500, "Failed to load messages", error.message);
+    const messages = (data || []).map((row: any) => presentInboxMessage(row, managerName));
+    const unreadCount = messages.filter((row: any) => !row.is_read).length;
+    return c.json({
+      manager_name: managerName,
+      unread_count: unreadCount,
+      daily_quota: dailyMessageQuota(managerName, todayKeyInZone()),
+      messages,
+    });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to load messages");
+  }
+});
+
+playerMessages.get("/unread-count", async (c) => {
+  try {
+    const auth = await requireCaptain(c);
+    if ("error" in auth && auth.error) return auth.error;
+    const { supabase, session } = auth as { supabase: ReturnType<typeof getSupabaseAdmin>; session: CaptainSession };
+    const managerName = toCanonicalManagerName(session.manager_name) || session.manager_name;
+    const nowIso = new Date().toISOString();
+    const { count, error } = await supabase
+      .from("player_messages")
+      .select("id", { count: "exact", head: true })
+      .eq("manager_name", managerName)
+      .eq("is_read", false)
+      .lte("created_at", nowIso);
+    if (error) return jsonError(c, 500, "Failed to count unread", error.message);
+    return c.json({ unread_count: count || 0 });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to count unread");
+  }
+});
+
+playerMessages.post("/read", async (c) => {
+  try {
+    const auth = await requireCaptain(c);
+    if ("error" in auth && auth.error) return auth.error;
+    const { supabase, session } = auth as { supabase: ReturnType<typeof getSupabaseAdmin>; session: CaptainSession };
+    const managerName = toCanonicalManagerName(session.manager_name) || session.manager_name;
+    const body = await c.req.json().catch(() => ({}));
+    const ids = Array.isArray(body?.ids) ? body.ids.map(String) : [];
+    const query = supabase
+      .from("player_messages")
+      .update({ is_read: true, read_at: new Date().toISOString() })
+      .eq("manager_name", managerName);
+    const { error } = ids.length ? await query.in("id", ids) : await query.eq("is_read", false);
+    if (error) return jsonError(c, 500, "Failed to mark read", error.message);
+    return c.json({ ok: true });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to mark read");
+  }
+});
+
+playerMessages.post("/reply", async (c) => {
+  try {
+    const auth = await requireCaptain(c);
+    if ("error" in auth && auth.error) return auth.error;
+    const { supabase, session } = auth as { supabase: ReturnType<typeof getSupabaseAdmin>; session: CaptainSession };
+    const managerName = toCanonicalManagerName(session.manager_name) || session.manager_name;
+    const body = await c.req.json().catch(() => ({}));
+    const id = String(body?.id || "").trim();
+    const reply = String(body?.content || "").trim();
+    if (!id || !reply) return jsonError(c, 400, "Message id and reply are required");
+    const { data, error } = await supabase
+      .from("player_messages")
+      .update({ reply_content: reply, replied_at: new Date().toISOString(), is_read: true, read_at: new Date().toISOString() })
+      .eq("id", id)
+      .eq("manager_name", managerName)
+      .select("*")
+      .maybeSingle();
+    if (error || !data) return jsonError(c, 500, "Failed to save reply", error?.message);
+    const spoken = playerNativeLanguage(data.player_name);
+    const composed = composePlayerReply(spoken, {
+      playerName: data.player_name,
+      position: data.player_position || "the team",
+      managerName,
+      points: coerceNumber(data.metadata?.points, 0),
+    }, reply, hashSeed(`${data.id}:${reply}`));
+    const { data: updated, error: responseError } = await supabase
+      .from("player_messages")
+      .update({
+        player_response: composed.content,
+        player_responded_at: new Date().toISOString(),
+        metadata: {
+          ...(data.metadata && typeof data.metadata === "object" ? data.metadata : {}),
+          player_response: composed.content,
+          player_response_translation: composed.translation,
+        },
+      })
+      .eq("id", id)
+      .eq("manager_name", managerName)
+      .select("*")
+      .maybeSingle();
+    if (responseError) return jsonError(c, 500, "Failed to save player response", responseError.message);
+    return c.json({ message: presentInboxMessage(updated || data, managerName) });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to save reply");
+  }
+});
+
+playerMessages.post("/delete", async (c) => {
+  try {
+    const auth = await requireCaptain(c);
+    if ("error" in auth && auth.error) return auth.error;
+    const { supabase, session } = auth as { supabase: ReturnType<typeof getSupabaseAdmin>; session: CaptainSession };
+    const managerName = toCanonicalManagerName(session.manager_name) || session.manager_name;
+    const body = await c.req.json().catch(() => ({}));
+    const id = String(body?.id || "").trim();
+    if (!id) return jsonError(c, 400, "Message id is required");
+    const { error } = await supabase.from("player_messages").delete().eq("id", id).eq("manager_name", managerName);
+    if (error) return jsonError(c, 500, "Failed to delete message", error.message);
+    return c.json({ ok: true });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to delete message");
+  }
+});
+
+scouting.get("/", async (c) => {
+  try {
+    const auth = await requireCaptain(c);
+    if ("error" in auth && auth.error) return auth.error;
+    const { supabase, session } = auth as { supabase: ReturnType<typeof getSupabaseAdmin>; session: CaptainSession };
+    const managerName = toCanonicalManagerName(session.manager_name) || session.manager_name;
+    const { data: scouts, error } = await supabase
+      .from("scout_assignments")
+      .select("*")
+      .eq("manager_name", managerName)
+      .order("created_at", { ascending: false });
+    if (error) return jsonError(c, 500, "Failed to load scouts", error.message);
+    const scoutIds = (scouts || []).map((row: any) => row.id);
+    const { data: recs } = scoutIds.length
+      ? await supabase.from("scout_recommendations").select("*").in("scout_id", scoutIds).order("recommendation_score", { ascending: false })
+      : { data: [] as any[] };
+    return c.json({ scouts: scouts || [], recommendations: recs || [] });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to load scouting network");
+  }
+});
+
+scouting.post("/hire", async (c) => {
+  try {
+    const auth = await requireCaptain(c);
+    if ("error" in auth && auth.error) return auth.error;
+    const { supabase, session } = auth as { supabase: ReturnType<typeof getSupabaseAdmin>; session: CaptainSession };
+    const managerName = toCanonicalManagerName(session.manager_name) || session.manager_name;
+    const body = await c.req.json().catch(() => ({}));
+    const positions = Array.isArray(body?.positions) ? body.positions.map((p: unknown) => String(p).toUpperCase()).filter(Boolean) : [];
+    const statistics = {
+      ...normalizeStatFocus(body?.statistics),
+      _fixture_difficulty: String(body?.fixture_difficulty || "Any"),
+      _check_next_gw: Math.min(5, Math.max(1, coerceNumber(body?.check_next_gw, 3))),
+    } as Record<string, unknown>;
+    const duration = Math.min(4, Math.max(2, coerceNumber(body?.duration_gameweeks, 3)));
+    const { count } = await supabase
+      .from("scout_assignments")
+      .select("id", { count: "exact", head: true })
+      .eq("manager_name", managerName)
+      .eq("active", true);
+    if ((count || 0) >= 3) return jsonError(c, 400, "You already have 3 active scouts");
+    const bootstrap = await fetchBootstrap().catch(() => null);
+    const startGw = extractDraftCurrentEventId(bootstrap) || 1;
+    const scoutName = scoutDisplayName(`${managerName}:${positions.join(",")}:${Date.now()}`);
+    const { data: scout, error } = await supabase
+      .from("scout_assignments")
+      .insert({
+        manager_name: managerName,
+        scout_name: scoutName,
+        position_focus: positions,
+        stat_focus: statistics,
+        duration_gameweeks: duration,
+        start_gameweek: startGw,
+        end_gameweek: startGw + duration - 1,
+        active: true,
+      })
+      .select("*")
+      .maybeSingle();
+    if (error || !scout) return jsonError(c, 500, "Failed to hire scout", error?.message);
+    const recs = await generateScoutRecommendations(supabase, {
+      id: scout.id,
+      manager_name: managerName,
+      position_focus: positions,
+      stat_focus: statistics,
+    });
+    return c.json({ scout, recommendations: recs });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to hire scout");
+  }
+});
+
+scouting.post("/deactivate", async (c) => {
+  try {
+    const auth = await requireCaptain(c);
+    if ("error" in auth && auth.error) return auth.error;
+    const { supabase, session } = auth as { supabase: ReturnType<typeof getSupabaseAdmin>; session: CaptainSession };
+    const managerName = toCanonicalManagerName(session.manager_name) || session.manager_name;
+    const body = await c.req.json().catch(() => ({}));
+    const id = String(body?.id || "").trim();
+    if (!id) return jsonError(c, 400, "Scout id is required");
+    const { error } = await supabase
+      .from("scout_assignments")
+      .update({ active: false })
+      .eq("id", id)
+      .eq("manager_name", managerName);
+    if (error) return jsonError(c, 500, "Failed to update scout", error.message);
+    return c.json({ ok: true });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to update scout");
+  }
+});
+
+scouting.post("/delete", async (c) => {
+  try {
+    const auth = await requireCaptain(c);
+    if ("error" in auth && auth.error) return auth.error;
+    const { supabase, session } = auth as { supabase: ReturnType<typeof getSupabaseAdmin>; session: CaptainSession };
+    const managerName = toCanonicalManagerName(session.manager_name) || session.manager_name;
+    const body = await c.req.json().catch(() => ({}));
+    const id = String(body?.id || "").trim();
+    if (!id) return jsonError(c, 400, "Scout id is required");
+    const { data: scout, error: lookupError } = await supabase
+      .from("scout_assignments")
+      .select("id, active")
+      .eq("id", id)
+      .eq("manager_name", managerName)
+      .maybeSingle();
+    if (lookupError) return jsonError(c, 500, "Failed to load scout", lookupError.message);
+    if (!scout) return jsonError(c, 404, "Scout not found");
+    if (scout.active) return jsonError(c, 400, "End the assignment before deleting this scout");
+    const { error } = await supabase
+      .from("scout_assignments")
+      .delete()
+      .eq("id", id)
+      .eq("manager_name", managerName);
+    if (error) return jsonError(c, 500, "Failed to delete scout", error.message);
+    return c.json({ ok: true });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to delete scout");
+  }
+});
+
+scouting.post("/recommendation-status", async (c) => {
+  try {
+    const auth = await requireCaptain(c);
+    if ("error" in auth && auth.error) return auth.error;
+    const { supabase, session } = auth as { supabase: ReturnType<typeof getSupabaseAdmin>; session: CaptainSession };
+    const managerName = toCanonicalManagerName(session.manager_name) || session.manager_name;
+    const body = await c.req.json().catch(() => ({}));
+    const id = String(body?.id || "").trim();
+    const status = String(body?.status || "").trim();
+    if (!id || !["accepted", "rejected", "pending"].includes(status)) {
+      return jsonError(c, 400, "Valid recommendation id and status are required");
+    }
+    const { data, error } = await supabase
+      .from("scout_recommendations")
+      .update({ status })
+      .eq("id", id)
+      .eq("manager_name", managerName)
+      .select("*")
+      .maybeSingle();
+    if (error) return jsonError(c, 500, "Failed to update recommendation", error.message);
+    if (!data) return jsonError(c, 404, "Recommendation not found");
+    if (status === "accepted") {
+      try {
+        const stats = (data.statistics || {}) as Record<string, unknown>;
+        await upsertTransferTarget(supabase, managerName, {
+          player_id: coerceNumber(data.player_id, 0),
+          player_name: data.player_name,
+          player_position: data.player_position,
+          player_image_url: data.player_image_url,
+          team_name: stats.team_name != null ? String(stats.team_name) : null,
+          now_cost: coerceNumber(stats.now_cost, 0) || null,
+          points_per_game: coerceNumber(stats.PPG, 0),
+          form: stats.Form != null ? String(stats.Form) : null,
+        });
+      } catch {
+        // Recommendation status still saved if the target list is unavailable.
+      }
+    }
+    return c.json({ recommendation: data });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to update recommendation");
+  }
+});
+
+const transferTargets = new Hono();
+
+transferTargets.get("/", async (c) => {
+  try {
+    const auth = await requireCaptain(c);
+    if ("error" in auth && auth.error) return auth.error;
+    const { supabase, session } = auth as { supabase: ReturnType<typeof getSupabaseAdmin>; session: CaptainSession };
+    const managerName = toCanonicalManagerName(session.manager_name) || session.manager_name;
+    const { data, error } = await supabase
+      .from("transfer_targets")
+      .select("*")
+      .eq("manager_name", managerName)
+      .order("created_at", { ascending: false });
+    if (error) return jsonError(c, 500, "Failed to load transfer targets", error.message);
+    return c.json({ targets: data || [] });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to load transfer targets");
+  }
+});
+
+transferTargets.get("/search", async (c) => {
+  try {
+    const auth = await requireCaptain(c);
+    if ("error" in auth && auth.error) return auth.error;
+    const q = String(c.req.query("q") || "").trim().toLowerCase();
+    if (q.length < 2) return c.json({ players: [] });
+    const universe = await loadScoutUniverse();
+    const players = universe
+      .filter((p) => p.player_name.toLowerCase().includes(q) || (p.team_name || "").toLowerCase().includes(q))
+      .slice(0, 12)
+      .map((p) => ({
+        player_id: p.player_id,
+        player_name: p.player_name,
+        player_position: p.position,
+        player_image_url: p.image_url,
+        team_name: p.team_name,
+        now_cost: p.now_cost,
+        points_per_game: p.points_per_game,
+        form: p.form,
+      }));
+    return c.json({ players });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to search players");
+  }
+});
+
+transferTargets.post("/", async (c) => {
+  try {
+    const auth = await requireCaptain(c);
+    if ("error" in auth && auth.error) return auth.error;
+    const { supabase, session } = auth as { supabase: ReturnType<typeof getSupabaseAdmin>; session: CaptainSession };
+    const managerName = toCanonicalManagerName(session.manager_name) || session.manager_name;
+    const body = await c.req.json().catch(() => ({}));
+    const playerId = coerceNumber(body?.player_id, 0);
+    if (!playerId) return jsonError(c, 400, "player_id is required");
+    const universe = await loadScoutUniverse();
+    const player = universe.find((p) => p.player_id === playerId);
+    if (!player) return jsonError(c, 404, "Player not found");
+    const target = await upsertTransferTarget(supabase, managerName, {
+      player_id: player.player_id,
+      player_name: player.player_name,
+      player_position: player.position,
+      player_image_url: player.image_url,
+      team_name: player.team_name,
+      now_cost: player.now_cost,
+      points_per_game: player.points_per_game,
+      form: player.form,
+    });
+    return c.json({ target });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to add transfer target");
+  }
+});
+
+transferTargets.post("/delete", async (c) => {
+  try {
+    const auth = await requireCaptain(c);
+    if ("error" in auth && auth.error) return auth.error;
+    const { supabase, session } = auth as { supabase: ReturnType<typeof getSupabaseAdmin>; session: CaptainSession };
+    const managerName = toCanonicalManagerName(session.manager_name) || session.manager_name;
+    const body = await c.req.json().catch(() => ({}));
+    const id = String(body?.id || "").trim();
+    const playerId = coerceNumber(body?.player_id, 0);
+    if (!id && !playerId) return jsonError(c, 400, "id or player_id is required");
+    let query = supabase.from("transfer_targets").delete().eq("manager_name", managerName);
+    query = id ? query.eq("id", id) : query.eq("player_id", playerId);
+    const { error } = await query;
+    if (error) return jsonError(c, 500, "Failed to remove transfer target", error.message);
+    return c.json({ ok: true });
+  } catch (err: any) {
+    return jsonError(c, 500, err.message || "Failed to remove transfer target");
+  }
+});
+
 // Public read-only routes
 app.route("/league-standings", leagueStandings);
 app.route("/cup-group-stage", cupGroupStage);
@@ -11656,6 +12852,9 @@ app.route("/manager-ratings", managerRatings);
 app.route("/standings-by-gameweek", standingsByGameweek);
 app.route("/bracket", bracket);
 app.route("/admin", adminRefresh);
+app.route("/player-messages", playerMessages);
+app.route("/scouting", scouting);
+app.route("/transfer-targets", transferTargets);
 
 // Live matchups endpoints
 app.route("/api/context", liveContext);
@@ -11694,6 +12893,9 @@ app.route("/server/manager-ratings", managerRatings);
 app.route("/server/standings-by-gameweek", standingsByGameweek);
 app.route("/server/bracket", bracket);
 app.route("/server/admin", adminRefresh);
+app.route("/server/player-messages", playerMessages);
+app.route("/server/scouting", scouting);
+app.route("/server/transfer-targets", transferTargets);
 
 app.route("/server/api/context", liveContext);
 app.route("/server/api/live", liveData);
@@ -11751,14 +12953,16 @@ legacyStats.get("/leaders", async (c) => {
   try {
     const supabase = getSupabaseAdmin();
     const season = String(c.req.query("season") || CURRENT_SEASON);
+    const division = parseDivisionParam(c.req.query("division"));
     const [allTime, seasonOnly] = await Promise.all([
-      fetchDerivedGameweekStats(supabase),
-      fetchDerivedGameweekStats(supabase, season),
+      fetchDerivedGameweekStats(supabase, undefined, division),
+      fetchDerivedGameweekStats(supabase, season, division),
     ]);
 
     return c.json({
       all_time: allTime.leaders,
       season_leaders: seasonOnly.leaders,
+      division: division ?? "all",
     });
   } catch (err: any) {
     return jsonError(c, 500, err.message || "Failed to fetch leader stats");

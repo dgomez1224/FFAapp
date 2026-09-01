@@ -4,6 +4,7 @@ import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { type Division } from "../lib/divisions";
 import { DivisionBadge } from "./DivisionBadge";
 import { Card } from "./ui/card";
+import { PlayerAvatar } from "./PlayerAvatar";
 
 type WaiverMove = {
   gameweek: number;
@@ -14,8 +15,10 @@ type WaiverMove = {
   transaction_type: string;
   player_in_id: number | null;
   player_in_name: string | null;
+  player_in_image_url?: string | null;
   player_out_id: number | null;
   player_out_name: string | null;
+  player_out_image_url?: string | null;
 };
 
 type WaiverResponse = {
@@ -46,8 +49,22 @@ function WaiverMovesTable({ moves }: { moves: WaiverMove[] }) {
             >
               <td className="px-2 py-2">{move.manager_name}</td>
               <td className="px-2 py-2">{move.transaction_type}</td>
-              <td className="px-2 py-2">{move.player_in_name || "—"}</td>
-              <td className="px-2 py-2">{move.player_out_name || "—"}</td>
+              <td className="px-2 py-2">
+                <div className="flex items-center gap-2">
+                  {move.player_in_name ? (
+                    <PlayerAvatar name={move.player_in_name} imageUrl={move.player_in_image_url} size="sm" />
+                  ) : null}
+                  <span>{move.player_in_name || "—"}</span>
+                </div>
+              </td>
+              <td className="px-2 py-2">
+                <div className="flex items-center gap-2">
+                  {move.player_out_name ? (
+                    <PlayerAvatar name={move.player_out_name} imageUrl={move.player_out_image_url} size="sm" />
+                  ) : null}
+                  <span>{move.player_out_name || "—"}</span>
+                </div>
+              </td>
             </tr>
           ))}
         </tbody>

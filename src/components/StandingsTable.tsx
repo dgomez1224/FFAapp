@@ -8,8 +8,8 @@ type StandingsTableProps = {
   rows: Standing[];
   division?: Division;
   baselineById: Record<string, Standing>;
-  baselineRanksRef: React.MutableRefObject<Record<string, number> | null>;
-  isLiveGameweek: boolean;
+  fromRanks?: Record<string, number> | null;
+  showRankMovement?: boolean;
   showLiveColumns: boolean;
 };
 
@@ -45,8 +45,8 @@ export function StandingsTable({
   rows,
   division,
   baselineById,
-  baselineRanksRef,
-  isLiveGameweek,
+  fromRanks,
+  showRankMovement = false,
   showLiveColumns,
 }: StandingsTableProps) {
   const { getCrest } = useManagerCrestMap();
@@ -74,7 +74,7 @@ export function StandingsTable({
         <TableBody className="fpl-table-body">
           {rows.map((standing, index) => {
             const baseline = baselineById[standing.team_id];
-            const baselineRank = baselineRanksRef.current?.[standing.team_id] ?? null;
+            const baselineRank = fromRanks?.[standing.team_id] ?? null;
             const currentRank = standing.rank;
             const moved = baselineRank != null ? baselineRank - currentRank : 0;
             const isRelegation = division === "division_one" && rows.length >= 2 && index >= rows.length - 2;
@@ -94,7 +94,7 @@ export function StandingsTable({
 
             let deltaSymbol = "—";
             let deltaClass = "text-muted-foreground";
-            if (isLiveGameweek && baselineRank != null) {
+            if (showRankMovement && baselineRank != null) {
               if (moved > 0) {
                 deltaSymbol = `↑${moved}`;
                 deltaClass = "text-emerald-500 font-semibold";

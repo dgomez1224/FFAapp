@@ -6,6 +6,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
+import { PlayerAvatar } from "../components/PlayerAvatar";
 import {
   clearCaptainSessionToken,
   getCaptainSessionToken,
@@ -35,6 +36,29 @@ export default function MyPage() {
     manager_profile_picture_url: null,
   });
   const [managerInsights, setManagerInsights] = useState<any | null>(null);
+  const [targets, setTargets] = useState<Array<{
+    id: string;
+    player_id: number;
+    player_name: string;
+    player_position: string | null;
+    player_team: string | null;
+    player_image_url: string | null;
+    price: number | null;
+    points_per_game: number | null;
+    form: string | null;
+  }>>([]);
+  const [targetQuery, setTargetQuery] = useState("");
+  const [targetResults, setTargetResults] = useState<Array<{
+    player_id: number;
+    player_name: string;
+    player_position: string | null;
+    player_image_url: string | null;
+    team_name: string | null;
+    now_cost: number | null;
+    points_per_game: number | null;
+    form: number | null;
+  }>>([]);
+  const [targetsLoading, setTargetsLoading] = useState(false);
 
   useEffect(() => {
     async function loadSession() {
@@ -83,6 +107,83 @@ export default function MyPage() {
     }
     loadManagerInsights();
   }, [managerName]);
+
+  useEffect(() => {
+    async function loadTargets() {
+      if (!token) return;
+      try {
+        const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/transfer-targets?token=${encodeURIComponent(token)}`;
+        const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
+        const payload = await res.json();
+        if (!res.ok || payload?.error) return;
+        setTargets(payload.targets || []);
+      } catch {
+        setTargets([]);
+      }
+    }
+    loadTargets();
+  }, [token]);
+
+  useEffect(() => {
+    if (!token || targetQuery.trim().length < 2) {
+      setTargetResults([]);
+      return;
+    }
+    const handle = window.setTimeout(async () => {
+      try {
+        const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/transfer-targets/search?token=${encodeURIComponent(token)}&q=${encodeURIComponent(targetQuery.trim())}`;
+        const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
+        const payload = await res.json();
+        if (!res.ok || payload?.error) return;
+        setTargetResults(payload.players || []);
+      } catch {
+        setTargetResults([]);
+      }
+    }, 250);
+    return () => window.clearTimeout(handle);
+  }, [targetQuery, token]);
+
+  const addTarget = async (playerId: number) => {
+    if (!token) return;
+    setTargetsLoading(true);
+    try {
+      const res = await fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/transfer-targets?token=${encodeURIComponent(token)}`, {
+        method: "POST",
+        headers: { ...getSupabaseFunctionHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ player_id: playerId }),
+      });
+      const payload = await res.json();
+      if (!res.ok || payload?.error) throw new Error(payload?.error?.message || "Failed to add target");
+      if (payload.target) {
+        setTargets((prev) => [payload.target, ...prev.filter((row) => row.player_id !== playerId)]);
+      }
+      setTargetQuery("");
+      setTargetResults([]);
+    } catch (err: any) {
+      setError(err.message || "Failed to add target");
+    } finally {
+      setTargetsLoading(false);
+    }
+  };
+
+  const removeTarget = async (id: string) => {
+    if (!token) return;
+    setTargetsLoading(true);
+    try {
+      const res = await fetch(`${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/transfer-targets/delete?token=${encodeURIComponent(token)}`, {
+        method: "POST",
+        headers: { ...getSupabaseFunctionHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      const payload = await res.json();
+      if (!res.ok || payload?.error) throw new Error(payload?.error?.message || "Failed to remove target");
+      setTargets((prev) => prev.filter((row) => row.id !== id));
+    } catch (err: any) {
+      setError(err.message || "Failed to remove target");
+    } finally {
+      setTargetsLoading(false);
+    }
+  };
 
   const handleSignOut = async () => {
     try {
@@ -263,6 +364,14 @@ export default function MyPage() {
             Sign Out
           </Button>
         </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Button asChild variant="secondary" size="sm">
+            <Link to="/messages">Player messages</Link>
+          </Button>
+          <Button asChild variant="secondary" size="sm">
+            <Link to="/scouting">Scouting network</Link>
+          </Button>
+        </div>
       </Card>
 
       <Card className="p-6">
@@ -299,6 +408,82 @@ export default function MyPage() {
           </div>
         ) : (
           <p className="text-sm text-muted-foreground">Insights unavailable.</p>
+        )}
+      </Card>
+
+      <Card className="p-6">
+        <h2 className="text-lg font-semibold mb-1">Transfer Targets</h2>
+        <p className="text-sm text-muted-foreground mb-4">
+          Players you want to bring in. Accepting a scout recommendation also adds them here.
+        </p>
+        <div className="relative max-w-md mb-4">
+          <Input
+            value={targetQuery}
+            onChange={(e) => setTargetQuery(e.target.value)}
+            placeholder="Search players to add…"
+          />
+          {targetResults.length > 0 ? (
+            <div className="absolute z-20 mt-1 w-full rounded-md border bg-popover shadow-md">
+              {targetResults.map((player) => (
+                <button
+                  key={player.player_id}
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent"
+                  onClick={() => addTarget(player.player_id)}
+                  disabled={targetsLoading}
+                >
+                  <PlayerAvatar name={player.player_name} imageUrl={player.player_image_url} size="sm" />
+                  <span className="flex-1">
+                    {player.player_name}
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      {player.player_position || ""} {player.team_name ? `· ${player.team_name}` : ""}
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+        {targets.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No targets yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left">
+                  <th className="px-2 py-2">Player</th>
+                  <th className="px-2 py-2">Pos</th>
+                  <th className="px-2 py-2">Team</th>
+                  <th className="px-2 py-2">Price</th>
+                  <th className="px-2 py-2">PPG</th>
+                  <th className="px-2 py-2">Form</th>
+                  <th className="px-2 py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {targets.map((target) => (
+                  <tr key={target.id} className="border-b last:border-b-0">
+                    <td className="px-2 py-2">
+                      <div className="flex items-center gap-2">
+                        <PlayerAvatar name={target.player_name} imageUrl={target.player_image_url} size="sm" />
+                        <span>{target.player_name}</span>
+                      </div>
+                    </td>
+                    <td className="px-2 py-2">{target.player_position || "—"}</td>
+                    <td className="px-2 py-2">{target.player_team || "—"}</td>
+                    <td className="px-2 py-2">{target.price != null ? `£${Number(target.price).toFixed(1)}m` : "—"}</td>
+                    <td className="px-2 py-2">{target.points_per_game != null ? Number(target.points_per_game).toFixed(1) : "—"}</td>
+                    <td className="px-2 py-2">{target.form || "—"}</td>
+                    <td className="px-2 py-2 text-right">
+                      <Button type="button" size="sm" variant="ghost" disabled={targetsLoading} onClick={() => removeTarget(target.id)}>
+                        Remove
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
 

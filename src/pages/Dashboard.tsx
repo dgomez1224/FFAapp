@@ -32,6 +32,7 @@ export default function DashboardPage() {
       </div>
       
       <LivePlayerUpdates />
+      <ThisWeekMatchups />
       <LeagueStandings />
       <PreviousWeekResults />
       <GobletStandings />
@@ -45,7 +46,6 @@ export default function DashboardPage() {
         />
       )}
       
-      <ThisWeekMatchups />
       <SeasonStatLeaders />
 
       
