@@ -1,11 +1,14 @@
 import React, { useEffect, useState } from "react";
 import { Card } from "./ui/card";
 import { Table, TableBody, TableCell, TableRow } from "./ui/table";
+import { Button } from "./ui/button";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { EDGE_FUNCTIONS_BASE } from "../lib/constants";
+import type { Division } from "../lib/divisions";
 
 type LeaderLine = { manager_name: string; value: number; details: string | null };
 type LeaderMetric = { value: number; leaders: LeaderLine[] };
+type ViewMode = "all" | Division;
 
 type Payload = {
   season_leaders: {
@@ -36,14 +39,23 @@ function leaderText(metric?: LeaderMetric) {
     .join(" / ");
 }
 
+const VIEW_OPTIONS: Array<{ id: ViewMode; label: string }> = [
+  { id: "all", label: "All league" },
+  { id: "division_one", label: "Division 1" },
+  { id: "division_two", label: "Division 2" },
+];
+
 export default function SeasonStatLeaders() {
+  const [viewMode, setViewMode] = useState<ViewMode>("all");
   const [data, setData] = useState<Payload | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function load() {
       try {
-        const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/legacy-stats/leaders`;
+        setLoading(true);
+        const params = viewMode === "all" ? "" : `?division=${encodeURIComponent(viewMode)}`;
+        const url = `${supabaseUrl}/functions/v1${EDGE_FUNCTIONS_BASE}/legacy-stats/leaders${params}`;
         const res = await fetch(url, { headers: getSupabaseFunctionHeaders() });
         const payload = await res.json();
         if (!res.ok || payload?.error) throw new Error(payload?.error?.message || "Failed to load season leaders");
@@ -53,11 +65,26 @@ export default function SeasonStatLeaders() {
       }
     }
     load();
-  }, []);
+  }, [viewMode]);
 
   return (
     <Card className="p-4">
-      <h3 className="text-lg font-semibold mb-3">Season Stat Leaders</h3>
+      <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h3 className="text-lg font-semibold">Season Stat Leaders</h3>
+        <div className="flex flex-wrap gap-1">
+          {VIEW_OPTIONS.map((option) => (
+            <Button
+              key={option.id}
+              type="button"
+              size="sm"
+              variant={viewMode === option.id ? "default" : "outline"}
+              onClick={() => setViewMode(option.id)}
+            >
+              {option.label}
+            </Button>
+          ))}
+        </div>
+      </div>
       {loading ? (
         <p className="text-sm text-muted-foreground">Loading season leaders…</p>
       ) : (

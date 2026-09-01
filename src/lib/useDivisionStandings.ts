@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "./supabaseClient";
 import { EDGE_FUNCTIONS_BASE } from "./constants";
 import type { Division } from "./divisions";
+import { resolveRankMovementVisibility } from "./standingsMovement";
 
 export interface Standing {
   team_id: string;
@@ -28,14 +29,41 @@ export interface LeagueStandingsResponse {
 
 export type GwPhase = "pre" | "live" | "post" | "settled";
 
-function computeLiveStandingsFromMatches(
+function zeroedStandings(template: Standing[]): Standing[] {
+  return template.map((row) => ({
+    ...row,
+    played: 0,
+    wins: 0,
+    draws: 0,
+    losses: 0,
+    points: 0,
+    points_for: 0,
+    points_against: 0,
+    avg_margin_victory: null,
+    avg_margin_defeat: null,
+  }));
+}
+
+function ranksByTeamId(rows: Standing[]): Record<string, number> {
+  const map: Record<string, number> = {};
+  rows.forEach((row) => {
+    map[row.team_id] = row.rank;
+  });
+  return map;
+}
+
+/** Replay the given matches onto a standings snapshot (caller filters which events to include). */
+function applyMatchesToStandings(
   baseline: Standing[],
   matches: any[],
-  currentGameweek: number,
   entryIdToTeamId: Record<string, string>,
 ): Standing[] {
-  if (!baseline.length || !matches.length || !currentGameweek) {
-    return baseline;
+  if (!baseline.length) return baseline;
+  if (!matches.length) {
+    return baseline
+      .slice()
+      .sort((a, b) => (b.points !== a.points ? b.points - a.points : b.points_for - a.points_for))
+      .map((row, index) => ({ ...row, rank: index + 1 }));
   }
 
   const byId: Record<string, Standing> = {};
@@ -44,9 +72,8 @@ function computeLiveStandingsFromMatches(
   });
 
   const baselineIds = new Set(Object.keys(byId));
-  const currentMatches = matches.filter((m: any) => Number(m?.event) === currentGameweek);
 
-  currentMatches.forEach((m: any) => {
+  matches.forEach((m: any) => {
     const rawTeam1 = m?.league_entry_1 ?? m?.entry_1 ?? m?.home;
     const rawTeam2 = m?.league_entry_2 ?? m?.entry_2 ?? m?.away;
     if (rawTeam1 == null || rawTeam2 == null) return;
@@ -134,11 +161,23 @@ export function useDivisionStandings(division: Division) {
   const [liveStandings, setLiveStandings] = useState<Standing[] | null>(null);
   const [isLiveGameweek, setIsLiveGameweek] = useState(false);
   const [showLiveColumns, setShowLiveColumns] = useState(false);
+  const [showRankMovement, setShowRankMovement] = useState(false);
+  const [fromRanks, setFromRanks] = useState<Record<string, number> | null>(null);
+  const [hideMovementAt, setHideMovementAt] = useState<number | null>(null);
   const [gwPhase, setGwPhase] = useState<GwPhase>("pre");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const baselineRanksRef = useRef<Record<string, number> | null>(null);
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const hideMovementTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const movementTickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const movementInputRef = useRef<{
+    currentGameweek: number;
+    currentEventFinished: boolean;
+    deadlineTime: string | null;
+    newGameweekStartedAt: string | null;
+    gwMatchesStarted: boolean;
+  } | null>(null);
 
   const baselineStandings = data?.standings || [];
   const baselineById = useMemo(() => {
@@ -238,7 +277,7 @@ export function useDivisionStandings(division: Division) {
             }
           }
 
-          if (!Object.keys(entryIdToTeamId).length && Array.isArray(leagueEntries)) {
+          if (Array.isArray(leagueEntries)) {
             leagueEntries.forEach((e: any) => {
               const internalId = String(e.id ?? e.league_entry_id ?? "").trim();
               const fplId = String(e.entry_id ?? e.entry ?? "").trim();
@@ -266,8 +305,38 @@ export function useDivisionStandings(division: Division) {
           else phase = "settled";
           setGwPhase(phase);
 
+          const movementInput = {
+            currentGameweek: currentGw,
+            currentEventFinished: eventFinished,
+            deadlineTime: gwData?.deadline_time || null,
+            newGameweekStartedAt: gwData?.new_gameweek_started_at || gwData?.trades_time || gwData?.waivers_time || gwData?.deadline_time || null,
+            gwMatchesStarted: gwStarted,
+          };
+          movementInputRef.current = movementInput;
+          const visibility = resolveRankMovementVisibility(movementInput);
+          setShowRankMovement(visibility.show);
+          setHideMovementAt(visibility.hideAt);
+
+          const movementGw = visibility.movementGameweek;
+          const template = payload.standings || [];
+          const priorMatches = matches.filter(
+            (m: any) => Number(m?.event) > 0 && movementGw != null && Number(m.event) < movementGw,
+          );
+          const fromRows = template.length
+            ? applyMatchesToStandings(zeroedStandings(template), priorMatches, entryIdToTeamId)
+            : [];
+          const replayWorked = fromRows.some((row) => row.played > 0) || priorMatches.length === 0;
+          const startRows = replayWorked && fromRows.length ? fromRows : template;
+          if (visibility.show && startRows.length) {
+            const nextFromRanks = ranksByTeamId(startRows);
+            setFromRanks(nextFromRanks);
+            baselineRanksRef.current = nextFromRanks;
+          } else {
+            setFromRanks(null);
+            baselineRanksRef.current = null;
+          }
+
           if (!currentGw || !hasCurrentGwMatches || !payload.standings?.length) {
-            setGwPhase("pre");
             setLiveStandings(null);
             setIsLiveGameweek(false);
             setShowLiveColumns(false);
@@ -277,32 +346,14 @@ export function useDivisionStandings(division: Division) {
                 setLiveStandings(null);
                 setIsLiveGameweek(false);
                 setShowLiveColumns(false);
-                if (!baselineRanksRef.current && payload.standings?.length) {
-                  const initial: Record<string, number> = {};
-                  payload.standings.forEach((s: Standing) => {
-                    initial[s.team_id] = s.rank;
-                  });
-                  baselineRanksRef.current = initial;
-                }
                 break;
               case "live":
-                if (!baselineRanksRef.current && payload.standings?.length) {
-                  const initial: Record<string, number> = {};
-                  payload.standings.forEach((s: Standing) => {
-                    initial[s.team_id] = s.rank;
-                  });
-                  baselineRanksRef.current = initial;
-                }
-                setLiveStandings(
-                  computeLiveStandingsFromMatches(payload.standings, matches, currentGw, entryIdToTeamId),
-                );
+                setLiveStandings(applyMatchesToStandings(startRows, gwMatches, entryIdToTeamId));
                 setIsLiveGameweek(true);
                 setShowLiveColumns(true);
                 break;
               case "post":
-                setLiveStandings(
-                  computeLiveStandingsFromMatches(payload.standings, matches, currentGw, entryIdToTeamId),
-                );
+                setLiveStandings(applyMatchesToStandings(startRows, gwMatches, entryIdToTeamId));
                 setIsLiveGameweek(true);
                 setShowLiveColumns(false);
                 break;
@@ -317,7 +368,11 @@ export function useDivisionStandings(division: Division) {
           setGwPhase("pre");
           setIsLiveGameweek(false);
           setShowLiveColumns(false);
+          setShowRankMovement(false);
+          setFromRanks(null);
+          setHideMovementAt(null);
           setLiveStandings(null);
+          movementInputRef.current = null;
         }
       } catch (err: any) {
         setError(err.message || "Failed to load league standings");
@@ -333,13 +388,60 @@ export function useDivisionStandings(division: Division) {
       }
     });
 
+    movementTickRef.current = setInterval(() => {
+      const input = movementInputRef.current;
+      if (!input) return;
+      const visibility = resolveRankMovementVisibility(input);
+      setShowRankMovement(visibility.show);
+      setHideMovementAt(visibility.hideAt);
+      if (!visibility.show) {
+        setFromRanks(null);
+        baselineRanksRef.current = null;
+      }
+    }, 30_000);
+
     return () => {
       if (pollingIntervalRef.current) {
         clearInterval(pollingIntervalRef.current);
         pollingIntervalRef.current = null;
       }
+      if (movementTickRef.current) {
+        clearInterval(movementTickRef.current);
+        movementTickRef.current = null;
+      }
+      if (hideMovementTimerRef.current) {
+        clearTimeout(hideMovementTimerRef.current);
+        hideMovementTimerRef.current = null;
+      }
     };
   }, [division]);
+
+  useEffect(() => {
+    if (hideMovementTimerRef.current) {
+      clearTimeout(hideMovementTimerRef.current);
+      hideMovementTimerRef.current = null;
+    }
+    if (hideMovementAt == null) return;
+    const delay = hideMovementAt - Date.now();
+    if (delay <= 0) {
+      setShowRankMovement(false);
+      setFromRanks(null);
+      baselineRanksRef.current = null;
+      return;
+    }
+    hideMovementTimerRef.current = setTimeout(() => {
+      setShowRankMovement(false);
+      setFromRanks(null);
+      baselineRanksRef.current = null;
+      hideMovementTimerRef.current = null;
+    }, delay);
+    return () => {
+      if (hideMovementTimerRef.current) {
+        clearTimeout(hideMovementTimerRef.current);
+        hideMovementTimerRef.current = null;
+      }
+    };
+  }, [hideMovementAt]);
 
   return {
     data,
@@ -348,6 +450,8 @@ export function useDivisionStandings(division: Division) {
     rowsToRender,
     baselineById,
     baselineRanksRef,
+    fromRanks,
+    showRankMovement,
     isLiveGameweek,
     showLiveColumns,
     gwPhase,

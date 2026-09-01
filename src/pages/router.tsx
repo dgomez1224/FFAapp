@@ -20,6 +20,8 @@ import LegacyGameweekStandings from "./LegacyGameweekStandings";
 import SignIn from "./SignIn";
 import PickCaptain from "./PickCaptain";
 import MyPage from "./MyPage";
+import MessagesPage from "./Messages";
+import ScoutingPage from "./Scouting";
 import FixturesPage from "./Fixtures";
 import MatchupDetailPage from "./MatchupDetail";
 import LineupDetailPage from "./LineupDetail";
@@ -34,6 +36,7 @@ import { contrastText, ensureReadableText, extractPaletteFromImage, mix, rgbCss 
 import leagueTrophy from "../assets/trophies/League Cup Icon.png";
 import cupTrophy from "../assets/trophies/FFA Cup Icon + Year.png";
 import gobletTrophy from "../assets/trophies/Goblet Icon.png";
+import championsBanner from "../assets/banners/ffa-hall-of-champions.png";
 import { Button } from "../components/ui/button";
 import { MoreHorizontal } from "lucide-react";
 import { RequireCupTypeUnlocked, RequireCupUnlocked } from "../components/RequireCupUnlocked";
@@ -70,6 +73,12 @@ function Shell() {
     { label: "GW Standings", path: "/standings-by-gameweek" },
     { label: "FFA Cup", path: "/bracket" },
     ...(showCupFeatures ? [{ label: "Pick Captain", path: "/pick-captain" }] : []),
+    ...(token
+      ? [
+          { label: "Messages", path: "/messages" },
+          { label: "Scouting", path: "/scouting" },
+        ]
+      : []),
     { label: "My Page", path: "/my-page" },
   ];
 
@@ -222,29 +231,38 @@ function Shell() {
     <div className="min-h-screen bg-background text-foreground flex flex-col">
       <header className="border-b">
         <div className="mx-auto flex min-h-16 max-w-6xl items-center justify-between gap-3 px-4 py-2">
-          <Link to="/dashboard" className="font-heading group text-lg font-semibold inline-flex items-center gap-2 hover:opacity-90">
-            {(() => {
-              const path = location.pathname;
-              const isGoblet = path.startsWith("/goblet");
-              const isCup =
-                path.startsWith("/bracket") ||
-                path.startsWith("/lineup/cup") ||
-                path.startsWith("/matchup/cup");
-              const src = isGoblet ? gobletTrophy : isCup ? cupTrophy : leagueTrophy;
-              const alt = isGoblet ? "Goblet trophy" : isCup ? "FFA Cup trophy" : "League trophy";
-              const label = isCup ? "FFA Bench Boost Cup" : "League of Lads";
-              return (
-                <>
+          {(() => {
+            const path = location.pathname;
+            const isGoblet = path.startsWith("/goblet");
+            const isCup =
+              path.startsWith("/bracket") ||
+              path.startsWith("/lineup/cup") ||
+              path.startsWith("/matchup/cup");
+            const src = isGoblet ? gobletTrophy : isCup ? cupTrophy : leagueTrophy;
+            const alt = isGoblet ? "Goblet trophy" : isCup ? "FFA Cup trophy" : "League trophy";
+            const label = isCup ? "FFA Bench Boost Cup" : "League of Lads";
+            return (
+              <Link
+                to="/dashboard"
+                className="group relative block w-[210px] max-w-full shrink-0 overflow-visible bg-transparent font-heading text-lg font-semibold text-white [text-shadow:0_1px_2px_rgba(0,0,0,0.9)] sm:w-[250px]"
+              >
+                <img
+                  src={championsBanner}
+                  alt=""
+                  aria-hidden="true"
+                  className="pointer-events-none relative z-0 block h-auto w-full max-w-full bg-transparent object-contain object-center"
+                />
+                <span className="pointer-events-none absolute inset-x-0 bottom-1 z-10 flex items-end justify-center gap-2 px-1 pb-0">
                   <img
                     src={src}
                     alt={alt}
-                    className="h-7 w-5 object-contain transition-all duration-200 group-hover:scale-110 group-hover:brightness-110 group-hover:sepia group-hover:saturate-[8] group-hover:hue-rotate-[340deg]"
+                    className="h-7 w-5 object-contain drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] transition-all duration-200 group-hover:scale-110 group-hover:brightness-110 group-hover:sepia group-hover:saturate-[8] group-hover:hue-rotate-[340deg]"
                   />
-                  {label}
-                </>
-              );
-            })()}
-          </Link>
+                  <span className="relative z-10 whitespace-nowrap leading-none">{label}</span>
+                </span>
+              </Link>
+            );
+          })()}
 
           <nav className="font-heading hidden flex-wrap items-center gap-5 text-sm tracking-wide lg:flex">
             <Link to="/league-standings" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
@@ -287,6 +305,16 @@ function Shell() {
               <Link to="/pick-captain" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
                 Pick Captain
               </Link>
+            ) : null}
+            {token ? (
+              <>
+                <Link to="/messages" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
+                  Messages
+                </Link>
+                <Link to="/scouting" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
+                  Scouting
+                </Link>
+              </>
             ) : null}
             <Link to="/my-page" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
               My Page
@@ -407,6 +435,22 @@ function Shell() {
               element={
                 <RequireCaptainSignIn>
                   <MyPage />
+                </RequireCaptainSignIn>
+              }
+            />
+            <Route
+              path="/messages"
+              element={
+                <RequireCaptainSignIn>
+                  <MessagesPage />
+                </RequireCaptainSignIn>
+              }
+            />
+            <Route
+              path="/scouting"
+              element={
+                <RequireCaptainSignIn>
+                  <ScoutingPage />
                 </RequireCaptainSignIn>
               }
             />

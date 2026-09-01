@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Card } from "../components/ui/card";
 import { EDGE_FUNCTIONS_BASE, CUP_START_GAMEWEEK } from "../lib/constants";
+import { getDivisionLabel, getManagerDivision, type Division } from "../lib/divisions";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import { FootballPitch, PitchPlayer } from "../components/FootballPitch";
 import { PlayerStats, PlayerStatsModal } from "../components/PlayerStatsModal";
@@ -18,6 +19,7 @@ type Fixture = {
   matchup_id?: string;
   type: "league" | "cup";
   gameweek: number;
+  division?: Division | null;
   round?: string;
   leg?: number;
   team_1_id: string;
@@ -287,9 +289,27 @@ export default function FixturesPage() {
                     {section.league.length > 0 ? (
                       <div className="text-xs font-semibold uppercase text-muted-foreground">GW {gw} - League</div>
                     ) : null}
-                    {section.league.map((fixture) => (
-                      <FixtureRow key={fixture.fixture_id} fixture={fixture} />
-                    ))}
+                    {(["division_one", "division_two"] as Division[]).map((division) => {
+                      const rows = section.league.filter((fixture) => {
+                        const tagged = fixture.division;
+                        if (tagged === "division_one" || tagged === "division_two") return tagged === division;
+                        const inferred =
+                          getManagerDivision(fixture.team_1?.manager_name || "") ||
+                          getManagerDivision(fixture.team_2?.manager_name || "");
+                        return inferred === division;
+                      });
+                      if (!rows.length) return null;
+                      return (
+                        <div key={`${gw}-${division}`} className="space-y-2">
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            {getDivisionLabel(division)}
+                          </div>
+                          {rows.map((fixture) => (
+                            <FixtureRow key={fixture.fixture_id} fixture={fixture} />
+                          ))}
+                        </div>
+                      );
+                    })}
 
                     {section.cupGroup.length > 0 ? (
                       <div className="rounded-md border bg-background/80 p-3">

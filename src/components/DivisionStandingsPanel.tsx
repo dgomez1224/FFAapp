@@ -19,8 +19,8 @@ export function DivisionStandingsPanel({ division, compact = false }: DivisionSt
     error,
     rowsToRender,
     baselineById,
-    baselineRanksRef,
-    isLiveGameweek,
+    fromRanks,
+    showRankMovement,
     showLiveColumns,
   } = useDivisionStandings(division);
 
@@ -57,8 +57,8 @@ export function DivisionStandingsPanel({ division, compact = false }: DivisionSt
           rows={rowsToRender}
           division={division}
           baselineById={baselineById}
-          baselineRanksRef={baselineRanksRef}
-          isLiveGameweek={isLiveGameweek}
+          fromRanks={fromRanks}
+          showRankMovement={showRankMovement}
           showLiveColumns={showLiveColumns}
         />
       </Card>
