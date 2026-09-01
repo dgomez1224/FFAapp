@@ -39,6 +39,7 @@ is_auto_subbed_on?: boolean;
 is_auto_subbed_off?: boolean;
 /** Owning manager(s), shown under the points pill when set */
 manager_name?: string | null;
+manager_names?: string[];
 /** Season points for this manager, shown under last-week/GW points */
 season_points?: number | null;
 }
@@ -126,6 +127,13 @@ size?: "md" | "sm";
 }) {
 const pitchLabel = pitchPlayerDisplayName(player);
 const pts = player.raw_points ?? 0;
+const managerLabels =
+  player.manager_names?.length
+    ? player.manager_names
+    : player.manager_name
+      ? [player.manager_name]
+      : [];
+const managerTitle = managerLabels.length ? managerLabels.join(", ") : "";
 const ptsColor =
 pts >= 10 ? "bg-amber-400 text-black" :
 pts >= 6  ? "bg-green-400 text-black" :
@@ -154,7 +162,7 @@ onClick={() => onPlayerClick?.(player)}
 className={`flex flex-col items-center group ${
   onPlayerClick ? "cursor-pointer pointer-events-auto" : "cursor-default pointer-events-none"
 }`}
-title={player.manager_name ? `${player.player_name} (${player.manager_name})` : player.player_name}
+title={managerTitle ? `${player.player_name} (${managerTitle})` : player.player_name}
 >
 <div className="relative">
 {/* Image card */}
@@ -217,14 +225,16 @@ fallbackClassName: "absolute inset-0 flex items-center justify-center bg-gray-70
       {Math.round(player.season_points)} season
     </span>
   ) : null}
-  {player.manager_name ? (
+  {managerLabels.length ? (
     <span
-      className={`mt-0.5 text-[7px] font-medium leading-none text-center ${nameMax} truncate ${
+      className={`mt-0.5 text-[7px] font-medium leading-none text-center ${nameMax} ${
+        managerLabels.length > 1 ? "whitespace-normal" : "truncate"
+      } ${
         plainBackground ? "text-muted-foreground" : "text-white/90"
       }`}
       style={nameShadow}
     >
-      {player.manager_name}
+      {managerLabels.join(", ")}
     </span>
   ) : null}
 </button>

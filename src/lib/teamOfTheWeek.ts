@@ -17,6 +17,8 @@ export type TotwPlayer = {
   minutes: number;
   team: string;
   manager_name: string;
+  /** All league managers who own this player (league-wide TOTW display). */
+  manager_names?: string[];
   player_image_url?: string | null;
 };
 
@@ -67,17 +69,54 @@ export function compareTotwPlayers(a: TotwPlayer, b: TotwPlayer) {
   );
 }
 
+/** One entry per player_id — keeps the highest-scoring ownership row. */
+export function uniqueTotwPlayersById(players: TotwPlayer[]): TotwPlayer[] {
+  const map = new Map<number, TotwPlayer>();
+  for (const p of players) {
+    const existing = map.get(p.player_id);
+    if (!existing || compareTotwPlayers(p, existing) < 0) {
+      map.set(p.player_id, { ...p });
+    }
+  }
+  return [...map.values()];
+}
+
+/**
+ * League-wide TOTW: best stats per player_id with every owning manager listed.
+ * Division pools should not use this — they keep division-local ownership only.
+ */
+export function aggregatePlayersForLeagueTotw(players: TotwPlayer[]): TotwPlayer[] {
+  const best = uniqueTotwPlayersById(players);
+  const managersById = new Map<number, string[]>();
+  for (const p of players) {
+    const name = String(p.manager_name || "").trim();
+    if (!name) continue;
+    const list = managersById.get(p.player_id) || [];
+    if (!list.includes(name)) list.push(name);
+    managersById.set(p.player_id, list);
+  }
+  return best.map((p) => {
+    const names = (managersById.get(p.player_id) || []).sort((a, b) => a.localeCompare(b));
+    return {
+      ...p,
+      manager_names: names,
+      manager_name: names.join(", "),
+    };
+  });
+}
+
 export function selectBestTotwLineup(players: TotwPlayer[]): {
   lineup: TotwResponse["lineup"];
   formation: string;
   totalPoints: number;
   bench: TotwPlayer[];
 } {
+  const pool = uniqueTotwPlayersById(players);
   const byPosition = {
-    GK: players.filter((p) => p.position === 1).sort(compareTotwPlayers),
-    DEF: players.filter((p) => p.position === 2).sort(compareTotwPlayers),
-    MID: players.filter((p) => p.position === 3).sort(compareTotwPlayers),
-    FWD: players.filter((p) => p.position === 4).sort(compareTotwPlayers),
+    GK: pool.filter((p) => p.position === 1).sort(compareTotwPlayers),
+    DEF: pool.filter((p) => p.position === 2).sort(compareTotwPlayers),
+    MID: pool.filter((p) => p.position === 3).sort(compareTotwPlayers),
+    FWD: pool.filter((p) => p.position === 4).sort(compareTotwPlayers),
   };
 
   const lineup: TotwResponse["lineup"] = { GK: [], DEF: [], MID: [], FWD: [] };
@@ -138,10 +177,12 @@ export function selectBestTotwLineup(players: TotwPlayer[]): {
 }
 
 export function totwFromPool(pool: TotwPool, scope: TotwScope): TotwResponse {
-  const players =
+  const scoped =
     scope === "all"
       ? pool.players
       : pool.players.filter((p) => getManagerDivision(p.manager_name) === (scope as Division));
+  const players =
+    scope === "all" ? aggregatePlayersForLeagueTotw(scoped) : uniqueTotwPlayersById(scoped);
   const selected = selectBestTotwLineup(players);
   return {
     gameweek: pool.gameweek,
@@ -189,7 +230,7 @@ async function loadTotwPool(gameweek?: number): Promise<TotwPool> {
     String(a.manager_name || "").localeCompare(String(b.manager_name || "")),
   );
 
-  const unique = new Map<number, TotwPlayer>();
+  const allPlayers: TotwPlayer[] = [];
   await Promise.allSettled(
     standings.map(async (standing) => {
       const teamKey =
@@ -227,8 +268,7 @@ async function loadTotwPool(gameweek?: number): Promise<TotwPool> {
           manager_name: String(standing.manager_name || ""),
           player_image_url: p.player_image_url || null,
         };
-        const existing = unique.get(playerId);
-        if (!existing || compareTotwPlayers(next, existing) < 0) unique.set(playerId, next);
+        allPlayers.push(next);
       });
     }),
   );
@@ -237,7 +277,7 @@ async function loadTotwPool(gameweek?: number): Promise<TotwPool> {
     gameweek: targetGw,
     latest_completed: latestCompleted,
     current_gameweek: current,
-    players: [...unique.values()],
+    players: allPlayers,
   };
 }
 
