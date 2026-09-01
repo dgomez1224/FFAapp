@@ -34,7 +34,7 @@ import {
   type ScoutablePlayer,
 } from "./player-comms.ts";
 import { newsFeed } from "./news.ts";
-import { compareTotwPlayers, selectBestTotwLineup, type TotwPlayer } from "./team-of-the-week.ts";
+import { aggregatePlayersForLeagueTotw, selectBestTotwLineup, type TotwPlayer } from "./team-of-the-week.ts";
 import { buildRivalryNewsItem, findRivalry, leagueMatchupPath } from "./rivalries.ts";
 
 // --------------------
@@ -10987,7 +10987,7 @@ leagueActivity.get("/team-of-the-week", async (c) => {
     const livePointsMap = extractLivePointsMap(live);
     const liveStatsMap = extractLivePlayerStatsMap(live);
 
-    const unique = new Map<number, TotwPlayer>();
+    const allPlayers: TotwPlayer[] = [];
     const pickJobs: Array<Promise<{ managerName: string; picks: any[] }>> = [];
     for (const league of leagues) {
       for (const entry of league.entries || []) {
@@ -11031,12 +11031,11 @@ leagueActivity.get("/team-of-the-week", async (c) => {
             manager_name: managerName,
             player_image_url: meta?.image_url || null,
           };
-          const existing = unique.get(playerId);
-          if (!existing || compareTotwPlayers(next, existing) < 0) unique.set(playerId, next);
+          allPlayers.push(next);
         }
     }
 
-    const selected = selectBestTotwLineup([...unique.values()]);
+    const selected = selectBestTotwLineup(aggregatePlayersForLeagueTotw(allPlayers));
     const xiCount = selected.lineup.GK.length + selected.lineup.DEF.length + selected.lineup.MID.length + selected.lineup.FWD.length;
     return c.json({
       gameweek: targetGw,

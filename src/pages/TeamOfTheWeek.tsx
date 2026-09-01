@@ -29,6 +29,7 @@ function toPitchPlayers(players: TotwPlayer[]): PitchPlayer[] {
     assists: p.assists,
     minutes: p.minutes,
     manager_name: p.manager_name || undefined,
+    manager_names: p.manager_names,
   }));
 }
 
@@ -263,7 +264,9 @@ export function TeamOfTheWeekPanel({
               >
                 <p className="truncate font-medium">{p.web_name || p.player_name}</p>
                 <p className="text-[10px] tabular-nums text-muted-foreground">{p.points} pts</p>
-                <p className="truncate text-[10px] text-muted-foreground">{p.manager_name}</p>
+                <p className="truncate text-[10px] text-muted-foreground">
+                  {p.manager_names?.length ? p.manager_names.join(", ") : p.manager_name}
+                </p>
               </button>
             ))}
           </div>
