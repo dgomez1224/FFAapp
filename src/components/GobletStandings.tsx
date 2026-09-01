@@ -31,7 +31,7 @@ interface GobletStandingsResponse {
   source: "database" | "derived" | "draft";
 }
 
-export default function GobletStandings() {
+export default function GobletStandings({ compact = false }: { compact?: boolean }) {
   const [data, setData] = useState<GobletStandingsResponse | null>(null);
   const [liveStandings, setLiveStandings] = useState<GobletStanding[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -214,10 +214,12 @@ export default function GobletStandings() {
     };
   }, []);
 
+  const headingClass = compact ? "text-lg font-semibold" : "font-heading text-2xl font-semibold";
+
   if (loading) {
     return (
-      <Card className="p-6">
-        <h1 className="mb-4 text-xl font-semibold">Goblet Standings</h1>
+      <Card className={compact ? "p-4" : "p-6"}>
+        <h2 className={`mb-2 ${headingClass}`}>Goblet Standings</h2>
         <p className="text-sm text-muted-foreground">Loading goblet standings...</p>
       </Card>
     );
@@ -225,8 +227,8 @@ export default function GobletStandings() {
 
   if (error) {
     return (
-      <Card className="p-6">
-        <h1 className="mb-4 text-xl font-semibold">Goblet Standings</h1>
+      <Card className={compact ? "p-4" : "p-6"}>
+        <h2 className={`mb-2 ${headingClass}`}>Goblet Standings</h2>
         <p className="text-sm text-destructive">{error}</p>
       </Card>
     );
@@ -234,8 +236,8 @@ export default function GobletStandings() {
 
   if (!data || data.standings.length === 0) {
     return (
-      <Card className="p-6">
-        <h1 className="mb-4 text-xl font-semibold">Goblet Standings</h1>
+      <Card className={compact ? "p-4" : "p-6"}>
+        <h2 className={`mb-2 ${headingClass}`}>Goblet Standings</h2>
         <p className="text-sm text-muted-foreground">No goblet data available yet.</p>
       </Card>
     );
@@ -249,15 +251,24 @@ export default function GobletStandings() {
     .map((s, i) => ({ ...s, rank: i + 1 }));
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-3">
-          <img src={gobletTrophy} alt="" className="h-10 w-10 object-contain" aria-hidden />
+          <img
+            src={gobletTrophy}
+            alt=""
+            className={`${compact ? "h-7 w-7" : "h-10 w-10"} object-contain`}
+            aria-hidden
+          />
           <div>
-            <h1 className="font-heading text-2xl font-semibold">Goblet Standings</h1>
-            <p className="text-sm text-muted-foreground">
-              Ranked by points for. Data source: {data.source}
-            </p>
+            <h2 className={headingClass}>Goblet Standings</h2>
+            {!compact ? (
+              <p className="text-sm text-muted-foreground">
+                Ranked by points for. Data source: {data.source}
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">Ranked by points for.</p>
+            )}
           </div>
         </div>
         <button
@@ -269,7 +280,7 @@ export default function GobletStandings() {
         </button>
       </div>
 
-      <Card className="p-4">
+      <Card className="min-w-0 overflow-x-auto p-4">
         <div className="fpl-table-container">
           <Table>
             <TableHeader>

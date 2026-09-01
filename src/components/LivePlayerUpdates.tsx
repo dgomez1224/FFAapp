@@ -10,6 +10,7 @@ import type { Division } from "../lib/divisions";
 import { getDivisionShortLabel, getManagerDivision } from "../lib/divisions";
 import { getSupabaseFunctionHeaders, supabaseUrl } from "../lib/supabaseClient";
 import type { LiveDataResponse } from "../lib/types/api";
+import { DashboardCarousel } from "./carousels/DashboardCarousel";
 
 type StatKey =
   | "goals_scored"
@@ -399,7 +400,7 @@ export function summarizeMatchupHighlights(
     .map(({ weight: _weight, ...rest }) => rest);
 }
 
-export default function LivePlayerUpdates() {
+export default function LivePlayerUpdates({ layout = "feed" }: { layout?: "feed" | "carousel" }) {
   const [rows, setRows] = useState<UpdateRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -693,10 +694,81 @@ export default function LivePlayerUpdates() {
 
   const visibleRows = useMemo(() => groupUpdatesByPlayerStat(rows), [rows]);
 
+  const header = (
+    <div className="mb-3 flex items-center justify-between gap-2">
+      <div>
+        <h2 className="text-lg font-semibold">Latest Updates</h2>
+        <p className="text-xs text-muted-foreground">
+          {gameweek ? `GW ${gameweek}` : "Live"} highlights for owned players
+        </p>
+      </div>
+      {lastUpdated ? <p className="text-[11px] text-muted-foreground">Updated {new Date(lastUpdated).toLocaleTimeString()}</p> : null}
+    </div>
+  );
+
+  const updateCards = visibleRows.map((row) => {
+    const owners = row.owners?.length ? row.owners : [ownerFromRow(row)];
+    const mixedBench = owners.some((owner) => owner.is_benched) && owners.some((owner) => !owner.is_benched);
+    const statusLabel = mixedBench ? "Mixed" : owners.every((owner) => owner.is_benched) ? "Benched" : "Started";
+    return (
+      <div key={row.id} className="grid h-full grid-cols-[2.5rem_1fr_auto] items-center gap-2 rounded-md border bg-background/70 p-3">
+        <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded-full border bg-muted">
+          {row.player_image_url ? (
+            <img
+              src={getProxiedImageUrl(row.player_image_url) ?? undefined}
+              alt={row.player_name}
+              className="h-full w-full object-cover"
+              onError={(e) =>
+                handlePlayerImageErrorWithWikipediaFallback(e, row.player_name, {
+                  fallbackClassName:
+                    "absolute inset-0 flex items-center justify-center rounded-full bg-muted text-[10px] font-bold text-muted-foreground",
+                })
+              }
+            />
+          ) : (
+            <span className="flex h-full w-full items-center justify-center text-[10px] font-bold text-muted-foreground">
+              {getPlayerInitialsAbbrev(row.player_name)}
+            </span>
+          )}
+        </div>
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium">
+            {row.player_name}
+            <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">
+              ({statusLabel})
+            </span>
+          </p>
+          <p className="text-xs text-muted-foreground flex items-start gap-1.5">
+            {row.statKey && (
+              <span className="shrink-0 text-sm" title={row.action} aria-hidden>
+                {STAT_ICONS[row.statKey]}
+              </span>
+            )}
+            <span className={owners.length > 1 ? "whitespace-normal" : "truncate"}>
+              {row.action}
+              {" • "}
+              {formatOwnersLine(owners)}
+              {row.competition ? ` • ${row.competition}` : ""}
+              {row.competition_detail ? ` • ${row.competition_detail}` : ""}
+            </span>
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="text-xs font-semibold">{row.points} pts</p>
+          <p className="text-[11px] text-muted-foreground">
+            {owners.length === 1
+              ? [row.team_name, row.fixture_score, row.opp_team_name].filter(Boolean).join(" ")
+              : owners.map((owner) => `${owner.manager_name} ${owner.fixture_score}`).join(" · ")}
+          </p>
+        </div>
+      </div>
+    );
+  });
+
   if (loading) {
     return (
       <Card className="p-4">
-        <h3 className="text-lg font-semibold">Latest Updates</h3>
+        <h2 className="text-lg font-semibold">Latest Updates</h2>
         <p className="mt-2 text-sm text-muted-foreground">Loading live player updates...</p>
       </Card>
     );
@@ -705,87 +777,31 @@ export default function LivePlayerUpdates() {
   if (error) {
     return (
       <Card className="p-4">
-        <h3 className="text-lg font-semibold">Latest Updates</h3>
+        <h2 className="text-lg font-semibold">Latest Updates</h2>
         <p className="mt-2 text-sm text-destructive">{error}</p>
       </Card>
     );
   }
 
+  if (layout === "carousel") {
+    return (
+      <DashboardCarousel
+        header={header}
+        empty={<p className="text-sm text-muted-foreground">No live stat events yet. Updates will appear as games progress.</p>}
+      >
+        {updateCards}
+      </DashboardCarousel>
+    );
+  }
+
   return (
     <Card className="p-4">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <div>
-          <h3 className="text-lg font-semibold">Latest Updates</h3>
-          <p className="text-xs text-muted-foreground">
-            {gameweek ? `GW ${gameweek}` : "Live"} highlights for owned players
-          </p>
-        </div>
-        {lastUpdated ? <p className="text-[11px] text-muted-foreground">Updated {new Date(lastUpdated).toLocaleTimeString()}</p> : null}
-      </div>
+      {header}
 
       {visibleRows.length === 0 ? (
         <p className="text-sm text-muted-foreground">No live stat events yet. Updates will appear as games progress.</p>
       ) : (
-        <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
-          {visibleRows.map((row) => {
-            const owners = row.owners?.length ? row.owners : [ownerFromRow(row)];
-            const mixedBench = owners.some((owner) => owner.is_benched) && owners.some((owner) => !owner.is_benched);
-            const statusLabel = mixedBench ? "Mixed" : owners.every((owner) => owner.is_benched) ? "Benched" : "Started";
-            return (
-            <div key={row.id} className="grid grid-cols-[2.5rem_1fr_auto] items-center gap-2 rounded-md border bg-background/70 p-2">
-              <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded-full border bg-muted">
-                {row.player_image_url ? (
-                  <img
-                    src={getProxiedImageUrl(row.player_image_url) ?? undefined}
-                    alt={row.player_name}
-                    className="h-full w-full object-cover"
-                    onError={(e) =>
-                      handlePlayerImageErrorWithWikipediaFallback(e, row.player_name, {
-                        fallbackClassName:
-                          "absolute inset-0 flex items-center justify-center rounded-full bg-muted text-[10px] font-bold text-muted-foreground",
-                      })
-                    }
-                  />
-                ) : (
-                  <span className="flex h-full w-full items-center justify-center text-[10px] font-bold text-muted-foreground">
-                    {getPlayerInitialsAbbrev(row.player_name)}
-                  </span>
-                )}
-              </div>
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium">
-                  {row.player_name}
-                  <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">
-                    ({statusLabel})
-                  </span>
-                </p>
-                <p className="text-xs text-muted-foreground flex items-start gap-1.5">
-                  {row.statKey && (
-                    <span className="shrink-0 text-sm" title={row.action} aria-hidden>
-                      {STAT_ICONS[row.statKey]}
-                    </span>
-                  )}
-                  <span className={owners.length > 1 ? "whitespace-normal" : "truncate"}>
-                    {row.action}
-                    {" • "}
-                    {formatOwnersLine(owners)}
-                    {row.competition ? ` • ${row.competition}` : ""}
-                    {row.competition_detail ? ` • ${row.competition_detail}` : ""}
-                  </span>
-                </p>
-              </div>
-              <div className="text-right">
-                <p className="text-xs font-semibold">{row.points} pts</p>
-                <p className="text-[11px] text-muted-foreground">
-                  {owners.length === 1
-                    ? [row.team_name, row.fixture_score, row.opp_team_name].filter(Boolean).join(" ")
-                    : owners.map((owner) => `${owner.manager_name} ${owner.fixture_score}`).join(" · ")}
-                </p>
-              </div>
-            </div>
-            );
-          })}
-        </div>
+        <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">{updateCards}</div>
       )}
     </Card>
   );

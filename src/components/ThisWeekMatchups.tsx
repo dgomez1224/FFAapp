@@ -33,6 +33,7 @@ import {
   type PlayerOddsInput,
   type WinProbs,
 } from "../lib/matchupOdds";
+import { DashboardCarousel } from "./carousels/DashboardCarousel";
 
 type ViewMode = "all" | Division;
 
@@ -228,7 +229,7 @@ function dedupeMatchupsByPair<T extends { team_1_id: string; team_2_id: string }
   return Array.from(byKey.values());
 }
 
-export function ThisWeekMatchups() {
+export function ThisWeekMatchups({ layout = "full" }: { layout?: "full" | "carousel" }) {
   const [divisionsData, setDivisionsData] = useState<DivisionMatchups[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>("all");
   const [oddsModel, setOddsModel] = useState<OddsModelId>("heuristic");
@@ -751,7 +752,9 @@ export function ThisWeekMatchups() {
   const header = (
     <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
       <div>
-        <h2 className="text-lg font-semibold">This Week&apos;s Matchups</h2>
+        <h2 className="text-lg font-semibold">
+          {layout === "carousel" ? "This Week's Fixtures" : "This Week's Matchups"}
+        </h2>
         <p className="text-sm text-muted-foreground">
           Gameweek {gameweek ?? "—"} · {oddsModelMeta(oddsModel).short}
         </p>
@@ -808,14 +811,34 @@ export function ThisWeekMatchups() {
   }
 
   const hasVisibleMatchups = visibleBlocks.some((block) => block.matchups.length > 0);
+  const emptyMessage = (
+    <p className="text-sm text-muted-foreground">
+      {viewMode === "all" ? "No matchups available yet." : `No matchups available for ${getDivisionLabel(viewMode)}.`}
+    </p>
+  );
+
+  if (layout === "carousel") {
+    return (
+      <DashboardCarousel header={header} empty={emptyMessage}>
+        {visibleBlocks.flatMap((block) =>
+          block.matchups.map((m, idx) => (
+            <div key={`${block.division}-${m.team_1_id}-${m.team_2_id}-${idx}`} className="h-full">
+              {viewMode === "all" ? (
+                <p className="mb-2 text-xs font-semibold text-muted-foreground">{getDivisionLabel(block.division)}</p>
+              ) : null}
+              {renderMatchup(m, block.gameweek, idx)}
+            </div>
+          )),
+        )}
+      </DashboardCarousel>
+    );
+  }
 
   return (
     <Card className="p-4">
       {header}
       {!hasVisibleMatchups ? (
-        <p className="text-sm text-muted-foreground">
-          {viewMode === "all" ? "No matchups available yet." : `No matchups available for ${getDivisionLabel(viewMode)}.`}
-        </p>
+        emptyMessage
       ) : (
         <div className="space-y-8">
           {visibleBlocks.map((block) => (

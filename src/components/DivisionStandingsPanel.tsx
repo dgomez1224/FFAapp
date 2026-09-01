@@ -11,9 +11,10 @@ import { getDivisionLabel, type Division } from "../lib/divisions";
 type DivisionStandingsPanelProps = {
   division: Division;
   compact?: boolean;
+  heading?: string;
 };
 
-export function DivisionStandingsPanel({ division, compact = false }: DivisionStandingsPanelProps) {
+export function DivisionStandingsPanel({ division, compact = false, heading }: DivisionStandingsPanelProps) {
   const {
     loading,
     error,
@@ -24,7 +25,7 @@ export function DivisionStandingsPanel({ division, compact = false }: DivisionSt
     showLiveColumns,
   } = useDivisionStandings(division);
 
-  const title = getDivisionLabel(division);
+  const title = heading ?? getDivisionLabel(division);
 
   if (loading) {
     return (
@@ -52,7 +53,7 @@ export function DivisionStandingsPanel({ division, compact = false }: DivisionSt
       ) : (
         <p className="text-xs text-muted-foreground">Top two places are in the promotion zone.</p>
       )}
-      <Card className="p-4">
+      <Card className="min-w-0 overflow-x-auto p-4">
         <StandingsTable
           rows={rowsToRender}
           division={division}

@@ -13,6 +13,7 @@ import { Star } from "lucide-react";
 import type { Division } from "../lib/divisions";
 import { getDivisionLabel, getManagerDivision } from "../lib/divisions";
 import { DivisionBadge } from "./DivisionBadge";
+import { DashboardCarousel } from "./carousels/DashboardCarousel";
 
 interface PotmRow {
   player_id: number;
@@ -54,7 +55,7 @@ interface Payload {
   fixtures: FixtureRow[];
 }
 
-export function PreviousWeekResults() {
+export function PreviousWeekResults({ layout = "full" }: { layout?: "full" | "carousel" }) {
   const [data, setData] = useState<Payload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -101,17 +102,104 @@ export function PreviousWeekResults() {
     );
   }
 
+  const fixturesByDivision = (["division_one", "division_two"] as Division[]).map((division) => ({
+    division,
+    fixtures: (data.fixtures || []).filter((f) => {
+      const div = getManagerDivision(f.team_1.manager_name) || getManagerDivision(f.team_2.manager_name);
+      return div === division;
+    }),
+  }));
+
+  if (layout === "carousel") {
+    return (
+      <DashboardCarousel
+        title="Last Week's Results"
+        subtitle={
+          <p className="text-xs text-muted-foreground">
+            League fixtures and Player of the Match for GW {data.gameweek}.
+          </p>
+        }
+      >
+        {fixturesByDivision.flatMap(({ division, fixtures }) =>
+          fixtures.map((f) => {
+            const team1Label = f.team_1.team_name || f.team_1.manager_name;
+            const team2Label = f.team_2.team_name || f.team_2.manager_name;
+            const scoreLabel = `${Math.round(f.team_1.points)} – ${Math.round(f.team_2.points)}`;
+            return (
+              <button
+                key={`${division}-${f.team_1.manager_name}-${f.team_2.manager_name}`}
+                type="button"
+                className="flex h-full w-full flex-col rounded-md border bg-background/80 p-3 text-left transition-colors hover:bg-muted/40"
+                onClick={() =>
+                  navigate(
+                    `/matchup/league/${f.gameweek}/${encodeURIComponent(
+                      String(f.team_1.entry_id || ""),
+                    )}/${encodeURIComponent(String(f.team_2.entry_id || ""))}`,
+                  )
+                }
+              >
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-muted-foreground">{getDivisionLabel(division)}</span>
+                  <DivisionBadge division={division} />
+                </div>
+                <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+                  <p className="text-sm font-medium leading-tight">{team1Label}</p>
+                  <p className="whitespace-nowrap text-base font-semibold tabular-nums">{scoreLabel}</p>
+                  <p className="text-right text-sm font-medium leading-tight">{team2Label}</p>
+                </div>
+                <div className="mt-3 border-t pt-2">
+                  <p className="mb-1 flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+                    <Star className="h-3 w-3 text-yellow-500" />
+                    POTM
+                  </p>
+                  {f.potm && f.potm.length > 0 ? (
+                    <div className="flex flex-col gap-1">
+                      {f.potm.map((p) => (
+                        <div key={`${p.player_id}-${p.manager_name}`} className="flex items-center gap-2">
+                          {p.player_image_url ? (
+                            <div className="relative h-6 w-6 shrink-0 overflow-hidden rounded-full border">
+                              <img
+                                src={getProxiedImageUrl(p.player_image_url) ?? undefined}
+                                alt={p.player_name}
+                                className="h-full w-full object-cover"
+                                onError={(e) =>
+                                  handlePlayerImageErrorWithWikipediaFallback(e, p.player_name, {
+                                    fallbackClassName:
+                                      "absolute inset-0 flex items-center justify-center bg-muted text-[10px] font-bold text-muted-foreground",
+                                  })
+                                }
+                              />
+                            </div>
+                          ) : (
+                            <div className="h-6 w-6 rounded-full border bg-muted flex items-center justify-center text-[10px] font-bold text-muted-foreground">
+                              {getPlayerInitialsAbbrev(p.player_name)}
+                            </div>
+                          )}
+                          <span className="text-[11px] font-medium">
+                            {p.player_name} ({p.total_points} pts)
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground">—</p>
+                  )}
+                </div>
+              </button>
+            );
+          }),
+        )}
+      </DashboardCarousel>
+    );
+  }
+
   return (
     <Card className="p-4">
       <h2 className="text-lg font-semibold mb-1">Last Week&apos;s Results</h2>
       <p className="text-xs text-muted-foreground mb-3">
         League fixtures and Player of the Match for GW {data.gameweek}.
       </p>
-      {(["division_one", "division_two"] as Division[]).map((division) => {
-        const fixtures = (data.fixtures || []).filter((f) => {
-          const div = getManagerDivision(f.team_1.manager_name) || getManagerDivision(f.team_2.manager_name);
-          return div === division;
-        });
+      {fixturesByDivision.map(({ division, fixtures }) => {
         if (!fixtures.length) return null;
         return (
           <div key={division} className="mb-6 last:mb-0">

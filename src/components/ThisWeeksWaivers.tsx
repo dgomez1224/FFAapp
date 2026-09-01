@@ -5,6 +5,7 @@ import { type Division } from "../lib/divisions";
 import { DivisionBadge } from "./DivisionBadge";
 import { Card } from "./ui/card";
 import { PlayerAvatar } from "./PlayerAvatar";
+import { DashboardCarousel } from "./carousels/DashboardCarousel";
 
 type WaiverMove = {
   gameweek: number;
@@ -73,7 +74,7 @@ function WaiverMovesTable({ moves }: { moves: WaiverMove[] }) {
   );
 }
 
-export function ThisWeeksWaivers() {
+export function ThisWeeksWaivers({ layout = "full" }: { layout?: "full" | "carousel" }) {
   const [data, setData] = useState<WaiverResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -133,6 +134,44 @@ export function ThisWeeksWaivers() {
   const ungrouped = data.moves.filter(
     (move) => move.division !== "division_one" && move.division !== "division_two",
   );
+
+  if (layout === "carousel") {
+    return (
+      <DashboardCarousel
+        title="This Week's Waivers"
+        subtitle={<p className="text-sm text-muted-foreground mt-1">GW {data.gameweek} roster changes</p>}
+      >
+        {data.moves.map((move, idx) => (
+          <div
+            key={`${move.team_id}-${move.player_in_id || "none"}-${move.player_out_id || "none"}-${idx}`}
+            className="flex h-full flex-col rounded-md border bg-background/80 p-3"
+          >
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="truncate text-sm font-semibold">{move.manager_name}</p>
+              {move.division ? <DivisionBadge division={move.division} /> : null}
+            </div>
+            <p className="mb-3 text-xs text-muted-foreground">{move.transaction_type}</p>
+            <div className="mt-auto space-y-2 text-sm">
+              <div className="flex items-center gap-2">
+                <span className="w-8 shrink-0 text-[11px] font-medium text-muted-foreground">In</span>
+                {move.player_in_name ? (
+                  <PlayerAvatar name={move.player_in_name} imageUrl={move.player_in_image_url} size="sm" />
+                ) : null}
+                <span className="truncate">{move.player_in_name || "—"}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-8 shrink-0 text-[11px] font-medium text-muted-foreground">Out</span>
+                {move.player_out_name ? (
+                  <PlayerAvatar name={move.player_out_name} imageUrl={move.player_out_image_url} size="sm" />
+                ) : null}
+                <span className="truncate">{move.player_out_name || "—"}</span>
+              </div>
+            </div>
+          </div>
+        ))}
+      </DashboardCarousel>
+    );
+  }
 
   return (
     <Card className="p-4">

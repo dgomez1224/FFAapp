@@ -5,7 +5,7 @@
  * Auth-related routes (Login, Signup, AuthCallback) have been removed.
  */
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate, Link, useLocation, useNavigate } from "react-router-dom";
 import { BracketView } from "../components/BracketView";
 import DashboardPage from "./Dashboard";
@@ -39,10 +39,9 @@ import leagueTrophy from "../assets/trophies/League Cup Icon.png";
 import cupTrophy from "../assets/trophies/FFA Cup Icon + Year.png";
 import gobletTrophy from "../assets/trophies/Goblet Icon.png";
 import championsBanner from "../assets/banners/ffa-hall-of-champions.png";
-import { Button } from "../components/ui/button";
-import { MoreHorizontal } from "lucide-react";
 import { RequireCupTypeUnlocked, RequireCupUnlocked } from "../components/RequireCupUnlocked";
 import { useCurrentGameweek } from "../lib/useCurrentGameweek";
+import { MainNavigation } from "../components/navigation/MainNavigation";
 
 function RequireCaptainSignIn({ children }: { children: React.ReactElement }) {
   const location = useLocation();
@@ -60,31 +59,8 @@ function Shell() {
   const location = useLocation();
   const isFullBleedRoute = location.pathname === "/standings-by-gameweek";
   const [token, setToken] = useState<string | null>(() => getCaptainSessionToken());
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const mobileMenuRef = useRef<HTMLDivElement | null>(null);
   const { currentGameweek } = useCurrentGameweek();
   const showCupFeatures = currentGameweek >= CUP_START_GAMEWEEK;
-  const mobileRoutes = [
-    { label: "League", path: "/league-standings" },
-    { label: "Goblet", path: "/goblet" },
-    { label: "Managers", path: "/managers" },
-    { label: "Team Rosters", path: "/team-rosters" },
-    { label: "Players", path: "/players" },
-    { label: "Fixtures", path: "/fixtures" },
-    { label: "News", path: "/news" },
-    { label: "Legacy", path: "/legacy-home" },
-    { label: "Legacy GW", path: "/legacy-gameweek-standings" },
-    { label: "GW Standings", path: "/standings-by-gameweek" },
-    { label: "FFA Cup", path: "/bracket" },
-    ...(showCupFeatures ? [{ label: "Pick Captain", path: "/pick-captain" }] : []),
-    ...(token
-      ? [
-          { label: "Messages", path: "/messages" },
-          { label: "Scouting", path: "/scouting" },
-        ]
-      : []),
-    { label: "My Page", path: "/my-page" },
-  ];
 
   useEffect(() => {
     const syncSessionToken = () => {
@@ -98,23 +74,6 @@ function Shell() {
       window.removeEventListener("storage", syncSessionToken);
     };
   }, []);
-
-  useEffect(() => {
-    if (!mobileMenuOpen) return;
-    const handleOutside = (event: MouseEvent | TouchEvent) => {
-      const target = event.target as Node | null;
-      if (!mobileMenuRef.current || !target) return;
-      if (!mobileMenuRef.current.contains(target)) {
-        setMobileMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleOutside);
-    document.addEventListener("touchstart", handleOutside);
-    return () => {
-      document.removeEventListener("mousedown", handleOutside);
-      document.removeEventListener("touchstart", handleOutside);
-    };
-  }, [mobileMenuOpen]);
 
   const handleHeaderSignOut = async () => {
     try {
@@ -232,9 +191,9 @@ function Shell() {
   }, [token]);
 
   return (
-    <div className="min-h-screen bg-background text-foreground flex flex-col">
+    <div className="min-h-screen bg-background text-foreground flex flex-col overflow-x-hidden">
       <header className="border-b">
-        <div className="mx-auto flex min-h-16 max-w-6xl items-center justify-between gap-3 px-4 py-2">
+        <div className="mx-auto flex min-h-16 max-w-6xl items-center gap-3 px-4 py-2">
           {(() => {
             const path = location.pathname;
             const isGoblet = path.startsWith("/goblet");
@@ -267,125 +226,8 @@ function Shell() {
               </Link>
             );
           })()}
-
-          <nav className="font-heading hidden flex-wrap items-center gap-5 text-sm tracking-wide lg:flex">
-            <Link to="/league-standings" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-              League
-            </Link>
-            <Link to="/goblet" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-              Goblet
-            </Link>
-            <Link to="/bracket" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-              FFA Cup
-            </Link>
-            <Link to="/managers" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-              Managers
-            </Link>
-            <Link to="/team-rosters" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-              Team Rosters
-            </Link>
-            <Link to="/players" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-              Players
-            </Link>
-            <Link to="/fixtures" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-              Fixtures
-            </Link>
-            <Link to="/news" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-              News
-            </Link>
-            <Link to="/legacy-home" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-              Legacy
-            </Link>
-            <Link to="/legacy-gameweek-standings" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-              Legacy GW
-            </Link>
-            <Link to="/standings-by-gameweek" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-              GW Standings
-            </Link>
-            {token ? (
-              <button type="button" onClick={handleHeaderSignOut} className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-                Sign Out
-              </button>
-            ) : (
-              <Link to="/sign-in" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-                Sign In
-              </Link>
-            )}
-            {showCupFeatures ? (
-              <Link to="/pick-captain" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-                Pick Captain
-              </Link>
-            ) : null}
-            {token ? (
-              <>
-                <Link to="/messages" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-                  Messages
-                </Link>
-                <Link to="/scouting" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-                  Scouting
-                </Link>
-              </>
-            ) : null}
-            <Link to="/my-page" className="text-foreground/90 transition-colors hover:text-foreground hover:underline">
-              My Page
-            </Link>
-          </nav>
-
-          <div ref={mobileMenuRef} className="relative lg:hidden">
-            <Button
-              variant="outline"
-              size="icon"
-              aria-label="Open routes"
-              onClick={() => setMobileMenuOpen((prev) => !prev)}
-            >
-              <MoreHorizontal className="h-5 w-5" />
-            </Button>
-
-            {mobileMenuOpen ? (
-              <div className="absolute right-0 top-full z-50 mt-2 w-56 max-h-80 overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md">
-                <div className="px-2 py-1.5 text-sm font-medium">Routes</div>
-                <div className="my-1 h-px bg-border" />
-                {mobileRoutes.map((route) => (
-                  <button
-                    key={route.path}
-                    type="button"
-                    onClick={() => {
-                      navigate(route.path);
-                      setMobileMenuOpen(false);
-                    }}
-                    className="flex w-full items-center rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground"
-                  >
-                    {route.label}
-                  </button>
-                ))}
-                <div className="my-1 h-px bg-border" />
-                {token ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      handleHeaderSignOut();
-                      setMobileMenuOpen(false);
-                    }}
-                    className="flex w-full items-center rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground"
-                  >
-                    Sign Out
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      navigate("/sign-in");
-                      setMobileMenuOpen(false);
-                    }}
-                    className="flex w-full items-center rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground"
-                  >
-                    Sign In
-                  </button>
-                )}
-              </div>
-            ) : null}
-          </div>
         </div>
+        <MainNavigation token={token} showCupFeatures={showCupFeatures} onSignOut={handleHeaderSignOut} />
       </header>
       <main className="flex-1">
         <div className={isFullBleedRoute ? "w-full px-0 py-0" : "mx-auto max-w-6xl px-4 py-6"}>
